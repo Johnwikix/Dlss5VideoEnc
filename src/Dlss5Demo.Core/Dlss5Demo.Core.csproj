@@ -1,0 +1,14 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <LangVersion>latest</LangVersion>
+    <Platforms>x64</Platforms>
+    <AssemblyName>Dlss5VideoEnc.Core</AssemblyName>
+    <DefaultItemExcludes>$(DefaultItemExcludes);**/obj/**;**/bin/**;**/build/**</DefaultItemExcludes>
+  </PropertyGroup>
+
+</Project>

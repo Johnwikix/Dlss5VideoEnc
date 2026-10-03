@@ -1,0 +1,11 @@
+{
+  "profiles": {
+    "Dlss5VideoEnc": {
+      "commandName": "Project",
+      "nativeDebugging": true,
+      "environmentVariables": {
+        "DOTNET_ENVIRONMENT": "Development"
+      }
+    }
+  }
+}

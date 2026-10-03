@@ -1,0 +1,98 @@
+<Window xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        x:Class="Dlss5Demo.App.MainWindow"
+        Title="DLSS5 Video Enc"
+        Width="1440" Height="920" MinWidth="1120" MinHeight="720"
+        WindowStartupLocation="CenterScreen"
+        Background="#0A0F14">
+  <Grid RowDefinitions="Auto,Auto,*,Auto" Margin="24" RowSpacing="16">
+    <Grid Grid.Row="0" ColumnDefinitions="*,Auto" VerticalAlignment="Center">
+      <StackPanel Spacing="4">
+        <StackPanel Orientation="Horizontal" Spacing="10"><TextBlock Text="DLSS5" FontSize="26" FontWeight="Bold" Foreground="#5CE1E6" /><TextBlock Text="VIDEO ENC" FontSize="26" FontWeight="Bold" Foreground="#F3F7FA" /></StackPanel>
+        <TextBlock Text="NVIDIA DLSS NR 视频转码工作台 · 实时预览 · HDR 保真输出" Foreground="#8C9AA7" FontSize="13" />
+      </StackPanel>
+      <Border Grid.Column="1" Background="#14242A" BorderBrush="#27535A" BorderThickness="1" CornerRadius="18" Padding="16,10" MinWidth="190" VerticalAlignment="Center"><StackPanel Orientation="Horizontal" Spacing="9" VerticalAlignment="Center"><Ellipse Width="8" Height="8" Fill="#5CE1E6" VerticalAlignment="Center"/><TextBlock x:Name="RuntimeBadge" Text="DLSS Runtime · ready" Foreground="#B8F4F0" FontSize="12" VerticalAlignment="Center" /></StackPanel></Border>
+    </Grid>
+    <Grid Grid.Row="1" ColumnDefinitions="*,Auto,Auto" ColumnSpacing="10"><TextBox x:Name="InputBox" PlaceholderText="拖入或选择源视频（MP4 / MKV / MOV / TS / WebM）" TextChanged="OnInputTextChanged" FontSize="14" Padding="14,10"/><Button Grid.Column="1" x:Name="BrowseButton" Content="选择视频" Click="Browse_Click" Padding="18,10"/><Button Grid.Column="2" x:Name="CompareButton" Content="载入输出" Click="Compare_Click" IsEnabled="False" Padding="18,10"/></Grid>
+
+    <Grid Grid.Row="2" ColumnDefinitions="360,16,*">
+      <ScrollViewer Grid.Column="0" VerticalScrollBarVisibility="Auto"><StackPanel Spacing="12">
+        <Border Background="#111922" BorderBrush="#22313B" BorderThickness="1" CornerRadius="12" Padding="16"><StackPanel Spacing="10"><TextBlock Text="源视频" Foreground="#F3F7FA" FontWeight="SemiBold" FontSize="15"/><TextBlock x:Name="InfoText" Text="尚未加载视频。" TextWrapping="Wrap" Foreground="#91A2AF" FontSize="12"/><TextBlock x:Name="HdrSourceText" Text="" Foreground="#FFCF70" FontSize="12" TextWrapping="Wrap"/><Grid ColumnDefinitions="*,Auto" ColumnSpacing="8"><TextBox x:Name="OutputBox" PlaceholderText="输出文件路径"/><Button Grid.Column="1" Content="另存为" Click="PickOutput_Click"/></Grid></StackPanel></Border>
+
+        <Border Background="#111922" BorderBrush="#22313B" BorderThickness="1" CornerRadius="12" Padding="16"><StackPanel Spacing="11"><TextBlock Text="DLSS NR" Foreground="#F3F7FA" FontWeight="SemiBold" FontSize="15"/><TextBlock Text="DLSS/NGX Render Preset（SR hint，非 RTX Video 超分）" Foreground="#91A2AF" FontSize="12"/><ComboBox x:Name="DlssPresetBox" SelectedIndex="0"><ComboBoxItem Tag="0" Content="Default · 默认行为（SDK 0）"/><ComboBoxItem Tag="10" Content="Preset J · 较少拖影，可能增加闪烁（SDK 10）"/><ComboBoxItem Tag="11" Content="Preset K · Transformer，最佳画质（SDK 11）"/><ComboBoxItem Tag="12" Content="Preset L · Ultra Performance 默认（SDK 12）"/><ComboBoxItem Tag="13" Content="Preset M · Performance 默认（SDK 13）"/></ComboBox><TextBlock Text="风格" Foreground="#91A2AF" FontSize="12"/><ComboBox x:Name="StyleBox" SelectedIndex="0"><ComboBoxItem Content="Default · 默认"/><ComboBoxItem Content="Natural · 自然"/><ComboBoxItem Content="Cinema · 电影"/></ComboBox><Grid ColumnDefinitions="*,Auto"><TextBlock Text="强度" Foreground="#91A2AF" VerticalAlignment="Center"/><TextBlock x:Name="IntensityValue" Grid.Column="1" Text="1.0×" Foreground="#5CE1E6"/></Grid><Slider x:Name="IntensitySlider" Minimum="0" Maximum="20" Value="1" TickFrequency="1" IsSnapToTickEnabled="True"/><Grid ColumnDefinitions="*,Auto"><TextBlock Text="局部色调" Foreground="#91A2AF"/><TextBlock x:Name="LocalToneValue" Grid.Column="1" Text="1.0×" Foreground="#B8F4F0"/></Grid><Slider x:Name="LocalToneSlider" Minimum="0" Maximum="20" Value="1" TickFrequency="1" IsSnapToTickEnabled="True"/><Grid ColumnDefinitions="*,Auto"><TextBlock Text="局部结构" Foreground="#91A2AF"/><TextBlock x:Name="LocalStructValue" Grid.Column="1" Text="1.0×" Foreground="#B8F4F0"/></Grid><Slider x:Name="LocalStructSlider" Minimum="0" Maximum="20" Value="1" TickFrequency="1" IsSnapToTickEnabled="True"/><Grid ColumnDefinitions="*,Auto"><TextBlock Text="皮肤结构" Foreground="#91A2AF"/><TextBlock x:Name="SkinValue" Grid.Column="1" Text="0.5×" Foreground="#B8F4F0"/></Grid><Slider x:Name="SkinSlider" Minimum="0" Maximum="20" Value="0.5" TickFrequency="0.5" IsSnapToTickEnabled="True"/><CheckBox x:Name="AutoMaskBox" Content="自动掩码（保护人脸与皮肤）"/></StackPanel></Border>
+
+        <Border Background="#111922" BorderBrush="#22313B" BorderThickness="1" CornerRadius="12" Padding="16"><StackPanel Spacing="11"><TextBlock Text="输出与滤镜" Foreground="#F3F7FA" FontWeight="SemiBold" FontSize="15"/><Grid ColumnDefinitions="*,8,*" RowDefinitions="Auto,Auto,Auto,Auto,Auto" RowSpacing="8"><StackPanel Grid.Column="0" Grid.Row="0" Spacing="4"><TextBlock Text="容器" Foreground="#91A2AF" FontSize="12"/><ComboBox x:Name="ContainerBox" SelectedIndex="0"><ComboBoxItem Content="MP4"/><ComboBoxItem Content="MKV"/><ComboBoxItem Content="MOV"/><ComboBoxItem Content="AVI"/><ComboBoxItem Content="GIF"/></ComboBox></StackPanel><StackPanel Grid.Column="2" Grid.Row="0" Spacing="4"><TextBlock Text="视频编码" Foreground="#91A2AF" FontSize="12"/><ComboBox x:Name="CodecBox" SelectedIndex="1"><ComboBoxItem Content="H.264 / AVC"/><ComboBoxItem Content="H.265 / HEVC"/><ComboBoxItem Content="AV1"/><ComboBoxItem Content="VP9"/><ComboBoxItem Content="MPEG-4"/></ComboBox></StackPanel><StackPanel Grid.Column="0" Grid.Row="1" Spacing="4"><TextBlock Text="硬件后端" Foreground="#91A2AF" FontSize="12"/><ComboBox x:Name="HardwareBox" SelectedIndex="1"><ComboBoxItem Content="CPU 软件编码"/><ComboBoxItem Content="NVIDIA NVENC"/><ComboBoxItem Content="Intel QSV"/><ComboBoxItem Content="AMD AMF"/></ComboBox></StackPanel><StackPanel Grid.Column="2" Grid.Row="1" Spacing="4"><TextBlock Text="编码预设" Foreground="#91A2AF" FontSize="12"/><ComboBox x:Name="EncoderPresetBox" SelectedIndex="2"><ComboBoxItem Content="P1 · 最快"/><ComboBoxItem Content="P3 · 快速"/><ComboBoxItem Content="P5 · 平衡"/><ComboBoxItem Content="P7 · 最高质量"/></ComboBox></StackPanel><StackPanel Grid.Column="0" Grid.Row="2" Spacing="4"><TextBlock Text="音频" Foreground="#91A2AF" FontSize="12"/><ComboBox x:Name="AudioBox" SelectedIndex="0"><ComboBoxItem Content="复制源音轨"/><ComboBoxItem Content="AAC"/><ComboBoxItem Content="MP3"/><ComboBoxItem Content="Opus"/><ComboBoxItem Content="Vorbis"/><ComboBoxItem Content="FLAC"/><ComboBoxItem Content="AC-3"/><ComboBoxItem Content="无音频"/></ComboBox></StackPanel><StackPanel Grid.Column="2" Grid.Row="2" Spacing="4"><TextBlock Text="质量 / CQ / CRF" Foreground="#91A2AF" FontSize="12"/><Grid ColumnDefinitions="*,Auto"><Slider x:Name="QualitySlider" Minimum="0" Maximum="51" Value="19" TickFrequency="1" IsSnapToTickEnabled="True"/><TextBlock x:Name="QualityValue" Grid.Column="1" Text="19" Margin="8,0,0,0" Foreground="#5CE1E6"/></Grid></StackPanel><StackPanel Grid.Column="0" Grid.Row="3" Spacing="4"><TextBlock Text="HDR 输出" Foreground="#91A2AF" FontSize="12"/><ComboBox x:Name="HdrBox" SelectedIndex="0"><ComboBoxItem Content="自动跟随源视频"/><ComboBoxItem Content="强制 HDR10 / PQ"/><ComboBoxItem Content="强制 SDR"/></ComboBox></StackPanel><StackPanel Grid.Column="2" Grid.Row="3" Spacing="4"><TextBlock Text="帧率" Foreground="#91A2AF" FontSize="12"/><ComboBox x:Name="FpsBox" SelectedIndex="0"><ComboBoxItem Content="跟随源视频"/><ComboBoxItem Content="固定 24 fps"/><ComboBoxItem Content="固定 30 fps"/><ComboBoxItem Content="固定 60 fps"/></ComboBox></StackPanel><StackPanel Grid.Column="0" Grid.Row="4" Spacing="4"><TextBlock Text="码率模式 / 目标码率" Foreground="#91A2AF" FontSize="12"/><Grid ColumnDefinitions="*,8,*"><ComboBox x:Name="RateControlBox" Grid.Column="0" SelectedIndex="0"><ComboBoxItem Content="质量优先"/><ComboBoxItem Content="固定码率"/></ComboBox><TextBox x:Name="VideoBitrateBox" Grid.Column="2" Text="8000" PlaceholderText="kbps"/></Grid><CheckBox x:Name="TwoPassBox" Content="软件编码启用两遍"/></StackPanel><StackPanel Grid.Column="2" Grid.Row="4" Spacing="4"><TextBlock Text="音频码率 / 增益" Foreground="#91A2AF" FontSize="12"/><Grid ColumnDefinitions="*,8,*"><TextBox x:Name="AudioBitrateBox" Grid.Column="0" Text="192" PlaceholderText="kbps"/><TextBox x:Name="AudioGainBox" Grid.Column="2" Text="0" PlaceholderText="dB"/></Grid></StackPanel></Grid><TextBlock Text="RTX Video Super Resolution" Foreground="#91A2AF" FontSize="12"/><ComboBox x:Name="SuperResolutionBox" SelectedIndex="0"><ComboBoxItem Tag="1" Content="关闭（原始分辨率）"/><ComboBoxItem Tag="2" Content="2×（RTX Video）"/><ComboBoxItem Tag="4" Content="4×（RTX Video）"/></ComboBox><TextBlock Text="处理顺序：RTX Video 超分 → DLSS NR → 编码；HDR 使用 10-bit 路径。" Foreground="#62727E" FontSize="11" TextWrapping="Wrap"/><TextBlock Text="缩放 / 降噪 / 去隔行" Foreground="#91A2AF" FontSize="12"/><Grid ColumnDefinitions="*,8,*"><ComboBox x:Name="ScaleBox" Grid.Column="0" SelectedIndex="0"><ComboBoxItem Content="保持原尺寸"/><ComboBoxItem Content="适应 1920×1080"/><ComboBoxItem Content="适应 2560×1440"/><ComboBoxItem Content="适应 3840×2160"/></ComboBox><ComboBox x:Name="DenoiseBox" Grid.Column="2" SelectedIndex="0"><ComboBoxItem Content="不降噪"/><ComboBoxItem Content="轻度降噪"/><ComboBoxItem Content="中度降噪"/><ComboBoxItem Content="强度降噪"/></ComboBox></Grid><ComboBox x:Name="DeinterlaceBox" SelectedIndex="0"><ComboBoxItem Content="不去隔行"/><ComboBoxItem Content="Yadif"/><ComboBoxItem Content="Bwdif"/></ComboBox><CheckBox x:Name="CropBox" Content="启用裁剪（上 / 下 / 左 / 右）"/><Grid ColumnDefinitions="*,8,*,8,*,8,*"><TextBox x:Name="CropTopBox" PlaceholderText="上"/><TextBox Grid.Column="2" x:Name="CropBottomBox" PlaceholderText="下"/><TextBox Grid.Column="4" x:Name="CropLeftBox" PlaceholderText="左"/><TextBox Grid.Column="6" x:Name="CropRightBox" PlaceholderText="右"/></Grid><TextBlock Text="GIF 参数（选择 GIF 容器时生效）" Foreground="#91A2AF" FontSize="12"/><Grid ColumnDefinitions="*,8,*" RowDefinitions="Auto,Auto" RowSpacing="6"><TextBox x:Name="GifWidthBox" Text="480" PlaceholderText="宽度"/><TextBox Grid.Column="2" x:Name="GifFpsBox" Text="15" PlaceholderText="fps"/><TextBox Grid.Row="1" x:Name="GifColorsBox" Text="256" PlaceholderText="颜色数"/><ComboBox Grid.Row="1" Grid.Column="2" x:Name="GifDitherBox" SelectedIndex="1"><ComboBoxItem Content="无抖动" Tag="none"/><ComboBoxItem Content="Bayer" Tag="bayer"/><ComboBoxItem Content="Floyd-Steinberg" Tag="floyd_steinberg"/><ComboBoxItem Content="Sierra2_4a" Tag="sierra2_4a"/></ComboBox></Grid></StackPanel></Border>
+
+        <Border Background="#111922" BorderBrush="#22313B" BorderThickness="1" CornerRadius="12" Padding="16"><StackPanel Spacing="10"><TextBlock Text="任务" Foreground="#F3F7FA" FontWeight="SemiBold" FontSize="15"/><CheckBox x:Name="FramesLimitBox" Content="仅处理前 60 帧（冒烟测试）"/><StackPanel Orientation="Horizontal" Spacing="8"><Button x:Name="StartButton" Content="开始转码" Click="Start_Click" Padding="18,9" Background="#2A9FA9" Foreground="#071014"/><Button x:Name="CancelButton" Content="取消" Click="Cancel_Click" IsEnabled="False" Padding="18,9"/></StackPanel><ProgressBar x:Name="Progress" Height="7" Minimum="0" Maximum="100"/><TextBlock x:Name="StatusText" Text="就绪。" Foreground="#91A2AF" TextWrapping="Wrap"/></StackPanel></Border>
+      </StackPanel></ScrollViewer>
+
+      <Grid Grid.Column="2" RowDefinitions="*,Auto,Auto" RowSpacing="12">
+        <Border Grid.Row="0" Background="#05080B" BorderBrush="#22313B" BorderThickness="1" CornerRadius="14" Padding="14">
+          <Grid RowDefinitions="Auto,*,Auto,Auto" RowSpacing="12">
+            <Grid Grid.Row="0" ColumnDefinitions="*,Auto">
+              <StackPanel Spacing="2">
+                <TextBlock Text="LIVE PREVIEW" Foreground="#5CE1E6" FontSize="12" FontWeight="SemiBold"/>
+                <TextBlock Text="双路实时帧 · 源视频与 DLSS NR 输出" Foreground="#6F818E" FontSize="11"/>
+              </StackPanel>
+              <TextBlock x:Name="LivePreviewText" Grid.Column="1" Text="等待源视频" Foreground="#91A2AF" FontSize="12" VerticalAlignment="Center"/>
+            </Grid>
+            <Grid Grid.Row="1" ColumnDefinitions="*,*" ColumnSpacing="12" MinHeight="300">
+              <Border Background="#0A1016" BorderBrush="#182630" BorderThickness="1" CornerRadius="8" Padding="8">
+                <Grid RowDefinitions="*,Auto">
+                  <Viewbox Grid.Row="0" Stretch="Uniform" HorizontalAlignment="Center" VerticalAlignment="Center">
+                    <Grid Width="640" Height="360" Background="#05080B">
+                      <Image x:Name="OriginalImage" Stretch="Uniform"/>
+                      <TextBlock x:Name="SourcePlaceholder" Text="等待转码帧" Foreground="#5F737F" FontSize="16" HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                      <TextBlock Text="SOURCE" Foreground="#B8F4F0" FontSize="11" HorizontalAlignment="Left" VerticalAlignment="Bottom" Margin="10,0,0,10"/>
+                    </Grid>
+                  </Viewbox>
+                  <TextBlock Grid.Row="1" Text="SOURCE · 原始视频" Foreground="#91A2AF" FontSize="11" Margin="2,8,2,0"/>
+                </Grid>
+              </Border>
+              <Border Grid.Column="1" Background="#0A1016" BorderBrush="#182630" BorderThickness="1" CornerRadius="8" Padding="8">
+                <Grid RowDefinitions="*,Auto">
+                  <Viewbox Grid.Row="0" Stretch="Uniform" HorizontalAlignment="Center" VerticalAlignment="Center">
+                    <Grid Width="640" Height="360" Background="#05080B">
+                      <Image x:Name="ProcessedImage" Stretch="Uniform"/>
+                      <TextBlock x:Name="OutputPlaceholder" Text="等待处理结果" Foreground="#5F737F" FontSize="16" HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                      <TextBlock Text="DLSS NR / OUTPUT" Foreground="#5CE1E6" FontSize="11" HorizontalAlignment="Left" VerticalAlignment="Bottom" Margin="10,0,0,10"/>
+                    </Grid>
+                  </Viewbox>
+                  <TextBlock Grid.Row="1" Text="DLSS NR / OUTPUT · 处理结果" Foreground="#91A2AF" FontSize="11" Margin="2,8,2,0"/>
+                </Grid>
+              </Border>
+            </Grid>
+            <Grid Grid.Row="2" ColumnDefinitions="Auto,Auto,Auto,*,Auto" ColumnSpacing="8">
+              <TextBlock Text="同步预览" Foreground="#5CE1E6" VerticalAlignment="Center" Margin="4,0"/>
+              <TextBlock Grid.Column="1" Text="SOURCE ↔ OUTPUT" Foreground="#91A2AF" VerticalAlignment="Center" Margin="4,0"/>
+              <TextBlock Grid.Column="2" Text="跟随处理帧" Foreground="#91A2AF" VerticalAlignment="Center" Margin="4,0"/>
+              <TextBlock Grid.Column="3" x:Name="PreviewFrameText" Text="等待转码" Foreground="#91A2AF" VerticalAlignment="Center" Margin="4,0"/>
+              <TextBlock Grid.Column="4" x:Name="PreviewTimeText" Text="00:00:00 / 00:00:00" Foreground="#91A2AF" VerticalAlignment="Center"/>
+            </Grid>
+            <Grid Grid.Row="3" ColumnDefinitions="*,Auto" ColumnSpacing="12">
+              <ProgressBar x:Name="PreviewProgress" Minimum="0" Maximum="100" Value="0" Height="6" VerticalAlignment="Center"/>
+              <TextBlock x:Name="PreviewFpsText" Grid.Column="1" Text="预览 — fps" Foreground="#91A2AF" FontSize="11" VerticalAlignment="Center"/>
+            </Grid>
+          </Grid>
+        </Border>
+        <Border Grid.Row="1" Background="#111922" BorderBrush="#22313B" BorderThickness="1" CornerRadius="12" Padding="14">
+          <Grid ColumnDefinitions="*,Auto,Auto,Auto" ColumnSpacing="18">
+            <TextBlock x:Name="PipelineStatus" Text="管线就绪 · 预览播放器待命" Foreground="#B8C7D1"/>
+            <TextBlock x:Name="FramesText" Grid.Column="1" Text="0 帧" Foreground="#91A2AF"/>
+            <TextBlock x:Name="SpeedText" Grid.Column="2" Text="— fps" Foreground="#91A2AF"/>
+            <TextBlock x:Name="OutputText" Grid.Column="3" Text="—" Foreground="#5CE1E6"/>
+          </Grid>
+        </Border>
+        <Border Grid.Row="2" Background="#070B0F" BorderBrush="#1B2932" BorderThickness="1" CornerRadius="10" Padding="10">
+          <Grid RowDefinitions="Auto,*">
+            <Grid ColumnDefinitions="*,Auto">
+              <TextBlock Text="运行日志" Foreground="#91A2AF" FontSize="12"/>
+              <Button Grid.Column="1" Content="清空" Click="ClearLog_Click" Padding="8,3"/>
+            </Grid>
+            <TextBox Grid.Row="1" x:Name="LogBox" IsReadOnly="True" TextWrapping="Wrap" AcceptsReturn="True" FontFamily="Consolas" FontSize="11" Background="Transparent" BorderThickness="0" Height="110"/>
+          </Grid>
+        </Border>
+      </Grid>
+    </Grid>    <TextBlock Grid.Row="3" Text="J/K/L/M 是 NVIDIA DLSS SR Render Preset；当前 NR 主机复用该 hint · RTX Video 超分可独立选择 2×/4× · HDR10/PQ 元数据会随输出写入" Foreground="#62727E" FontSize="11" />
+  </Grid>
+</Window>

@@ -1,0 +1,36 @@
+# Visual Studio / IDE state
+.vs/
+.vscode/
+*.suo
+*.user
+*.userosscache
+*.sln.docstates
+
+# Native build outputs and local import libraries
+*.exp
+*.lib
+*.pdb
+
+# Local runtime, logs and user-provided NVIDIA binaries
+runtime/*.dll
+runtime/*.log
+runtime/*.pdb
+
+# Local SDK checkout (headers/libs are downloaded separately for native builds)
+third_party/
+
+# 巨型二进制与用户自备组件（不入库，见 README 构建步骤）
+download/
+build/
+
+# 上游参考源码（只读克隆）
+_ref/
+
+# .NET
+bin/
+obj/
+*.user
+
+# 测试产物
+output_*.mp4
+compare_*.png

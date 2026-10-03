@@ -1,0 +1,32 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <AvaloniaUseCompiledBindingsByDefault>false</AvaloniaUseCompiledBindingsByDefault>
+    <Platforms>x64</Platforms>
+    <VersionPrefix>0.1.0</VersionPrefix>
+    <AssemblyName>Dlss5VideoEnc</AssemblyName>
+    <RootNamespace>Dlss5Demo.App</RootNamespace>
+    <!-- Disable the optional Avalonia build telemetry task in restricted/offline builds. -->
+    <UsedAvaloniaProducts></UsedAvaloniaProducts>
+    <DefaultItemExcludes>$(DefaultItemExcludes);**/obj/**;**/bin/**;**/build/**</DefaultItemExcludes>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Avalonia" Version="12.1.1" />
+    <PackageReference Include="Avalonia.Desktop" Version="12.1.1" />
+    <PackageReference Include="Avalonia.Fonts.Inter" Version="12.1.1" />
+    <PackageReference Include="FluentAvaloniaUI" Version="3.0.2" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\Dlss5Demo.Core\Dlss5Demo.Core.csproj" />
+    <None Include="..\..\runtime\av*.dll" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" Link="%(Filename)%(Extension)" />
+    <None Include="..\..\runtime\sw*.dll" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" Link="%(Filename)%(Extension)" />
+  </ItemGroup>
+
+</Project>
