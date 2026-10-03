@@ -22,6 +22,7 @@ third_party/
 # 巨型二进制与用户自备组件（不入库，见 README 构建步骤）
 download/
 build/
+dist/
 
 # 上游参考源码（只读克隆）
 _ref/

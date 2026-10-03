@@ -19,3 +19,13 @@ native\vsr_host\build.bat
 ```
 
 HDR 源使用 FFmpeg zscale 解码为 RGBA16F，VSR 使用 10-bit RGB 纹理，之后继续以 RGBA16F 交给 DLSS NR，最后转换回 10-bit RGBA 输入编码器。
+
+## 发布打包
+
+运行以下脚本会生成自带 .NET、FFmpeg、DLSS NR 和 RTX Video VSR 运行文件的 `win-x64` 目录和 ZIP。脚本读取本机 `runtime\`，这些 DLL 已被 Git 忽略：
+
+```powershell
+.\tools\package.ps1 -FfmpegDirectory G:\Tool\ffmpeg\bin
+```
+
+输出位于 `dist\`，每次使用时间戳目录。若已经为 `win-x64` 还原过依赖，可追加 `-NoRestore`。
