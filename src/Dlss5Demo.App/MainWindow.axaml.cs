@@ -49,6 +49,8 @@ public partial class MainWindow : Window
         };
         RuntimeBadge.Text = File.Exists(DemoPaths.RuntimeDllPath) ? "DLSS Runtime · ready" : "DLSS Runtime · missing";
         Log("就绪。DLSS 宿主: " + DemoPaths.HostDllPath);
+        Log($"DLSS 运行库: {DemoPaths.RuntimeDllPath}" +
+            (DemoPaths.RuntimeProfile is { } profile ? $" · GPU profile {profile}" : ""));
         Log(File.Exists(DemoPaths.VsrHostDllPath) && File.Exists(DemoPaths.VsrRuntimeDllPath)
             ? "RTX Video VSR: ready（可选 2×/4×）"
             : "RTX Video VSR: optional runtime missing（关闭选项仍可使用）");

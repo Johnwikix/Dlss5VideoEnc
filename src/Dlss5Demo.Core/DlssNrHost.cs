@@ -165,7 +165,8 @@ public sealed class DlssNrHost : IDisposable
             throw new FileNotFoundException("未找到 dlssnr_host_v2.dll。", hostDllPath);
         if (!File.Exists(runtimeDllPath))
             throw new FileNotFoundException(
-                "未找到 nvngx_dlssnr.dll。请按显卡系列（RTX 30/40/50）下载对应版本并放入 runtime 目录。",
+                "未找到 nvngx_dlssnr.dll。请按显卡系列（RTX 30/40/50）下载对应版本并放入 runtime、mods，" +
+                "或设置 DLSS5_NR_RUNTIME_DLL 指向匹配的 DLL。",
                 runtimeDllPath);
 
         options = NormalizeOptions(options);

@@ -28,6 +28,7 @@ Console.WriteLine($"输入: {input}");
 Console.WriteLine($"输出: {output}");
 Console.WriteLine($"宿主: {DemoPaths.HostDllPath}");
 Console.WriteLine($"运行库: {DemoPaths.RuntimeDllPath}");
+Console.WriteLine($"运行库配置: {DemoPaths.RuntimeProfile ?? "default"}");
 
 var adapters = DlssNrHost.EnumerateAdapters(DemoPaths.HostDllPath);
 foreach (var adapter in adapters)

@@ -13,8 +13,10 @@
 
 # Local runtime, logs and user-provided NVIDIA binaries
 runtime/*.dll
+runtime/*/*.dll
 runtime/*.log
 runtime/*.pdb
+mods/*.dll
 
 # Local SDK checkout (headers/libs are downloaded separately for native builds)
 third_party/

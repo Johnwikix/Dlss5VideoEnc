@@ -73,6 +73,17 @@ New-Item -ItemType Directory -Path $runtimeDestination, $licenseDestination -For
 foreach ($name in $nativeNames) {
     Copy-Item -LiteralPath (Join-Path $runtimeSource $name) -Destination $runtimeDestination
 }
+# 可选地携带按显卡代际放置的运行库。默认 DLL 仍放在 runtime 根目录，
+# 用户可通过 DLSS5_GPU_SERIES 在 30/40/50 子目录之间选择。
+foreach ($series in @('30', '40', '50')) {
+    $profileSource = Join-Path $runtimeSource $series
+    $profileDll = Join-Path $profileSource 'nvngx_dlssnr.dll'
+    if (Test-Path -LiteralPath $profileDll -PathType Leaf) {
+        $profileDestination = Join-Path $runtimeDestination $series
+        New-Item -ItemType Directory -Path $profileDestination -Force | Out-Null
+        Copy-Item -LiteralPath $profileDll -Destination $profileDestination
+    }
+}
 # Shared FFmpeg builds need their matching DLLs beside ffmpeg.exe/ffprobe.exe.
 Get-ChildItem -LiteralPath $FfmpegDirectory -Filter '*.dll' -File |
     Copy-Item -Destination $packageDirectory -Force
@@ -102,6 +113,8 @@ Dlss5VideoEnc
 解压后启动 Dlss5VideoEnc.exe。请保留整个目录结构。
 应用已包含 .NET、FFmpeg、DLSS NR 和 RTX Video VSR 运行文件。
 RTX Video 2x/4x 需要兼容的 NVIDIA GPU 与驱动。
+DLSS NR 运行库必须匹配 RTX 代际；可设置 DLSS5_GPU_SERIES=30、40 或 50，或使用 mods\nvngx_dlssnr.dll 覆盖。
+AMD/Intel 的 OpenDLSS-NR 后端当前未接入，AMD/Intel 仅用于 FFmpeg AMF/QSV 编码。
 NVIDIA 组件仍遵循 licenses\NVIDIA_RTX_Video_SDK_License.pdf 中的许可。
 本应用使用 NVIDIA RTX Video SDK。第三方文件不受本项目源码许可覆盖。
 FFmpeg 来源和完整编译配置记录在 FFmpeg_VERSION.txt 中。
