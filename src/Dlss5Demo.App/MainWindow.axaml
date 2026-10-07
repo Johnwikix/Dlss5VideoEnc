@@ -1,6 +1,7 @@
 <Window xmlns="https://github.com/avaloniaui"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         x:Class="Dlss5Demo.App.MainWindow"
+        Icon="/Assets/dlss5-video-enc.png"
         Title="DLSS5 Video Enc"
         Width="1440" Height="920" MinWidth="1120" MinHeight="720"
         WindowStartupLocation="CenterScreen"
