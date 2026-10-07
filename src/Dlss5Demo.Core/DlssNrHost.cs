@@ -5,9 +5,6 @@ namespace Dlss5Demo.Core;
 /// <summary>DLSS NR 外观参数（对应上游 dlss5tool 的公开设置）。</summary>
 public sealed record DlssNrOptions
 {
-    /// <summary>NVIDIA NGX 的 Render Preset hint；J/K/L/M 原本属于 DLSS SR，当前 NR 主机复用该 hint。</summary>
-    public int Preset { get; init; } = 0;
-
     /// <summary>风格索引（0 起，由运行库定义）。</summary>
     public int Style { get; init; }
 
@@ -45,6 +42,7 @@ public sealed class DlssNrHost : IDisposable
 {
     private const string DllName = "dlssnr_host_v2.dll";
     private const int NvidiaVendorId = 0x10DE;
+    private const int DefaultRuntimeHint = 0;
     private const uint AdapterSoftware = 1u;
     private const uint AdapterD3D12Level11 = 2u;
 
@@ -175,17 +173,17 @@ public sealed class DlssNrHost : IDisposable
         {
             if (hdr)
                 dlssnr_configure_format(1, colorTransfer.Equals("arib-std-b67", StringComparison.OrdinalIgnoreCase) ? 3 : 2);
-            // preset 需在 create 之前推送（上游要求）。
-            dlssnr_set_options(options.Preset, options.Style, options.Intensity,
+            // 运行库要求在 create 之前推送默认 hint；NR 不暴露 SR preset 选择。
+            dlssnr_set_options(DefaultRuntimeHint, options.Style, options.Intensity,
                 options.LocalTone, options.LocalStructure, options.SkinStructure,
                 options.UseAutoMask ? 1 : 0, 0, 0, 2, 1.0f, 1.0f);
-            if (dlssnr_init(width, height, options.Preset, runtimeDllPath, logPath) == 0)
+            if (dlssnr_init(width, height, DefaultRuntimeHint, runtimeDllPath, logPath) == 0)
             {
                 var tail = ReadLogTail(logPath, 1200);
                 throw new InvalidOperationException(
                     "dlssnr_init 失败（D3D12 / NGX 初始化被拒绝）。dlss_run.log 末尾：\n" + tail);
             }
-            if (dlssnr_create_feature(width, height, options.Preset) == 0)
+            if (dlssnr_create_feature(width, height, DefaultRuntimeHint) == 0)
             {
                 var tail = ReadLogTail(logPath, 1200);
                 throw new InvalidOperationException("创建 Feature 18 失败。dlss_run.log 末尾：\n" + tail);
@@ -208,7 +206,7 @@ public sealed class DlssNrHost : IDisposable
         ObjectDisposedException.ThrowIf(_disposed, this);
         options = NormalizeOptions(options);
         _options = options;
-        dlssnr_set_options(options.Preset, options.Style, options.Intensity,
+        dlssnr_set_options(DefaultRuntimeHint, options.Style, options.Intensity,
             options.LocalTone, options.LocalStructure, options.SkinStructure,
             options.UseAutoMask ? 1 : 0, 0, 0, 2, 1.0f, 1.0f);
     }

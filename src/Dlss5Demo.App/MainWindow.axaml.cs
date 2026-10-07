@@ -1,5 +1,6 @@
 using Avalonia;
 using Avalonia.Controls;
+using Avalonia.Input;
 using Avalonia.Interactivity;
 using Avalonia.Media.Imaging;
 using Avalonia.Platform;
@@ -31,6 +32,12 @@ public partial class MainWindow : Window
     public MainWindow()
     {
         InitializeComponent();
+        DragDrop.SetAllowDrop(this, true);
+        DragDrop.SetAllowDrop(InputBox, true);
+        DragDrop.AddDragOverHandler(this, OnDragOver);
+        DragDrop.AddDropHandler(this, OnDrop);
+        DragDrop.AddDragOverHandler(InputBox, OnDragOver);
+        DragDrop.AddDropHandler(InputBox, OnDrop);
         _sourceSurface = new PreviewSurface(OriginalImage);
         _outputSurface = new PreviewSurface(ProcessedImage);
         _previewRenderTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(16) };
@@ -133,6 +140,52 @@ public partial class MainWindow : Window
         });
     }
 
+    private static readonly HashSet<string> VideoExtensions = new(StringComparer.OrdinalIgnoreCase)
+    {
+        ".mp4", ".mkv", ".mov", ".m4v", ".avi", ".ts", ".webm",
+    };
+
+    private static string? GetDroppedVideoPath(DragEventArgs e)
+    {
+        var files = e.DataTransfer.TryGetFiles();
+        if (files is null)
+            return null;
+
+        foreach (var file in files)
+        {
+            var path = file.TryGetLocalPath();
+            if (!string.IsNullOrWhiteSpace(path) &&
+                VideoExtensions.Contains(Path.GetExtension(path)))
+                return path;
+        }
+        return null;
+    }
+
+    private void OnDragOver(object? sender, DragEventArgs e)
+    {
+        e.DragEffects = GetDroppedVideoPath(e) is not null
+            ? DragDropEffects.Copy
+            : DragDropEffects.None;
+        e.Handled = true;
+    }
+
+    private void OnDrop(object? sender, DragEventArgs e)
+    {
+        var path = GetDroppedVideoPath(e);
+        if (path is null)
+        {
+            StatusText.Text = "请拖入视频文件（MP4 / MKV / MOV / TS / WebM）。";
+            Log("拖入内容不是受支持的视频文件。");
+            e.Handled = true;
+            return;
+        }
+
+        InputBox.Text = path;
+        StatusText.Text = "已载入拖入的视频，正在探测…";
+        Log("已通过拖放载入: " + Path.GetFileName(path));
+        e.Handled = true;
+    }
+
     private async void OnInputTextChanged(object? sender, TextChangedEventArgs e)
     {
         var generation = ++_probeGeneration;
@@ -198,11 +251,8 @@ public partial class MainWindow : Window
 
     private DlssNrOptions CollectDlssOptions()
     {
-        var preset = 0;
-        if (DlssPresetBox.SelectedItem is ComboBoxItem item) int.TryParse(item.Tag?.ToString(), out preset);
         return new DlssNrOptions
         {
-            Preset = preset,
             Style = StyleBox.SelectedIndex,
             Intensity = (float)IntensitySlider.Value,
             LocalTone = (float)LocalToneSlider.Value,
@@ -288,7 +338,7 @@ public partial class MainWindow : Window
         _lastOutputPath = output; OutputBox.Text = output;
         var srLabel = options.SuperResolutionScale > 1 ? $"RTX Video {options.SuperResolutionScale}× → " : "";
         PipelineStatus.Text = $"{srLabel}DLSS NR 正在处理帧…";
-        Log($"开始转码: {Path.GetFileName(input)} → {Path.GetFileName(output)} · {options.VideoEncoder} · {srLabel}DLSS NR {options.Dlss.Preset}");
+        Log($"开始转码: {Path.GetFileName(input)} → {Path.GetFileName(output)} · {options.VideoEncoder} · {srLabel}DLSS NR");
         try
         {
             var progress = new Progress<TranscodeProgress>(update =>
