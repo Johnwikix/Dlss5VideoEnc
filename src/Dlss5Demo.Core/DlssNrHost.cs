@@ -188,6 +188,7 @@ public sealed class DlssNrHost : IDisposable
                 var tail = ReadLogTail(logPath, 1200);
                 throw new InvalidOperationException("创建 Feature 18 失败。dlss_run.log 末尾：\n" + tail);
             }
+            PipelineLog.Info($"NGX NR 会话已创建: {width}×{height} hdr={hdr}");
             return new DlssNrHost(library, width, height) { _options = options };
         }
         catch
@@ -268,6 +269,7 @@ public sealed class DlssNrHost : IDisposable
             return;
         _disposed = true;
         try { dlssnr_shutdown(); } catch { /* 关闭阶段尽力而为 */ }
+        PipelineLog.Info("NGX NR 会话已释放。");
         if (_library != IntPtr.Zero)
         {
             NativeLibrary.Free(_library);

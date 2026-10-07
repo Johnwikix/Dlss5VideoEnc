@@ -64,6 +64,7 @@ public sealed class RtxVideoSuperResolutionHost : IDisposable
                     "RTX Video Super Resolution 初始化失败。" +
                     (string.IsNullOrWhiteSpace(tail) ? "" : "\nVSR 日志末尾：\n" + tail));
             }
+            PipelineLog.Info($"RTX VSR 会话已创建: {width}×{height} → {width * scale}×{height * scale} hdr={hdr}");
             return new RtxVideoSuperResolutionHost(library, width, height, scale, hdr);
         }
         catch
@@ -106,6 +107,7 @@ public sealed class RtxVideoSuperResolutionHost : IDisposable
         if (_disposed) return;
         _disposed = true;
         try { vsr_shutdown(); } catch { }
+        PipelineLog.Info("RTX VSR 会话已释放。");
         if (_library != IntPtr.Zero)
         {
             NativeLibrary.Free(_library);

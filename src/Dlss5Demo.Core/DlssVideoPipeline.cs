@@ -51,12 +51,55 @@ public static class DlssVideoPipeline
 {
     private static readonly TimeSpan ProgressInterval = TimeSpan.FromMilliseconds(500);
 
+    /// <summary>
+    /// NGX 宿主是进程级单例状态（重复 init 会崩溃、调用须串行化）：
+    /// 上一会话 shutdown 完成前不允许下一次 init，整条管线在此门上串行。
+    /// </summary>
+    private static readonly SemaphoreSlim PipelineGate = new(1, 1);
+
     public static async Task<TranscodeResult> RunAsync(
         string inputPath, string outputPath, TranscodeOptions options,
         IProgress<TranscodeProgress>? progress = null, CancellationToken cancellationToken = default)
     {
+        await PipelineGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            var result = await RunCoreAsync(inputPath, outputPath, options, progress, cancellationToken).ConfigureAwait(false);
+            PipelineLog.Info($"管线完成: {result.FramesProcessed} 帧 · {result.AverageFps:0.0} fps → {outputPath}");
+            return result;
+        }
+        catch (OperationCanceledException)
+        {
+            PipelineLog.Info("管线已取消。");
+            throw;
+        }
+        catch (Exception ex) when (cancellationToken.IsCancellationRequested)
+        {
+            // 取消回调会杀掉两个 ffmpeg 子进程：随后的管道破裂（“管道已结束”）
+            // 和 ExitCode 校验失败都是取消的连带产物，统一归并为取消，
+            // 不能当成转码失败报告给 UI。
+            PipelineLog.Info($"取消时归并 {ex.GetType().Name}: {ex.Message.Split('\n')[0]}");
+            throw new OperationCanceledException("转码已取消。", ex, cancellationToken);
+        }
+        catch (Exception ex)
+        {
+            PipelineLog.Info($"管线失败: {ex.GetType().Name}: {ex.Message.Split('\n')[0]}");
+            throw;
+        }
+        finally
+        {
+            PipelineGate.Release();
+        }
+    }
+
+    private static async Task<TranscodeResult> RunCoreAsync(
+        string inputPath, string outputPath, TranscodeOptions options,
+        IProgress<TranscodeProgress>? progress, CancellationToken cancellationToken)
+    {
         if (!File.Exists(inputPath))
             throw new FileNotFoundException("输入视频不存在。", inputPath);
+
+        PipelineLog.Info($"管线开始: {Path.GetFileName(inputPath)} → {Path.GetFileName(outputPath)} · {options.VideoEncoder}");
 
         var video = MediaProbe.Probe(inputPath, DemoPaths.FfprobePath);
         var scale = RtxVideoSuperResolutionHost.NormalizeScale(options.SuperResolutionScale);
@@ -69,7 +112,7 @@ public static class DlssVideoPipeline
             : video.FrameCount;
 
         if (options.Video.TwoPassEnabled && IsTwoPassSupported(options.Video))
-            return await RunTwoPassAsync(inputPath, outputPath, options, video, totalFrames, progress, cancellationToken);
+            return await RunTwoPassAsync(inputPath, outputPath, options, video, totalFrames, progress, cancellationToken).ConfigureAwait(false);
 
         using var vsr = CreateVsr(options, plan, video);
         using var host = DlssNrHost.Create(
@@ -93,7 +136,7 @@ public static class DlssVideoPipeline
         var outcome = await Task.Run(() => RunFrameLoop(
             decoder, encoder, host, vsr, plan, totalFrames, options.LogPath, progress,
             options.EnablePreviewFrames ? options.PreviewSink : null,
-            options.PreviewFramesPerSecond, video.Fps, cancellationToken));
+            options.PreviewFramesPerSecond, video.Fps, cancellationToken)).ConfigureAwait(false);
 
         var outputInfo = new FileInfo(outputPath);
         return new TranscodeResult
@@ -169,7 +212,7 @@ public static class DlssVideoPipeline
                 outcome = await Task.Run(() => RunFrameStream(
                     decoder, raw, host, vsr, plan, totalFrames, options.LogPath,
                     progress, options.EnablePreviewFrames ? options.PreviewSink : null,
-                    options.PreviewFramesPerSecond, video.Fps, cancellationToken));
+                    options.PreviewFramesPerSecond, video.Fps, cancellationToken)).ConfigureAwait(false);
                 decoder.Process.WaitForExit(30_000);
                 if (decoder.Process.ExitCode != 0)
                     throw new InvalidOperationException("ffmpeg 解码失败：\n" + decoder.ErrorTail);
@@ -177,10 +220,10 @@ public static class DlssVideoPipeline
 
             await RunPassAsync(options.FfmpegPath,
                 EncoderArguments(inputPath, outputPath, options, video,
-                    plan.ProcessWidth, plan.ProcessHeight, plan.Hdr, rawPath, 1, passLog), cancellationToken);
+                    plan.ProcessWidth, plan.ProcessHeight, plan.Hdr, rawPath, 1, passLog), cancellationToken).ConfigureAwait(false);
             await RunPassAsync(options.FfmpegPath,
                 EncoderArguments(inputPath, outputPath, options, video,
-                    plan.ProcessWidth, plan.ProcessHeight, plan.Hdr, rawPath, 2, passLog), cancellationToken);
+                    plan.ProcessWidth, plan.ProcessHeight, plan.Hdr, rawPath, 2, passLog), cancellationToken).ConfigureAwait(false);
 
             started.Stop();
             var outputInfo = new FileInfo(outputPath);
@@ -206,7 +249,7 @@ public static class DlssVideoPipeline
         CancellationToken cancellationToken)
     {
         await using var process = new CommandDrain("ffmpeg-pass", ffmpegPath, arguments);
-        await process.WaitForExitAsync(cancellationToken);
+        await process.WaitForExitAsync(cancellationToken).ConfigureAwait(false);
         if (process.Process.ExitCode != 0)
             throw new InvalidOperationException("ffmpeg 两遍编码失败：\n" + process.ErrorTail);
     }
@@ -660,12 +703,12 @@ public static class DlssVideoPipeline
                 {
                     Process.Kill(entireProcessTree: true);
                     await Process.WaitForExitAsync(CancellationToken.None).WaitAsync(
-                        TimeSpan.FromSeconds(10));
+                        TimeSpan.FromSeconds(10)).ConfigureAwait(false);
                 }
             }
             catch { /* 清理阶段忽略 */ }
             // 某些 FFmpeg 构建在进程退出后仍会保持 stderr 管道句柄；不能让 UI 永久卡在清理阶段。
-            try { await _drainTask.WaitAsync(TimeSpan.FromSeconds(2)); } catch (TimeoutException) { }
+            try { await _drainTask.WaitAsync(TimeSpan.FromSeconds(2)).ConfigureAwait(false); } catch (TimeoutException) { }
             Process.Dispose();
         }
     }

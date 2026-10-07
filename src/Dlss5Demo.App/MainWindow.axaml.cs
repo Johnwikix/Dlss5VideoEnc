@@ -20,6 +20,10 @@ public partial class MainWindow : Window
     private string? _lastOutputPath;
     private TranscodePreviewBuffer? _previewBuffer;
     private VideoInfo? _activeVideo;
+    /// <summary>内层管线任务：清理（NGX shutdown、ffmpeg 回收）完成即结束，不依赖 UI 线程。</summary>
+    private Task? _pipelineTask;
+    /// <summary>任务代数：旧任务的收尾 UI 写入不得覆盖新任务的状态。</summary>
+    private int _runGeneration;
     private readonly LatestProgress _latestProgress = new();
     private readonly Stopwatch _previewRate = new();
     private int _renderedPreviewFrames;
@@ -28,6 +32,9 @@ public partial class MainWindow : Window
     private readonly PreviewSurface _sourceSurface;
     private readonly PreviewSurface _outputSurface;
     private readonly DispatcherTimer _previewRenderTimer;
+
+    /// <summary>当前管线任务；窗口关闭后用于等待 native 清理完成再退进程。</summary>
+    public Task PipelineTask => _pipelineTask ?? Task.CompletedTask;
 
     public MainWindow()
     {
@@ -45,8 +52,7 @@ public partial class MainWindow : Window
         _previewRenderTimer.Start();
         Closed += MainWindow_Closed;
         SizeChanged += (_, _) => LogBox.Height = Height < 800 ? 70 : 110;
-        InputBox.Text = Environment.GetEnvironmentVariable("DLSS5_INPUT") ?? "";
-        AttachValueLabel(IntensitySlider, IntensityValue);
+        InputBox.Text = Environment.GetEnvironmentVariable("DLSS5_INPUT") ?? "";        AttachValueLabel(IntensitySlider, IntensityValue);
         AttachValueLabel(LocalToneSlider, LocalToneValue);
         AttachValueLabel(LocalStructSlider, LocalStructValue);
         AttachValueLabel(SkinSlider, SkinValue);
@@ -132,6 +138,7 @@ public partial class MainWindow : Window
 
     private void Log(string message)
     {
+        Serilog.Log.Information("UI {Message}", message);
         var line = $"[{DateTime.Now:HH:mm:ss}] {message}";
         Dispatcher.UIThread.Post(() =>
         {
@@ -312,7 +319,20 @@ public partial class MainWindow : Window
         if (string.IsNullOrWhiteSpace(output)) output = Path.Combine(Path.GetDirectoryName(input) ?? ".", Path.GetFileNameWithoutExtension(input) + "_dlss5.mp4");
         Directory.CreateDirectory(Path.GetDirectoryName(Path.GetFullPath(output)) ?? ".");
 
-        _cancellationTokenSource?.Cancel();
+        // NGX 宿主是进程级单例状态：必须等上一任务完全清理（shutdown + ffmpeg 回收）
+        // 后才能开新会话，否则并发 init/shutdown 会导致新任务速度异常甚至闪退。
+        if (_pipelineTask is { } previous && !previous.IsCompleted)
+        {
+            _cancellationTokenSource?.Cancel();
+            StatusText.Text = "正在停止上一任务…";
+            Log("等待上一任务清理完成…");
+            try { await previous; } catch { }
+        }
+        _cancellationTokenSource?.Dispose();
+        _cancellationTokenSource = null;
+        _pipelineTask = null;
+        var generation = ++_runGeneration;
+
         ResetPreview();
         _activeVideo = _video;
         _previewBuffer = new TranscodePreviewBuffer(960, 540);
@@ -345,15 +365,28 @@ public partial class MainWindow : Window
             {
                 _latestProgress.Publish(update);
             });
-            var result = await DlssVideoPipeline.RunAsync(input, output, options, progress, token);
+            var runTask = DlssVideoPipeline.RunAsync(input, output, options, progress, token);
+            _pipelineTask = runTask;
+            var result = await runTask;
             Progress.Value = 100; CompareButton.IsEnabled = File.Exists(output); OutputText.Text = $"{result.OutputBytes / 1048576.0:0.0} MiB";
             StatusText.Text = $"完成 · {result.FramesProcessed} 帧 · {result.AverageFps:0.0} fps"; PipelineStatus.Text = "转码完成 · 输出可实时播放";
             Log($"完成: {result.FramesProcessed} 帧，输出 {result.OutputBytes / 1048576.0:0.0} MiB");
             LivePreviewText.Text = "完成 · 停留在最后一帧";
         }
-        catch (OperationCanceledException) { StatusText.Text = "已取消。"; PipelineStatus.Text = "任务已取消"; Log("用户取消。"); }
-        catch (Exception error) { StatusText.Text = "失败: " + error.Message.Split('\n')[0]; PipelineStatus.Text = "转码失败"; Log("失败: " + error); }
-        finally { StartButton.IsEnabled = true; CancelButton.IsEnabled = false; }
+        catch (OperationCanceledException)
+        {
+            if (generation == _runGeneration) { StatusText.Text = "已取消。"; PipelineStatus.Text = "任务已取消"; }
+            Log("用户取消。");
+        }
+        catch (Exception error)
+        {
+            if (generation == _runGeneration) { StatusText.Text = "失败: " + error.Message.Split('\n')[0]; PipelineStatus.Text = "转码失败"; }
+            Log("失败: " + error);
+        }
+        finally
+        {
+            if (generation == _runGeneration) { StartButton.IsEnabled = true; CancelButton.IsEnabled = false; }
+        }
     }
 
     private void Cancel_Click(object? sender, RoutedEventArgs e) { _cancellationTokenSource?.Cancel(); StatusText.Text = "正在取消…"; }
