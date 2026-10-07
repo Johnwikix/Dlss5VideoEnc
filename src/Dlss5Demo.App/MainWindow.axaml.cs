@@ -24,6 +24,7 @@ public partial class MainWindow : Window
     private Task? _pipelineTask;
     /// <summary>任务代数：旧任务的收尾 UI 写入不得覆盖新任务的状态。</summary>
     private int _runGeneration;
+    private readonly AppSettings _settings;
     private readonly LatestProgress _latestProgress = new();
     private readonly Stopwatch _previewRate = new();
     private int _renderedPreviewFrames;
@@ -52,7 +53,8 @@ public partial class MainWindow : Window
         _previewRenderTimer.Start();
         Closed += MainWindow_Closed;
         SizeChanged += (_, _) => LogBox.Height = Height < 800 ? 70 : 110;
-        InputBox.Text = Environment.GetEnvironmentVariable("DLSS5_INPUT") ?? "";        AttachValueLabel(IntensitySlider, IntensityValue);
+        _settings = AppSettingsStore.Load();
+        AttachValueLabel(IntensitySlider, IntensityValue);
         AttachValueLabel(LocalToneSlider, LocalToneValue);
         AttachValueLabel(LocalStructSlider, LocalStructValue);
         AttachValueLabel(SkinSlider, SkinValue);
@@ -60,6 +62,11 @@ public partial class MainWindow : Window
         {
             if (args.Property.Name == nameof(Slider.Value)) QualityValue.Text = ((int)QualitySlider.Value).ToString(CultureInfo.InvariantCulture);
         };
+        ApplySettings();
+        // 环境变量优先于持久化设置（自动化覆盖手工配置）。
+        var inputOverride = Environment.GetEnvironmentVariable("DLSS5_INPUT");
+        if (!string.IsNullOrWhiteSpace(inputOverride) || _settings.InputPath.Length > 0)
+            InputBox.Text = string.IsNullOrWhiteSpace(inputOverride) ? _settings.InputPath : inputOverride;
         RuntimeBadge.Text = File.Exists(DemoPaths.RuntimeDllPath) ? "DLSS Runtime · ready" : "DLSS Runtime · missing";
         Log("就绪。DLSS 宿主: " + DemoPaths.HostDllPath);
         Log($"DLSS 运行库: {DemoPaths.RuntimeDllPath}" +
@@ -74,11 +81,95 @@ public partial class MainWindow : Window
     {
         _closed = true;
         _previewRenderTimer.Stop();
+        AppSettingsStore.Save(CaptureSettings());
         _cancellationTokenSource?.Cancel();
         _previewBuffer?.Dispose();
         _sourceSurface.Dispose();
         _outputSurface.Dispose();
     }
+
+    /// <summary>把控件状态写回设置模型（保存于开始转码与窗口关闭时）。</summary>
+    private AppSettings CaptureSettings() => new()
+    {
+        InputPath = InputBox.Text?.Trim().Trim('"') ?? "",
+        OutputPath = OutputBox.Text?.Trim().Trim('"') ?? "",
+        DlssStyle = StyleBox.SelectedIndex,
+        DlssIntensity = IntensitySlider.Value,
+        DlssLocalTone = LocalToneSlider.Value,
+        DlssLocalStructure = LocalStructSlider.Value,
+        DlssSkinStructure = SkinSlider.Value,
+        DlssUseAutoMask = AutoMaskBox.IsChecked == true,
+        SuperResolutionIndex = SuperResolutionBox.SelectedIndex,
+        ContainerIndex = ContainerBox.SelectedIndex,
+        CodecIndex = CodecBox.SelectedIndex,
+        HardwareIndex = HardwareBox.SelectedIndex,
+        EncoderPresetIndex = EncoderPresetBox.SelectedIndex,
+        AudioIndex = AudioBox.SelectedIndex,
+        Quality = (int)QualitySlider.Value,
+        HdrIndex = HdrBox.SelectedIndex,
+        FpsIndex = FpsBox.SelectedIndex,
+        RateControlIndex = RateControlBox.SelectedIndex,
+        VideoBitrateKbps = Int(VideoBitrateBox.Text),
+        TwoPass = TwoPassBox.IsChecked == true,
+        AudioBitrateKbps = Int(AudioBitrateBox.Text),
+        AudioGainDb = Double(AudioGainBox.Text),
+        ScaleIndex = ScaleBox.SelectedIndex,
+        DenoiseIndex = DenoiseBox.SelectedIndex,
+        DeinterlaceIndex = DeinterlaceBox.SelectedIndex,
+        CropEnabled = CropBox.IsChecked == true,
+        CropTop = Int(CropTopBox.Text),
+        CropBottom = Int(CropBottomBox.Text),
+        CropLeft = Int(CropLeftBox.Text),
+        CropRight = Int(CropRightBox.Text),
+        GifWidth = Int(GifWidthBox.Text),
+        GifFps = Int(GifFpsBox.Text),
+        GifMaxColors = Int(GifColorsBox.Text),
+        GifDitherIndex = GifDitherBox.SelectedIndex,
+        FramesLimit = FramesLimitBox.IsChecked == true,
+    };
+
+    /// <summary>恢复控件状态；索引夹到合法范围、Slider 由控件自身夹取，坏配置不致崩溃。</summary>
+    private void ApplySettings()
+    {
+        Select(StyleBox, _settings.DlssStyle);
+        IntensitySlider.Value = _settings.DlssIntensity;
+        LocalToneSlider.Value = _settings.DlssLocalTone;
+        LocalStructSlider.Value = _settings.DlssLocalStructure;
+        SkinSlider.Value = _settings.DlssSkinStructure;
+        AutoMaskBox.IsChecked = _settings.DlssUseAutoMask;
+        Select(SuperResolutionBox, _settings.SuperResolutionIndex);
+        Select(ContainerBox, _settings.ContainerIndex);
+        Select(CodecBox, _settings.CodecIndex);
+        Select(HardwareBox, _settings.HardwareIndex);
+        Select(EncoderPresetBox, _settings.EncoderPresetIndex);
+        Select(AudioBox, _settings.AudioIndex);
+        QualitySlider.Value = _settings.Quality;
+        Select(HdrBox, _settings.HdrIndex);
+        Select(FpsBox, _settings.FpsIndex);
+        Select(RateControlBox, _settings.RateControlIndex);
+        VideoBitrateBox.Text = _settings.VideoBitrateKbps.ToString(CultureInfo.InvariantCulture);
+        TwoPassBox.IsChecked = _settings.TwoPass;
+        AudioBitrateBox.Text = _settings.AudioBitrateKbps.ToString(CultureInfo.InvariantCulture);
+        AudioGainBox.Text = _settings.AudioGainDb.ToString(CultureInfo.InvariantCulture);
+        Select(ScaleBox, _settings.ScaleIndex);
+        Select(DenoiseBox, _settings.DenoiseIndex);
+        Select(DeinterlaceBox, _settings.DeinterlaceIndex);
+        CropBox.IsChecked = _settings.CropEnabled;
+        CropTopBox.Text = _settings.CropTop > 0 ? _settings.CropTop.ToString(CultureInfo.InvariantCulture) : "";
+        CropBottomBox.Text = _settings.CropBottom > 0 ? _settings.CropBottom.ToString(CultureInfo.InvariantCulture) : "";
+        CropLeftBox.Text = _settings.CropLeft > 0 ? _settings.CropLeft.ToString(CultureInfo.InvariantCulture) : "";
+        CropRightBox.Text = _settings.CropRight > 0 ? _settings.CropRight.ToString(CultureInfo.InvariantCulture) : "";
+        GifWidthBox.Text = _settings.GifWidth.ToString(CultureInfo.InvariantCulture);
+        GifFpsBox.Text = _settings.GifFps.ToString(CultureInfo.InvariantCulture);
+        GifColorsBox.Text = _settings.GifMaxColors.ToString(CultureInfo.InvariantCulture);
+        Select(GifDitherBox, _settings.GifDitherIndex);
+        FramesLimitBox.IsChecked = _settings.FramesLimit;
+        if (_settings.OutputPath.Length > 0)
+            OutputBox.Text = _settings.OutputPath;
+    }
+
+    private static void Select(ComboBox box, int index)
+        => box.SelectedIndex = box.ItemCount > 0 ? Math.Clamp(index, 0, box.ItemCount - 1) : -1;
 
     private void RenderPreviewFrames(object? sender, EventArgs e)
     {
@@ -356,6 +447,8 @@ public partial class MainWindow : Window
             PreviewFramesPerSecond = 60, PreviewSink = _previewBuffer,
         };
         _lastOutputPath = output; OutputBox.Text = output;
+        // 转码定参即落盘：之后即使闪退，配置也不丢（窗口关闭时还会再存一次）。
+        AppSettingsStore.Save(CaptureSettings());
         var srLabel = options.SuperResolutionScale > 1 ? $"RTX Video {options.SuperResolutionScale}× → " : "";
         PipelineStatus.Text = $"{srLabel}DLSS NR 正在处理帧…";
         Log($"开始转码: {Path.GetFileName(input)} → {Path.GetFileName(output)} · {options.VideoEncoder} · {srLabel}DLSS NR");
