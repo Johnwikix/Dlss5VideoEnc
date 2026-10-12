@@ -5,6 +5,11 @@ namespace Dlss5Demo.Core;
 /// <summary>DLSS NR 外观参数（对应上游 dlss5tool 的公开设置）。</summary>
 public sealed record DlssNrOptions
 {
+    /// <summary>在视频管线中累积可信的 NR 修正量，降低稳定区域闪烁。</summary>
+    public bool TemporalStabilization { get; init; } = true;
+    /// <summary>使用驱动光流向 NR 提供当前帧到上一帧的运动向量。</summary>
+    public bool MotionGuidance { get; init; } = true;
+
     /// <summary>风格索引（0 起，由运行库定义）。</summary>
     public int Style { get; init; }
 
@@ -50,6 +55,7 @@ public sealed class DlssNrHost : IDisposable
     private readonly int _width;
     private readonly int _height;
     private bool _disposed;
+    private bool _motionGuidance;
 
     [StructLayout(LayoutKind.Sequential)]
     private struct NativeAdapterInfo
@@ -85,6 +91,10 @@ public sealed class DlssNrHost : IDisposable
     private static extern void dlssnr_configure_format(int formatId, int profileId);
 
     [DllImport(DllName, CallingConvention = CallingConvention.Cdecl)]
+    private static extern void dlssnr_configure(int zeroGuidanceFastPath, int persistentBuffers,
+        int mergedSubmission, int inFlight, int autoFallback);
+
+    [DllImport(DllName, CallingConvention = CallingConvention.Cdecl)]
     private static extern unsafe int dlssnr_process(void* color, void* motion, void* depth,
         void* output, int reset);
 
@@ -103,6 +113,8 @@ public sealed class DlssNrHost : IDisposable
 
     public int Width => _width;
     public int Height => _height;
+    internal bool TemporalStabilization => _options.TemporalStabilization;
+    internal bool MotionGuidance => _options.MotionGuidance;
 
     /// <summary>列出可用图形适配器（无需初始化 NGX）。</summary>
     public static IReadOnlyList<GpuAdapter> EnumerateAdapters(string hostDllPath)
@@ -171,8 +183,11 @@ public sealed class DlssNrHost : IDisposable
         var library = LoadHost(hostDllPath);
         try
         {
-            if (hdr)
-                dlssnr_configure_format(1, colorTransfer.Equals("arib-std-b67", StringComparison.OrdinalIgnoreCase) ? 3 : 2);
+            // Native format state survives shutdown. Always set it so an SDR
+            // job following an HDR job cannot be interpreted as RGBA16F.
+            dlssnr_configure_format(hdr ? 1 : 0,
+                hdr ? (colorTransfer.Equals("arib-std-b67", StringComparison.OrdinalIgnoreCase) ? 3 : 2) : 0);
+            dlssnr_configure(1, 1, 1, 2, 1);
             // 运行库要求在 create 之前推送默认 hint；NR 不暴露 SR preset 选择。
             dlssnr_set_options(DefaultRuntimeHint, options.Style, options.Intensity,
                 options.LocalTone, options.LocalStructure, options.SkinStructure,
@@ -209,7 +224,23 @@ public sealed class DlssNrHost : IDisposable
         _options = options;
         dlssnr_set_options(DefaultRuntimeHint, options.Style, options.Intensity,
             options.LocalTone, options.LocalStructure, options.SkinStructure,
-            options.UseAutoMask ? 1 : 0, 0, 0, 2, 1.0f, 1.0f);
+            options.UseAutoMask ? 1 : 0, 0, _motionGuidance ? 1 : 0, 2, 1.0f, 1.0f);
+    }
+
+    internal void ConfigureMotionGuidance(bool enabled)
+    {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+        _motionGuidance = enabled;
+        // The native zero-guidance fast path deliberately ignores motion data.
+        // Switching it off recreates resources before the first video frame.
+        dlssnr_configure(enabled ? 0 : 1, 1, 1, 2, 1);
+        UpdateOptions(_options);
+    }
+
+    internal unsafe bool ProcessVideoFrame(byte* color, float* motion, byte* output, bool reset)
+    {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+        return dlssnr_process(color, motion, null, output, reset ? 1 : 0) != 0;
     }
 
     private static DlssNrOptions NormalizeOptions(DlssNrOptions options) => options with

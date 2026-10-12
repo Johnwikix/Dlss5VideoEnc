@@ -24,6 +24,8 @@ Assert-File $project
 foreach ($name in $nativeNames) { Assert-File (Join-Path $runtimeSource $name) }
 $nvidiaLicense = Join-Path $repoRoot 'docs\licenses\NVIDIA_RTX_Video_SDK_License.pdf'
 Assert-File $nvidiaLicense
+$opticalFlowLicense = Join-Path $repoRoot 'docs\licenses\NVIDIA-Optical-Flow-Headers-LICENSE.txt'
+Assert-File $opticalFlowLicense
 
 # Resolve FFmpeg before creating output. Explicit paths take precedence over PATH.
 if ([string]::IsNullOrWhiteSpace($FfmpegDirectory)) {
@@ -91,6 +93,7 @@ foreach ($name in @('ffmpeg.exe', 'ffprobe.exe')) {
     Copy-Item -LiteralPath (Join-Path $FfmpegDirectory $name) -Destination $packageDirectory
 }
 Copy-Item -LiteralPath $nvidiaLicense -Destination $licenseDestination
+Copy-Item -LiteralPath $opticalFlowLicense -Destination $licenseDestination
 foreach ($candidate in @(
     (Join-Path $FfmpegDirectory 'LICENSE.txt'),
     (Join-Path (Split-Path -Parent $FfmpegDirectory) 'LICENSE.txt')

@@ -18,12 +18,15 @@ for (var index = 2; index < args.Length - 1; index++)
         case "--local-struct": options = options with { LocalStructure = float.Parse(args[++index]) }; break;
         case "--skin": options = options with { SkinStructure = float.Parse(args[++index]) }; break;
         case "--auto-mask": options = options with { UseAutoMask = args[++index] == "1" }; break;
+        case "--temporal": options = options with { TemporalStabilization = args[++index] != "0" }; break;
+        case "--motion-guidance": options = options with { MotionGuidance = args[++index] != "0" }; break;
         case "--encoder": encoder = args[++index]; break;
         case "--quality": quality = int.Parse(args[++index]); break;
     }
 }
 
 Console.OutputEncoding = System.Text.Encoding.UTF8;
+PipelineLog.Sink = message => Console.WriteLine($"[pipeline] {message}");
 Console.WriteLine($"输入: {input}");
 Console.WriteLine($"输出: {output}");
 Console.WriteLine($"宿主: {DemoPaths.HostDllPath}");

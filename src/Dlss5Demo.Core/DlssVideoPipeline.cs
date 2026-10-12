@@ -300,6 +300,12 @@ public static class DlssVideoPipeline
             try
             {
                 var decoderOutput = decoder.Process.StandardOutput.BaseStream;
+                using var flow = host.TemporalStabilization && host.MotionGuidance
+                    ? NvidiaOpticalFlow.TryCreate(plan.ProcessWidth, plan.ProcessHeight, plan.Hdr) : null;
+                host.ConfigureMotionGuidance(flow != null);
+                var temporal = host.TemporalStabilization
+                    ? new DlssNrTemporalStabilizer(plan.ProcessWidth, plan.ProcessHeight, plan.Hdr, sourceFps, flow != null)
+                    : null;
                 var stopwatch = Stopwatch.StartNew();
                 var lastReport = stopwatch.Elapsed - ProgressInterval;
                 var previewInterval = TimeSpan.FromSeconds(1.0 / Math.Clamp(previewFramesPerSecond, 1, 60));
@@ -322,11 +328,15 @@ public static class DlssVideoPipeline
                         nrInput = processBuffer;
                     }
 
-                    var ok = plan.Hdr
-                        ? host.ProcessFrame((ushort*)nrInput, (ushort*)outputBuffer, frames == 0)
-                        : host.ProcessFrame(nrInput, outputBuffer, frames == 0);
+                    flow?.Calculate(nrInput, frames == 0);
+                    var reset = temporal?.PrepareFrame(nrInput, flow?.Motion) ?? frames == 0;
+                    if (reset) flow?.ResetHistory();
+                    bool ok;
+                    fixed (float* motion = flow?.Motion)
+                        ok = host.ProcessVideoFrame(nrInput, motion, outputBuffer, reset);
                     if (!ok)
                         throw new InvalidOperationException($"第 {frames + 1} 帧 DLSS NR 处理失败，详见 {logPath}");
+                    temporal?.Apply(nrInput, outputBuffer);
 
                     if (plan.Hdr)
                     {

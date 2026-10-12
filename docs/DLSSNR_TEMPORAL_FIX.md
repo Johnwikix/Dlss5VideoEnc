@@ -1,0 +1,91 @@
+# DLSS NR 视频闪烁处理与验证
+
+日期：2026-10-12。
+
+原视频管线确实复用一个 NR Feature，且仅在首帧传入 `Reset=1`。
+原生零引导快路径把 `DLSSNR.MVec` 和 `DLSSNR.Depth` 绑定到零纹理。
+因此缺失的不是 NR 会话本身，而是运动引导和对输出修正量的额外稳定处理。
+
+参考实现：
+
+- [Magpie NR 输入绑定](https://github.com/SAOG0721/Magpie/blob/experimental/src/Magpie.Core/DLSSNRFilter.cpp)。
+- [Magpie 修正量时序处理](https://github.com/SAOG0721/Magpie/blob/experimental/src/Magpie.Core/DLSSNRTemporal.cpp)。
+- [Magpie 时序历史与输入验证](https://github.com/SAOG0721/Magpie/blob/experimental/src/Magpie.Core/DLSSNRTemporalShader.h)。
+- [NVIDIA Optical Flow API 2.0 官方声明](https://github.com/NVIDIA/NVIDIAOpticalFlowSDK)。
+
+本项目使用独立的 C# 实现，不把处理后的输出送回 NR。光流 ABI 声明的授权文件在
+`docs/licenses/NVIDIA-Optical-Flow-Headers-LICENSE.txt`，发布打包时一并复制。
+
+## 实现
+
+`NvidiaOpticalFlow` 从 Windows System32 加载已安装驱动的 CUDA 与 NVOFA 接口，
+基于实际 NR 输入估计当前帧到上一帧的像素位移。估计器使用 4×4 网格的 S10.5
+输出，展开为完整输入尺寸的 float2。非 16 倍数的图像复制边缘补齐，仅裁出实际
+输入尺寸，不改变位移单位。连续帧使用光流时序提示，首帧和切镜复位提示。
+
+`DlssNrHost` 为运动引导关闭原生零引导快路径，启用 motion-only 引导模式，
+并绑定实际运动向量。深度仍使用零纹理，因为视频没有可信的真实场景深度。
+每个新会话都明确设置像素格式与零引导配置，避免上一任务的 HDR/运动状态残留。
+
+`DlssNrTemporalStabilizer` 存储原始输入引导及有符号浮点修正量。光流可用时，
+重投影上一帧历史；否则仅在同一屏幕位置比较原始输入。3×3 输入块的平均误差、
+最大误差及运动边界共同决定历史可信度。越界、非有限值、切镜和不匹配区域使用
+当前 NR 结果。可信历史以 120 ms 时间常数累积，权重按源帧率计算。当前原图直接
+加回，避免把原图本身做时间平均。RGBA8 与 RGBA16F 共用该流程，保留输出 Alpha。
+
+该状态每次转换独立创建；单遍、双遍处理缓存与预览均经过同一个帧循环。
+`--temporal 0` 关闭新增处理；`--motion-guidance 0` 仅使用静态区域累积。
+光流初始化不受支持时自动回退到静态区域累积，日志记录实际路径。
+
+## 定位与对照
+
+在 RTX 5070 Ti、驱动 617.14 上，固定输入重复送入原始 NR 90 次，输出确有变化。
+单缓冲与双缓冲得到完全相同的结果，排除资源轮换假设。每帧重置使静态结果
+确定，但连续视频对照的变化更大，故未采用每帧重置作为修复。
+
+用户提供素材：
+`F:\Captures\Call of Duty  Black Ops 3\剪辑\UMP45&RO_1.mp4`，
+1920×1080、60 fps、8240 帧、约 137.33 秒，HEVC + AAC。
+
+原版与最终版本分别转换前 300 帧，相同 NR 默认参数、HEVC NVENC 与编码质量。
+以驱动光流对齐到上一帧，只有原始输入 3×3 图像块可信度超过 0.5 的区域参与测量。
+剔除前 20 帧后，测量「当前 NR 修正量与重投影上一帧修正量」的 RGB 平均绝对差。
+测量时把三份视频统一缩放到 512×288；这是像素变化指标，不是主观闪烁评分。
+
+| 检查 | 结果 |
+| --- | --- |
+| 10 项 CPU 回归 | 通过：交替修正、源细节、局部运动、切镜、帧率、HDR、无效值、并行、移动历史、遮挡/无效向量 |
+| 真实光流方向/单位与切镜复位 | 8 像素右移产生约 (-8, 0)，复位后反向输入得到约 (+8, 0) |
+| 真实 HDR→SDR 连续 NR 会话 | RGBA16F/profile=2 → RGBA8/profile=0，处理成功 |
+| 固定输入的最终 NR 时序处理 | 逐帧 RGB 变化降低约 58% |
+| UMP45 正式编码文件运动补偿测量 | 平均变化约 1.4681 → 1.3248（8-bit 码值），降低约 9.8% |
+| 应用与 CLI Release 构建 | 通过，0 警告、0 错误 |
+| 最终全片输出 | 1920×1080 / 60 fps / 8240 帧 / 137.333333 秒，HEVC + AAC，约 86 MiB |
+| 全片解码与预览检查 | FFmpeg 完整解码通过；8240 对预览帧，尺寸不一致 0 次 |
+
+静态位置的帧差不能充分评估快速移动的视频，因此最终采用运动补偿测量。
+缩小分辨率的早期未编码原型曾测得更大改善，不能把那个数值套用到正式输出。
+测量命令只报告百分比，不用任意的百分比阈值代替画面验收；CPU 与 GPU 回归则
+分别断言明确的行为和固定输入变化。
+
+## 重建与限制
+
+构建和回归命令见 README。正式视频测量命令：
+
+```powershell
+dotnet run --project tests/Dlss5Demo.Tests -c Release -- --compare-video "原片.mp4" "处理前.mp4" "处理后.mp4"
+```
+
+`build/ump45-before.mp4` 是原版前 300 帧，`build/ump45-motion.mp4` 是最终版前 300 帧，
+`build/ump45-comparison.mp4` 是 5 秒左右对照。完整输出为
+`build/UMP45_RO_DLSSNR_temporal.mp4`，已用 ffprobe 核验完整帧数与时长，并通过全片解码检查。
+这些验证视频保留供用户检查，不纳入 Git。一次性 NumPy 帧缓存与原型脚本在交付前删除。
+
+处理会增加转码耗时。初始未运行其他 GPU 工作负载时原版约 79 fps，运动引导版本
+曾测得约 25 fps；最终全片转换时 GPU 同时运行其他负载，14.6 fps / 564.4 秒，
+不能据此给出稳定性能比。
+CPU 修正历史与完整运动场在 1080p 下约需额外 125 MB 内存。
+
+视频没有原生运动、深度和遮挡信息，估计光流与颜色验证也不能完全识别相同颜色的
+不同物体。该实现降低了测得的 NR 修正波动，未证明所有镜头的可见闪烁都已消失。
+应使用保留的实际视频检查剩余闪烁、拖影与真实效果变化。
