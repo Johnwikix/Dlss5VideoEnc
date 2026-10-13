@@ -19,6 +19,7 @@ for (var index = 2; index < args.Length - 1; index++)
         case "--skin": options = options with { SkinStructure = float.Parse(args[++index]) }; break;
         case "--auto-mask": options = options with { UseAutoMask = args[++index] == "1" }; break;
         case "--temporal": options = options with { TemporalStabilization = args[++index] != "0" }; break;
+        case "--continuous-history": options = options with { ContinuousHistory = args[++index] != "0" }; break;
         case "--motion-guidance": options = options with { MotionGuidance = args[++index] != "0" }; break;
         case "--encoder": encoder = args[++index]; break;
         case "--quality": quality = int.Parse(args[++index]); break;

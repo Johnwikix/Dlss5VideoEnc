@@ -33,8 +33,14 @@ HDR 使用浮点修正量，保留原有 RGBA16F 输出路径。
 此处理增加转码耗时；它能降低 NR 修正的闪烁，但错误光流和无真实深度的场景仍可能
 存在残余伪影。处理思路参考 [Magpie 的时序稳定实现](https://github.com/SAOG0721/Magpie/blob/experimental/src/Magpie.Core/DLSSNRTemporal.cpp)。
 
-命令行对照：`--temporal 0` 关闭新增时序处理，`--motion-guidance 0` 保留静态区域累积。
-Core API 对应 `DlssNrOptions.TemporalStabilization` 与 `MotionGuidance`。
+界面中的「光流运动矢量」和「NR 连续历史」为独立复选框，默认勾选，状态随设置保存。
+关闭光流时保留静态区域的历史累积；关闭连续历史时每帧重置 NR，并停止修正量累积，
+光流仍可单独启用。旧版设置文件缺少这两个字段时按默认启用处理。
+
+Core API 分别用 `DlssNrOptions.MotionGuidance` 控制光流、`ContinuousHistory` 控制 NR
+自身历史，`TemporalStabilization` 控制额外的修正量累积。界面的连续历史开关同时控制后两者。
+CLI 用 `--motion-guidance 0`、`--continuous-history 0`、`--temporal 0` 分别关闭；
+对照原有零运动引导路径需 `--temporal 0 --motion-guidance 0`，仍保留原有 NR 自身历史。
 
 回归检查（不需要额外测试包）：
 

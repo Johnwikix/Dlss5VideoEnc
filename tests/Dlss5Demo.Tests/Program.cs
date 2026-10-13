@@ -26,6 +26,7 @@ if (args.Contains("--gpu"))
     NativeOpticalFlow();
     NativeFormatSwitch();
     Console.WriteLine("PASS Native HDR to SDR session format switch");
+    NativeHistorySwitch();
 }
 var flickerArgument = Array.IndexOf(args, "--gpu-flicker");
 if (flickerArgument >= 0)
@@ -270,6 +271,34 @@ static unsafe void NativeFormatSwitch()
         Check(output.Any(value => value > 0), "SDR evaluation returned an empty frame.");
     }
     Check(File.ReadAllText(sdrLog).Contains("format=RGBA8 profile=0 hdr=0"), "HDR format leaked into the SDR session.");
+}
+
+static unsafe void NativeHistorySwitch()
+{
+    const int width = 512, height = 288;
+    var logDirectory = Path.Combine(Environment.CurrentDirectory, "build", "temporal-tests");
+    Directory.CreateDirectory(logDirectory);
+    var options = new DlssNrOptions { ContinuousHistory = false, TemporalStabilization = false };
+    using var host = DlssNrHost.Create(DemoPaths.HostDllPath, DemoPaths.RuntimeDllPath,
+        Path.Combine(logDirectory, "native-history-switch.log"), width, height, options);
+    var input = Rgba(width, height, 100);
+    var other = Rgba(width, height, 220);
+    var expected = new byte[input.Length];
+    var actual = new byte[input.Length];
+    fixed (byte* source = input, changed = other, reference = expected, destination = actual)
+    {
+        Check(host.ProcessFrame(source, reference, true), "Explicit-reset reference failed.");
+        // A preceding different frame must not affect the next output when history is off.
+        Check(host.ProcessFrame(changed, destination, false), "Intervening frame failed.");
+        Check(host.ProcessFrame(source, destination, false), "History-disabled frame failed.");
+        Check(actual.SequenceEqual(expected), "Disabling NR history did not isolate successive frames.");
+        host.UpdateOptions(options with { ContinuousHistory = true });
+        Check(host.ProcessFrame(changed, destination, false), "History re-enable failed.");
+        host.UpdateOptions(options);
+        Check(host.ProcessFrame(source, destination, false), "History disable after re-enable failed.");
+        Check(actual.SequenceEqual(expected), "Re-enabling history prevented subsequent per-frame reset.");
+    }
+    Console.WriteLine("PASS Native continuous-history switch resets each frame and survives option updates");
 }
 
 static unsafe void NativeFlicker(string inputPath)

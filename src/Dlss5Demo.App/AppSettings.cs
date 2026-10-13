@@ -15,6 +15,8 @@ public sealed class AppSettings
     public double DlssLocalStructure { get; set; } = 1;
     public double DlssSkinStructure { get; set; } = 0.5;
     public bool DlssUseAutoMask { get; set; }
+    public bool DlssMotionGuidance { get; set; } = true;
+    public bool DlssContinuousHistory { get; set; } = true;
 
     // 输出与滤镜
     public int SuperResolutionIndex { get; set; }

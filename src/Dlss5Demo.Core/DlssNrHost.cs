@@ -5,6 +5,8 @@ namespace Dlss5Demo.Core;
 /// <summary>DLSS NR 外观参数（对应上游 dlss5tool 的公开设置）。</summary>
 public sealed record DlssNrOptions
 {
+    /// <summary>保留 NR 自身的连续帧历史；关闭时每帧重置 NR。</summary>
+    public bool ContinuousHistory { get; init; } = true;
     /// <summary>在视频管线中累积可信的 NR 修正量，降低稳定区域闪烁。</summary>
     public bool TemporalStabilization { get; init; } = true;
     /// <summary>使用驱动光流向 NR 提供当前帧到上一帧的运动向量。</summary>
@@ -204,6 +206,7 @@ public sealed class DlssNrHost : IDisposable
                 throw new InvalidOperationException("创建 Feature 18 失败。dlss_run.log 末尾：\n" + tail);
             }
             PipelineLog.Info($"NGX NR 会话已创建: {width}×{height} hdr={hdr}");
+            PipelineLog.Info($"NR 连续历史: {options.ContinuousHistory}; 光流运动矢量: {options.MotionGuidance}; 修正量累积: {options.TemporalStabilization}");
             return new DlssNrHost(library, width, height) { _options = options };
         }
         catch
@@ -240,7 +243,7 @@ public sealed class DlssNrHost : IDisposable
     internal unsafe bool ProcessVideoFrame(byte* color, float* motion, byte* output, bool reset)
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
-        return dlssnr_process(color, motion, null, output, reset ? 1 : 0) != 0;
+        return dlssnr_process(color, motion, null, output, reset || !_options.ContinuousHistory ? 1 : 0) != 0;
     }
 
     private static DlssNrOptions NormalizeOptions(DlssNrOptions options) => options with
@@ -258,14 +261,14 @@ public sealed class DlssNrHost : IDisposable
     public unsafe bool ProcessFrame(byte* colorRgba8, byte* outputRgba8, bool reset)
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
-        return dlssnr_process(colorRgba8, null, null, outputRgba8, reset ? 1 : 0) != 0;
+        return dlssnr_process(colorRgba8, null, null, outputRgba8, reset || !_options.ContinuousHistory ? 1 : 0) != 0;
     }
 
     /// <summary>处理一帧 RGBA16F，缓冲区按 Half 位模式排列。</summary>
     public unsafe bool ProcessFrame(ushort* colorRgba16F, ushort* outputRgba16F, bool reset)
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
-        return dlssnr_process(colorRgba16F, null, null, outputRgba16F, reset ? 1 : 0) != 0;
+        return dlssnr_process(colorRgba16F, null, null, outputRgba16F, reset || !_options.ContinuousHistory ? 1 : 0) != 0;
     }
 
     private static IntPtr LoadHost(string hostDllPath)

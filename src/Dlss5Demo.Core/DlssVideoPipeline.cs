@@ -300,7 +300,7 @@ public static class DlssVideoPipeline
             try
             {
                 var decoderOutput = decoder.Process.StandardOutput.BaseStream;
-                using var flow = host.TemporalStabilization && host.MotionGuidance
+                using var flow = host.MotionGuidance
                     ? NvidiaOpticalFlow.TryCreate(plan.ProcessWidth, plan.ProcessHeight, plan.Hdr) : null;
                 host.ConfigureMotionGuidance(flow != null);
                 var temporal = host.TemporalStabilization

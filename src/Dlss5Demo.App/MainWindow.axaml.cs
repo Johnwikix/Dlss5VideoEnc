@@ -99,6 +99,8 @@ public partial class MainWindow : Window
         DlssLocalStructure = LocalStructSlider.Value,
         DlssSkinStructure = SkinSlider.Value,
         DlssUseAutoMask = AutoMaskBox.IsChecked == true,
+        DlssMotionGuidance = MotionGuidanceBox.IsChecked == true,
+        DlssContinuousHistory = ContinuousHistoryBox.IsChecked == true,
         SuperResolutionIndex = SuperResolutionBox.SelectedIndex,
         ContainerIndex = ContainerBox.SelectedIndex,
         CodecIndex = CodecBox.SelectedIndex,
@@ -137,6 +139,8 @@ public partial class MainWindow : Window
         LocalStructSlider.Value = _settings.DlssLocalStructure;
         SkinSlider.Value = _settings.DlssSkinStructure;
         AutoMaskBox.IsChecked = _settings.DlssUseAutoMask;
+        MotionGuidanceBox.IsChecked = _settings.DlssMotionGuidance;
+        ContinuousHistoryBox.IsChecked = _settings.DlssContinuousHistory;
         Select(SuperResolutionBox, _settings.SuperResolutionIndex);
         Select(ContainerBox, _settings.ContainerIndex);
         Select(CodecBox, _settings.CodecIndex);
@@ -357,6 +361,9 @@ public partial class MainWindow : Window
             LocalStructure = (float)LocalStructSlider.Value,
             SkinStructure = (float)SkinSlider.Value,
             UseAutoMask = AutoMaskBox.IsChecked == true,
+            MotionGuidance = MotionGuidanceBox.IsChecked == true,
+            ContinuousHistory = ContinuousHistoryBox.IsChecked == true,
+            TemporalStabilization = ContinuousHistoryBox.IsChecked == true,
         };
     }
 
@@ -452,6 +459,7 @@ public partial class MainWindow : Window
         var srLabel = options.SuperResolutionScale > 1 ? $"RTX Video {options.SuperResolutionScale}× → " : "";
         PipelineStatus.Text = $"{srLabel}DLSS NR 正在处理帧…";
         Log($"开始转码: {Path.GetFileName(input)} → {Path.GetFileName(output)} · {options.VideoEncoder} · {srLabel}DLSS NR");
+        Log($"光流运动矢量: {(options.Dlss.MotionGuidance ? "开启" : "关闭")} · NR 连续历史: {(options.Dlss.ContinuousHistory ? "开启" : "关闭")}");
         try
         {
             var progress = new Progress<TranscodeProgress>(update =>
