@@ -20,6 +20,7 @@ public sealed class AppSettings
 
     // 输出与滤镜
     public int SuperResolutionIndex { get; set; }
+    public bool NrBeforeSuperResolution { get; set; } = true;
     public int ContainerIndex { get; set; }
     public int CodecIndex { get; set; } = 1;
     public int HardwareIndex { get; set; } = 1;

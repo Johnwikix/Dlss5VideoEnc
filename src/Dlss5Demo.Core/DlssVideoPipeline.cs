@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Buffers;
 using System.Runtime.InteropServices;
 using System.Text;
 
@@ -13,10 +14,16 @@ public sealed record TranscodeOptions
     public string VsrHostDllPath { get; init; } = "";
     public string VsrRuntimeDllPath { get; init; } = "";
     public string VsrLogPath { get; init; } = "";
+    /// <summary>Optional worker host for applications embedding Core; must handle RtxVideoWorker.TryServe.</summary>
+    public string VsrWorkerExecutablePath { get; init; } = "";
     /// <summary>RTX Video Super Resolution scale: 1=off, 2=2×, 4=4×.</summary>
     public int SuperResolutionScale { get; init; } = 1;
     /// <summary>RTX Video Super Resolution quality level (1..4).</summary>
     public int SuperResolutionQuality { get; init; } = 4;
+    /// <summary>Run NR and its temporal guidance at source resolution before RTX Video SR.</summary>
+    public bool NrBeforeSuperResolution { get; init; } = true;
+    /// <summary>Overlap NR input uploads with prior GPU work using the host's FIFO queue.</summary>
+    public bool UseAsyncNrQueue { get; init; } = true;
     public DlssNrOptions Dlss { get; init; } = new();
     /// <summary>hevc_nvenc / h264_nvenc / libx264 / libx265。</summary>
     public string VideoEncoder { get; init; } = "hevc_nvenc";
@@ -103,7 +110,7 @@ public static class DlssVideoPipeline
 
         var video = MediaProbe.Probe(inputPath, DemoPaths.FfprobePath);
         var scale = RtxVideoSuperResolutionHost.NormalizeScale(options.SuperResolutionScale);
-        var plan = CreateProcessingPlan(video, scale, options.Video.PreserveHdr);
+        var plan = CreateProcessingPlan(video, scale, options.Video.PreserveHdr, options.NrBeforeSuperResolution);
         if ((plan.SourceWidth & 1) != 0 || (plan.SourceHeight & 1) != 0)
             throw new NotSupportedException($"暂不支持奇数尺寸视频（当前 {plan.SourceWidth}x{plan.SourceHeight}）。");
 
@@ -114,10 +121,10 @@ public static class DlssVideoPipeline
         if (options.Video.TwoPassEnabled && IsTwoPassSupported(options.Video))
             return await RunTwoPassAsync(inputPath, outputPath, options, video, totalFrames, progress, cancellationToken).ConfigureAwait(false);
 
-        using var vsr = CreateVsr(options, plan, video);
+        using var vsr = await Task.Run(() => CreateVsr(options, plan, cancellationToken), cancellationToken).ConfigureAwait(false);
         using var host = DlssNrHost.Create(
             options.HostDllPath, options.RuntimeDllPath, options.LogPath,
-            plan.ProcessWidth, plan.ProcessHeight, options.Dlss, plan.Hdr, video.ColorTransfer);
+            plan.NrWidth, plan.NrHeight, options.Dlss, plan.Hdr, video.ColorTransfer);
 
         await using var decoder = new CommandDrain("ffmpeg-decode", options.FfmpegPath,
             DecoderArguments(inputPath, options.MaxFrames, video, plan.Hdr), redirectStdout: true);
@@ -132,11 +139,11 @@ public static class DlssVideoPipeline
             TryKill(encoder.Process);
         });
 
-        // 帧循环天然串行（读一帧→处理→写一帧），同步阻塞 IO 最直接且无死锁。
+        // Dedicated FIFO stages overlap independent frames; each temporal state has one owner.
         var outcome = await Task.Run(() => RunFrameLoop(
             decoder, encoder, host, vsr, plan, totalFrames, options.LogPath, progress,
             options.EnablePreviewFrames ? options.PreviewSink : null,
-            options.PreviewFramesPerSecond, video.Fps, cancellationToken)).ConfigureAwait(false);
+            options.PreviewFramesPerSecond, video.Fps, options.UseAsyncNrQueue, cancellationToken)).ConfigureAwait(false);
 
         var outputInfo = new FileInfo(outputPath);
         return new TranscodeResult
@@ -156,24 +163,27 @@ public static class DlssVideoPipeline
            && profile.VideoCodec is VideoCodec.H264 or VideoCodec.H265;
 
     private readonly record struct ProcessingPlan(
-        int SourceWidth, int SourceHeight, int ProcessWidth, int ProcessHeight, bool Hdr)
+        int SourceWidth, int SourceHeight, int ProcessWidth, int ProcessHeight, bool Hdr, bool NrFirst)
     {
+        public int NrWidth => NrFirst ? SourceWidth : ProcessWidth;
+        public int NrHeight => NrFirst ? SourceHeight : ProcessHeight;
+        public long NrBytes => checked((long)NrWidth * NrHeight * (Hdr ? 8 : 4));
         public long SourceBytes => checked((long)SourceWidth * SourceHeight * (Hdr ? 8 : 4));
         public long ProcessBytes => checked((long)ProcessWidth * ProcessHeight * (Hdr ? 8 : 4));
     }
 
-    private static ProcessingPlan CreateProcessingPlan(VideoInfo video, int scale, bool preserveHdr)
+    private static ProcessingPlan CreateProcessingPlan(VideoInfo video, int scale, bool preserveHdr, bool nrFirst)
     {
         var hdr = video.IsHdr && preserveHdr;
         var processWidth = checked(video.Width * scale);
         var processHeight = checked(video.Height * scale);
         if (processWidth > 16384 || processHeight > 16384)
             throw new NotSupportedException($"RTX Video 超分后的尺寸超过 16384 限制（{processWidth}×{processHeight}）。");
-        return new ProcessingPlan(video.Width, video.Height, processWidth, processHeight, hdr);
+        return new ProcessingPlan(video.Width, video.Height, processWidth, processHeight, hdr, nrFirst);
     }
 
-    private static RtxVideoSuperResolutionHost? CreateVsr(
-        TranscodeOptions options, ProcessingPlan plan, VideoInfo video)
+    private static RtxVideoWorker? CreateVsr(
+        TranscodeOptions options, ProcessingPlan plan, CancellationToken cancellationToken)
     {
         if (plan.ProcessWidth == plan.SourceWidth && plan.ProcessHeight == plan.SourceHeight)
             return null;
@@ -182,9 +192,11 @@ public static class DlssVideoPipeline
         var runtime = string.IsNullOrWhiteSpace(options.VsrRuntimeDllPath)
             ? DemoPaths.VsrRuntimeDllPath : options.VsrRuntimeDllPath;
         var log = string.IsNullOrWhiteSpace(options.VsrLogPath) ? DemoPaths.VsrLogPath : options.VsrLogPath;
-        return RtxVideoSuperResolutionHost.Create(
+        return RtxVideoWorker.Create(
             host, runtime, log, plan.SourceWidth, plan.SourceHeight,
-            plan.ProcessWidth / plan.SourceWidth, plan.Hdr, options.SuperResolutionQuality);
+            plan.ProcessWidth / plan.SourceWidth, options.SuperResolutionQuality, plan.Hdr,
+            FrameSlotCount(plan, options.Dlss.MotionGuidance, options.Dlss.TemporalStabilization),
+            options.VsrWorkerExecutablePath, cancellationToken);
     }
 
     private static async Task<TranscodeResult> RunTwoPassAsync(
@@ -193,29 +205,31 @@ public static class DlssVideoPipeline
     {
         var plan = CreateProcessingPlan(video,
             RtxVideoSuperResolutionHost.NormalizeScale(options.SuperResolutionScale),
-            options.Video.PreserveHdr);
+            options.Video.PreserveHdr, options.NrBeforeSuperResolution);
         var rawPath = Path.Combine(Path.GetTempPath(), $"dlss5-{Guid.NewGuid():N}.rgba");
         var passLog = Path.Combine(Path.GetTempPath(), $"dlss5-{Guid.NewGuid():N}-pass");
         var started = Stopwatch.StartNew();
         try
         {
-            using var vsr = CreateVsr(options, plan, video);
-            using var host = DlssNrHost.Create(
-                options.HostDllPath, options.RuntimeDllPath, options.LogPath,
-                plan.ProcessWidth, plan.ProcessHeight, options.Dlss, plan.Hdr, video.ColorTransfer);
             (long Frames, TimeSpan Elapsed) outcome;
-            await using (var decoder = new CommandDrain("ffmpeg-decode", options.FfmpegPath,
-                DecoderArguments(inputPath, options.MaxFrames, video, plan.Hdr), redirectStdout: true))
-            await using (var raw = new FileStream(rawPath, FileMode.CreateNew, FileAccess.Write, FileShare.Read))
             {
-                using var cancellation = cancellationToken.Register(() => TryKill(decoder.Process));
-                outcome = await Task.Run(() => RunFrameStream(
-                    decoder, raw, host, vsr, plan, totalFrames, options.LogPath,
-                    progress, options.EnablePreviewFrames ? options.PreviewSink : null,
-                    options.PreviewFramesPerSecond, video.Fps, cancellationToken)).ConfigureAwait(false);
-                decoder.Process.WaitForExit(30_000);
-                if (decoder.Process.ExitCode != 0)
-                    throw new InvalidOperationException("ffmpeg 解码失败：\n" + decoder.ErrorTail);
+                using var vsr = await Task.Run(() => CreateVsr(options, plan, cancellationToken), cancellationToken).ConfigureAwait(false);
+                using var host = DlssNrHost.Create(
+                    options.HostDllPath, options.RuntimeDllPath, options.LogPath,
+                    plan.NrWidth, plan.NrHeight, options.Dlss, plan.Hdr, video.ColorTransfer);
+                await using (var decoder = new CommandDrain("ffmpeg-decode", options.FfmpegPath,
+                    DecoderArguments(inputPath, options.MaxFrames, video, plan.Hdr), redirectStdout: true))
+                await using (var raw = new FileStream(rawPath, FileMode.CreateNew, FileAccess.Write, FileShare.Read))
+                {
+                    using var cancellation = cancellationToken.Register(() => TryKill(decoder.Process));
+                    outcome = await Task.Run(() => RunFrameStream(
+                        decoder, raw, host, vsr, plan, totalFrames, options.LogPath,
+                        progress, options.EnablePreviewFrames ? options.PreviewSink : null,
+                        options.PreviewFramesPerSecond, video.Fps, options.UseAsyncNrQueue, cancellationToken)).ConfigureAwait(false);
+                    decoder.Process.WaitForExit(30_000);
+                    if (decoder.Process.ExitCode != 0)
+                        throw new InvalidOperationException("ffmpeg 解码失败：\n" + decoder.ErrorTail);
+                }
             }
 
             await RunPassAsync(options.FfmpegPath,
@@ -255,21 +269,22 @@ public static class DlssVideoPipeline
     }
 
     private static (long Frames, TimeSpan Elapsed) RunFrameStream(
-        CommandDrain decoder, Stream destination, DlssNrHost host, RtxVideoSuperResolutionHost? vsr,
+        CommandDrain decoder, Stream destination, DlssNrHost host, RtxVideoWorker? vsr,
         ProcessingPlan plan, long totalFrames, string logPath, IProgress<TranscodeProgress>? progress,
-        ITranscodePreviewSink? preview, int previewFramesPerSecond, double sourceFps,
+        ITranscodePreviewSink? preview, int previewFramesPerSecond, double sourceFps, bool useAsyncNrQueue,
         CancellationToken cancellationToken)
         => RunFrameCore(decoder, destination, host, vsr, plan, totalFrames, logPath, progress,
-            preview, previewFramesPerSecond, sourceFps, cancellationToken);
+            preview, previewFramesPerSecond, sourceFps, useAsyncNrQueue, () => TryKill(decoder.Process), cancellationToken);
 
     private static (long Frames, TimeSpan Elapsed) RunFrameLoop(
-        CommandDrain decoder, CommandDrain encoder, DlssNrHost host, RtxVideoSuperResolutionHost? vsr,
+        CommandDrain decoder, CommandDrain encoder, DlssNrHost host, RtxVideoWorker? vsr,
         ProcessingPlan plan, long totalFrames, string logPath, IProgress<TranscodeProgress>? progress,
-        ITranscodePreviewSink? preview, int previewFramesPerSecond, double sourceFps,
+        ITranscodePreviewSink? preview, int previewFramesPerSecond, double sourceFps, bool useAsyncNrQueue,
         CancellationToken cancellationToken)
     {
         var result = RunFrameCore(decoder, encoder.Process.StandardInput.BaseStream, host, vsr, plan,
-            totalFrames, logPath, progress, preview, previewFramesPerSecond, sourceFps, cancellationToken);
+            totalFrames, logPath, progress, preview, previewFramesPerSecond, sourceFps, useAsyncNrQueue,
+            () => { TryKill(decoder.Process); TryKill(encoder.Process); }, cancellationToken);
         encoder.Process.StandardInput.Close();
         encoder.Process.WaitForExit(120_000);
         decoder.Process.WaitForExit(30_000);
@@ -283,104 +298,171 @@ public static class DlssVideoPipeline
         return result;
     }
 
-    private static (long Frames, TimeSpan Elapsed) RunFrameCore(
-        CommandDrain decoder, Stream destination, DlssNrHost host, RtxVideoSuperResolutionHost? vsr,
+    private static int FrameSlotCount(ProcessingPlan plan, bool motion, bool history)
+    {
+        var bytes = plan.SourceBytes + plan.NrBytes;
+        if (plan.SourceWidth != plan.ProcessWidth) bytes += plan.ProcessBytes;
+        if (plan.Hdr) bytes += plan.ProcessBytes;
+        var pixels = (long)plan.NrWidth * plan.NrHeight;
+        if (motion) bytes += pixels * 8;
+        if (history) bytes += pixels * 4;
+        // The lower bound permits SR, NR and CPU output history to overlap. Large
+        // frames use fewer slots; histories/driver allocations are separate.
+        return (int)Math.Clamp(512L * 1024 * 1024 / Math.Max(bytes, 1), 3, 5);
+    }
+
+    private static unsafe (long Frames, TimeSpan Elapsed) RunFrameCore(
+        CommandDrain decoder, Stream destination, DlssNrHost host, RtxVideoWorker? vsr,
         ProcessingPlan plan, long totalFrames, string logPath, IProgress<TranscodeProgress>? progress,
-        ITranscodePreviewSink? preview, int previewFramesPerSecond, double sourceFps,
+        ITranscodePreviewSink? preview, int previewFramesPerSecond, double sourceFps, bool useAsyncNrQueue, Action abort,
         CancellationToken cancellationToken)
     {
-        unsafe
+        using var flow = host.MotionGuidance
+            ? NvidiaOpticalFlow.TryCreate(plan.NrWidth, plan.NrHeight, plan.Hdr) : null;
+        host.ConfigureMotionGuidance(flow != null);
+        var temporal = host.TemporalStabilization
+            ? new DlssNrTemporalStabilizer(plan.NrWidth, plan.NrHeight, plan.Hdr, sourceFps, flow != null) : null;
+        var slots = new VideoFrameSlot[FrameSlotCount(plan, host.MotionGuidance, host.TemporalStabilization)];
+        try
         {
-            var sourceBuffer = (byte*)NativeMemory.Alloc((nuint)plan.SourceBytes);
-            var processBuffer = (byte*)NativeMemory.Alloc((nuint)plan.ProcessBytes);
-            var outputBuffer = (byte*)NativeMemory.Alloc((nuint)plan.ProcessBytes);
-            var encodedBuffer = plan.Hdr
-                ? (byte*)NativeMemory.Alloc((nuint)(plan.ProcessWidth * plan.ProcessHeight * 8L))
-                : outputBuffer;
-            try
+            for (var index = 0; index < slots.Length; index++)
+                slots[index] = new(index, plan.SourceBytes, plan.ProcessBytes, plan.Hdr,
+                    plan.NrBytes, checked(plan.NrWidth * plan.NrHeight), flow != null, temporal != null, vsr, plan.NrFirst);
+            var order = plan.NrFirst ? "光流/输入验证 → NR → 历史 → SR" : "SR → 光流/输入验证 → NR → 历史";
+            PipelineLog.Info($"有界帧管线: {slots.Length} 槽; 解码 → {order} → 编码/预览; NR {plan.NrWidth}×{plan.NrHeight}");
+            var decoderOutput = decoder.Process.StandardOutput.BaseStream;
+            var stopwatch = Stopwatch.StartNew();
+            var lastReport = -ProgressInterval;
+            var previewInterval = TimeSpan.FromSeconds(1.0 / Math.Clamp(previewFramesPerSecond, 1, 60));
+            var lastPreview = -previewInterval;
+            long lastPreviewFrame = 0;
+            VideoFrameSlot? lastOutput = null;
+            var capacity = useAsyncNrQueue ? Math.Min(host.QueueCapacity, slots.Length - 1) : 1;
+            PipelineLog.Info($"NR 提交队列: {capacity} 帧（单线程按序提交/回读）");
+            var metrics = new PipelineStageMetrics("管线", "read", "vsr", "flow", "prepare", "nr", "history", "write", "preview", "nr_submit", "nr_readback");
+            bool Read(VideoFrameSlot frame, long index)
             {
-                var decoderOutput = decoder.Process.StandardOutput.BaseStream;
-                using var flow = host.MotionGuidance
-                    ? NvidiaOpticalFlow.TryCreate(plan.ProcessWidth, plan.ProcessHeight, plan.Hdr) : null;
-                host.ConfigureMotionGuidance(flow != null);
-                var temporal = host.TemporalStabilization
-                    ? new DlssNrTemporalStabilizer(plan.ProcessWidth, plan.ProcessHeight, plan.Hdr, sourceFps, flow != null)
-                    : null;
-                var stopwatch = Stopwatch.StartNew();
-                var lastReport = stopwatch.Elapsed - ProgressInterval;
-                var previewInterval = TimeSpan.FromSeconds(1.0 / Math.Clamp(previewFramesPerSecond, 1, 60));
-                var lastPreview = -previewInterval;
-                long lastPreviewFrame = 0;
-                long frames = 0;
-                while (totalFrames <= 0 || frames < totalFrames)
+                if (totalFrames > 0 && index >= totalFrames) return false;
+                var started = metrics.Start();
+                if (!Fill(decoderOutput, new Span<byte>(frame.Source, checked((int)plan.SourceBytes)))) return false;
+                if (plan.Hdr) NormalizeHdrFrame((ushort*)frame.Source, plan.SourceWidth * plan.SourceHeight * 4);
+                metrics.Record(0, started);
+                return true;
+            }
+            void SuperResolution(VideoFrameSlot frame, long index)
+            {
+                var started = metrics.Start();
+                vsr?.ProcessFrame(frame.Slot);
+                metrics.Record(1, started);
+            }
+            void Prepare(VideoFrameSlot frame, long index)
+            {
+                var started = metrics.Start();
+                flow?.Calculate(frame.Input, index == 0, frame.Motion);
+                metrics.Record(2, started);
+                started = metrics.Start();
+                frame.Reset = temporal?.PrepareInput(frame.Input, frame.Motion, frame.Errors!) ?? index == 0;
+                if (frame.Reset) flow?.ResetHistory();
+                metrics.Record(3, started);
+            }
+            void NeuralRendering(VideoFrameSlot frame, long index)
+            {
+                var started = metrics.Start();
+                bool ok;
+                fixed (float* motion = frame.Motion)
+                    ok = host.ProcessVideoFrame(frame.Input, motion, frame.Output, frame.Reset);
+                metrics.Record(4, started);
+                if (!ok) throw new InvalidOperationException($"第 {index + 1} 帧 DLSS NR 处理失败，详见 {logPath}");
+            }
+            void Accumulate(VideoFrameSlot frame, long index)
+            {
+                var started = metrics.Start();
+                if (temporal != null)
                 {
-                    cancellationToken.ThrowIfCancellationRequested();
-                    if (!Fill(decoderOutput, new Span<byte>(sourceBuffer, checked((int)plan.SourceBytes))))
-                        break;
-                    if (plan.Hdr)
-                        NormalizeHdrFrame((ushort*)sourceBuffer, plan.SourceWidth * plan.SourceHeight * 4);
-
-                    var nrInput = sourceBuffer;
-                    if (vsr != null)
-                    {
-                        if (!vsr.ProcessFrame(sourceBuffer, processBuffer))
-                            throw new InvalidOperationException($"第 {frames + 1} 帧 RTX Video 超分失败。");
-                        nrInput = processBuffer;
-                    }
-
-                    flow?.Calculate(nrInput, frames == 0);
-                    var reset = temporal?.PrepareFrame(nrInput, flow?.Motion) ?? frames == 0;
-                    if (reset) flow?.ResetHistory();
-                    bool ok;
-                    fixed (float* motion = flow?.Motion)
-                        ok = host.ProcessVideoFrame(nrInput, motion, outputBuffer, reset);
-                    if (!ok)
-                        throw new InvalidOperationException($"第 {frames + 1} 帧 DLSS NR 处理失败，详见 {logPath}");
-                    temporal?.Apply(nrInput, outputBuffer);
-
-                    if (plan.Hdr)
-                    {
-                        ConvertHdrToRgba64((ushort*)outputBuffer, (ushort*)encodedBuffer,
-                            plan.ProcessWidth * plan.ProcessHeight * 4);
-                        destination.Write(new ReadOnlySpan<byte>(encodedBuffer, checked((int)plan.ProcessBytes)));
-                    }
-                    else
-                        destination.Write(new ReadOnlySpan<byte>(outputBuffer, checked((int)plan.ProcessBytes)));
-                    frames++;
-
-                    if (preview != null && stopwatch.Elapsed - lastPreview >= previewInterval)
-                    {
-                        PublishPreview(preview, sourceBuffer, plan.SourceWidth, plan.SourceHeight,
-                            outputBuffer, plan.ProcessWidth, plan.ProcessHeight, plan.Hdr,
-                            frames, totalFrames, sourceFps);
-                        lastPreview = stopwatch.Elapsed;
-                        lastPreviewFrame = frames;
-                    }
-                    if (stopwatch.Elapsed - lastReport >= ProgressInterval)
-                    {
-                        lastReport = stopwatch.Elapsed;
-                        progress?.Report(new TranscodeProgress(
-                            frames, totalFrames, frames / Math.Max(stopwatch.Elapsed.TotalSeconds, 0.001), stopwatch.Elapsed));
-                    }
+                    temporal.SetPreparedFrame(frame.Motion, frame.Errors!, frame.Reset);
+                    temporal.Apply(frame.Input, frame.Output);
                 }
-                if (preview != null && frames > 0 && lastPreviewFrame != frames)
-                    PublishPreview(preview, sourceBuffer, plan.SourceWidth, plan.SourceHeight,
-                        outputBuffer, plan.ProcessWidth, plan.ProcessHeight, plan.Hdr,
-                        frames, totalFrames, sourceFps);
-                destination.Flush();
-                stopwatch.Stop();
-                progress?.Report(new TranscodeProgress(
-                    frames, totalFrames, frames / Math.Max(stopwatch.Elapsed.TotalSeconds, 0.001), stopwatch.Elapsed));
-                return (frames, stopwatch.Elapsed);
+                metrics.Record(5, started);
             }
-            finally
+            void QueuedNeuralRendering(IEnumerable<BoundedFramePipeline.Frame<VideoFrameSlot>> input,
+                Action<BoundedFramePipeline.Frame<VideoFrameSlot>> emit, CancellationToken token)
             {
-                NativeMemory.Free(sourceBuffer);
-                NativeMemory.Free(processBuffer);
-                NativeMemory.Free(outputBuffer);
-                if (encodedBuffer != outputBuffer)
-                    NativeMemory.Free(encodedBuffer);
+                var pending = new Queue<BoundedFramePipeline.Frame<VideoFrameSlot>>(capacity);
+                void Collect()
+                {
+                    token.ThrowIfCancellationRequested();
+                    var frame = pending.Dequeue();
+                    var started = metrics.Start();
+                    var ok = host.DequeueVideoFrame(frame.Buffer.Output);
+                    metrics.Record(4, started);
+                    metrics.Record(9, started);
+                    if (!ok) throw new InvalidOperationException($"第 {frame.Index + 1} 帧 NR 回读失败，详见 {logPath}");
+                    emit(frame);
+                }
+                foreach (var frame in input)
+                {
+                    token.ThrowIfCancellationRequested();
+                    var started = metrics.Start();
+                    bool ok;
+                    fixed (float* motion = frame.Buffer.Motion)
+                        ok = host.EnqueueVideoFrame(frame.Buffer.Input, motion, frame.Buffer.Reset);
+                    metrics.Record(4, started);
+                    metrics.Record(8, started);
+                    if (!ok) throw new InvalidOperationException($"第 {frame.Index + 1} 帧 NR 提交失败，详见 {logPath}");
+                    pending.Enqueue(frame);
+                    if (pending.Count >= capacity) Collect();
+                }
+                while (pending.Count > 0) Collect();
             }
+            void Write(VideoFrameSlot frame, long index)
+            {
+                var started = metrics.Start();
+                if (plan.Hdr)
+                    ConvertHdrToRgba64((ushort*)frame.FinalOutput, (ushort*)frame.Encoded, plan.ProcessWidth * plan.ProcessHeight * 4);
+                destination.Write(new ReadOnlySpan<byte>(frame.Encoded, checked((int)plan.ProcessBytes)));
+                metrics.Record(6, started);
+                var frames = index + 1;
+                lastOutput = frame;
+                started = metrics.Start();
+                if (preview != null && stopwatch.Elapsed - lastPreview >= previewInterval)
+                {
+                    PublishPreview(preview, frame.Source, plan.SourceWidth, plan.SourceHeight,
+                        frame.FinalOutput, plan.ProcessWidth, plan.ProcessHeight, plan.Hdr, frames, totalFrames, sourceFps);
+                    lastPreview = stopwatch.Elapsed;
+                    lastPreviewFrame = frames;
+                }
+                metrics.Record(7, started);
+                if (stopwatch.Elapsed - lastReport >= ProgressInterval)
+                {
+                    lastReport = stopwatch.Elapsed;
+                    progress?.Report(new TranscodeProgress(frames, totalFrames,
+                        frames / Math.Max(stopwatch.Elapsed.TotalSeconds, 0.001), stopwatch.Elapsed));
+                }
+            }
+            var stages = new List<BoundedFramePipeline.Stage<VideoFrameSlot>>();
+            if (vsr != null && !plan.NrFirst) stages.Add(BoundedFramePipeline.PerFrame<VideoFrameSlot>(SuperResolution));
+            stages.Add(BoundedFramePipeline.PerFrame<VideoFrameSlot>(Prepare));
+            stages.Add(capacity > 1 ? QueuedNeuralRendering : BoundedFramePipeline.PerFrame<VideoFrameSlot>(NeuralRendering));
+            stages.Add(BoundedFramePipeline.PerFrame<VideoFrameSlot>(Accumulate));
+            if (vsr != null && plan.NrFirst) stages.Add(BoundedFramePipeline.PerFrame<VideoFrameSlot>(SuperResolution));
+            var processed = BoundedFramePipeline.RunStages(slots, Read, stages.ToArray(), Write,
+                () => { vsr?.Abort(); abort(); }, cancellationToken);
+            // EOF/limit reads never overwrite a slot. The final written frame is
+            // still valid here after all workers have joined.
+            if (preview != null && processed > 0 && lastPreviewFrame != processed && lastOutput != null)
+                PublishPreview(preview, lastOutput.Source, plan.SourceWidth, plan.SourceHeight,
+                    lastOutput.FinalOutput, plan.ProcessWidth, plan.ProcessHeight, plan.Hdr, processed, totalFrames, sourceFps);
+            destination.Flush();
+            stopwatch.Stop();
+            metrics.Report(processed);
+            flow?.ReportMetrics(processed);
+            progress?.Report(new TranscodeProgress(processed, totalFrames,
+                processed / Math.Max(stopwatch.Elapsed.TotalSeconds, 0.001), stopwatch.Elapsed));
+            return (processed, stopwatch.Elapsed);
+        }
+        finally
+        {
+            foreach (var slot in slots) slot?.Dispose();
         }
     }
 
@@ -412,26 +494,56 @@ public static class DlssVideoPipeline
                 processedWidth, processedHeight, frames, totalFrames, sourceFps);
             return;
         }
-        var sourcePreview = HdrPreview((ushort*)source, sourceWidth, sourceHeight);
-        var processedPreview = HdrPreview((ushort*)processed, processedWidth, processedHeight);
-        preview.Publish(sourcePreview, sourceWidth, sourceHeight, processedPreview,
-            processedWidth, processedHeight, frames, totalFrames, sourceFps);
+        var targetWidth = Math.Max(sourceWidth, processedWidth);
+        var targetHeight = Math.Max(sourceHeight, processedHeight);
+        if (preview.MaxFrameWidth > 0 && preview.MaxFrameHeight > 0)
+        {
+            var scale = Math.Min(1, Math.Min((double)preview.MaxFrameWidth / targetWidth, (double)preview.MaxFrameHeight / targetHeight));
+            targetWidth = Math.Max(1, (int)(targetWidth * scale));
+            targetHeight = Math.Max(1, (int)(targetHeight * scale));
+        }
+        else { targetWidth = 0; targetHeight = 0; }
+        var sourcePreviewWidth = targetWidth > 0 ? targetWidth : sourceWidth;
+        var sourcePreviewHeight = targetHeight > 0 ? targetHeight : sourceHeight;
+        var processedPreviewWidth = targetWidth > 0 ? targetWidth : processedWidth;
+        var processedPreviewHeight = targetHeight > 0 ? targetHeight : processedHeight;
+        var sourceLength = checked(sourcePreviewWidth * sourcePreviewHeight * 4);
+        var processedLength = checked(processedPreviewWidth * processedPreviewHeight * 4);
+        var sourcePreview = ArrayPool<byte>.Shared.Rent(sourceLength);
+        try
+        {
+            var processedPreview = ArrayPool<byte>.Shared.Rent(processedLength);
+            try
+            {
+                FillHdrPreview((ushort*)source, sourceWidth, sourceHeight, sourcePreview.AsSpan(0, sourceLength), sourcePreviewWidth, sourcePreviewHeight);
+                FillHdrPreview((ushort*)processed, processedWidth, processedHeight, processedPreview.AsSpan(0, processedLength), processedPreviewWidth, processedPreviewHeight);
+                preview.Publish(sourcePreview.AsSpan(0, sourceLength), sourcePreviewWidth, sourcePreviewHeight,
+                    processedPreview.AsSpan(0, processedLength), processedPreviewWidth, processedPreviewHeight, frames, totalFrames, sourceFps);
+            }
+            finally { ArrayPool<byte>.Shared.Return(processedPreview); }
+        }
+        finally { ArrayPool<byte>.Shared.Return(sourcePreview); }
     }
 
-    private static unsafe byte[] HdrPreview(ushort* source, int width, int height)
+    internal static unsafe void FillHdrPreview(ushort* source, int width, int height,
+        Span<byte> result, int targetWidth, int targetHeight)
     {
-        var result = new byte[checked(width * height * 4)];
-        for (var index = 0; index < width * height; index++)
+        for (var y = 0; y < targetHeight; y++)
         {
-            var r = Math.Clamp((float)BitConverter.Int16BitsToHalf((short)source[index * 4]), 0, 1);
-            var g = Math.Clamp((float)BitConverter.Int16BitsToHalf((short)source[index * 4 + 1]), 0, 1);
-            var b = Math.Clamp((float)BitConverter.Int16BitsToHalf((short)source[index * 4 + 2]), 0, 1);
-            result[index * 4] = ToSrgbByte(r);
-            result[index * 4 + 1] = ToSrgbByte(g);
-            result[index * 4 + 2] = ToSrgbByte(b);
-            result[index * 4 + 3] = 255;
+            var row = (int)((long)y * height / targetHeight) * width;
+            for (var x = 0; x < targetWidth; x++)
+            {
+                var pixel = row + (int)((long)x * width / targetWidth);
+                var index = y * targetWidth + x;
+                var r = Math.Clamp((float)BitConverter.Int16BitsToHalf((short)source[pixel * 4]), 0, 1);
+                var g = Math.Clamp((float)BitConverter.Int16BitsToHalf((short)source[pixel * 4 + 1]), 0, 1);
+                var b = Math.Clamp((float)BitConverter.Int16BitsToHalf((short)source[pixel * 4 + 2]), 0, 1);
+                result[index * 4] = ToSrgbByte(r);
+                result[index * 4 + 1] = ToSrgbByte(g);
+                result[index * 4 + 2] = ToSrgbByte(b);
+                result[index * 4 + 3] = 255;
+            }
         }
-        return result;
     }
 
     private static byte ToSrgbByte(float value)
@@ -537,7 +649,16 @@ public static class DlssVideoPipeline
         if (profile.Container == VideoContainer.Gif)
             arguments.AddRange(["-loop", Math.Max(0, profile.GifLoop).ToString(System.Globalization.CultureInfo.InvariantCulture)]);
         if (options.MaxFrames is { } maxFrames)
+        {
             arguments.AddRange(["-frames:v", Math.Max(1, maxFrames).ToString(System.Globalization.CultureInfo.InvariantCulture)]);
+            if (includeAudio && video.Fps > 0)
+            {
+                // Audio can demux far ahead of a slow rawvideo pipe. Bound both
+                // streams by source-frame duration instead of producer timing.
+                var limitedFrames = video.FrameCount > 0 ? Math.Min(Math.Max(1, maxFrames), video.FrameCount) : Math.Max(1, maxFrames);
+                arguments.AddRange(["-t", (limitedFrames / video.Fps).ToString("0.#########", System.Globalization.CultureInfo.InvariantCulture)]);
+            }
+        }
         if (includeAudio)
             arguments.Add("-shortest");
         if (pass == 1)
@@ -631,6 +752,15 @@ public static class DlssVideoPipeline
         }
         if (o.Container != VideoContainer.Gif && o.PreserveHdr && (source.IsHdr || o.ForceHdr) && !encoder.EndsWith("_nvenc", StringComparison.Ordinal))
             filters.Add("format=p010le");
+        if (o.Container != VideoContainer.Gif && o.PreserveHdr && (source.IsHdr || o.ForceHdr))
+        {
+            // Rawvideo has no per-frame color tags. NVENC reads AVFrame tags,
+            // so output codec options alone do not preserve PQ/HLG primaries.
+            var primaries = string.IsNullOrWhiteSpace(source.ColorPrimaries) ? "bt2020" : source.ColorPrimaries;
+            var transfer = string.IsNullOrWhiteSpace(source.ColorTransfer) ? "smpte2084" : source.ColorTransfer;
+            var matrix = string.IsNullOrWhiteSpace(source.ColorSpace) ? "bt2020nc" : source.ColorSpace;
+            filters.Add($"setparams=color_primaries={primaries}:color_trc={transfer}:colorspace={matrix}");
+        }
         return string.Join(',', filters);
     }
 

@@ -5,6 +5,7 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <TieredCompilation Condition="'$(Configuration)' == 'Release'">false</TieredCompilation>
     <AssemblyName>Dlss5Demo.Tests</AssemblyName>
   </PropertyGroup>
   <ItemGroup>

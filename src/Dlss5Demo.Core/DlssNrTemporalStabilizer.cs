@@ -1,4 +1,5 @@
 using System.Numerics;
+using System.Runtime.CompilerServices;
 
 namespace Dlss5Demo.Core;
 
@@ -15,14 +16,13 @@ internal sealed class DlssNrTemporalStabilizer
     private readonly int _height;
     private readonly bool _hdr;
     private readonly float _historyWeight;
-    private Vector3[] _previousGuide;
-    private Vector3[] _currentGuide;
+    private readonly DlssNrInputHistory _inputHistory;
     private Vector3[] _residualHistory;
     private Vector3[] _nextResidual;
-    private readonly float[] _inputError;
+    private float[] _inputError = [];
+    private float[]? _standaloneErrors;
     private readonly bool _useMotion;
     private float[]? _motion;
-    private bool _hasHistory;
     private bool _reset;
 
     internal DlssNrTemporalStabilizer(int width, int height, bool hdr, double sourceFps, bool useMotion = false)
@@ -34,75 +34,35 @@ internal sealed class DlssNrTemporalStabilizer
         _hdr = hdr;
         _useMotion = useMotion;
         var pixels = checked(width * height);
-        _previousGuide = new Vector3[pixels];
+        _inputHistory = new DlssNrInputHistory(width, height, hdr, useMotion);
         _residualHistory = new Vector3[pixels];
-        _currentGuide = useMotion ? new Vector3[pixels] : _previousGuide;
         _nextResidual = useMotion ? new Vector3[pixels] : _residualHistory;
-        _inputError = new float[pixels];
         var seconds = double.IsFinite(sourceFps) && sourceFps > 0 ? 1 / sourceFps : 1 / 60.0;
         // Source-frame duration, not transcode throughput, determines the EMA.
         _historyWeight = seconds <= .25 ? (float)Math.Exp(-seconds / .12) : 0;
     }
 
-    /// <summary>Call before NR so a cut resets both NR and correction history.</summary>
+    /// <summary>Compatibility entry point for synchronous callers and regression fixtures.</summary>
     internal unsafe bool PrepareFrame(byte* input, float[]? motion = null)
     {
-        if (input == null) throw new ArgumentNullException(nameof(input));
-        if (motion != null && (!_useMotion || motion.Length != _inputError.Length * 2))
-            throw new ArgumentException("Motion must contain one current-to-previous float2 per NR input pixel.", nameof(motion));
+        _standaloneErrors ??= new float[checked(_width * _height)];
+        var reset = PrepareInput(input, motion, _standaloneErrors);
+        SetPreparedFrame(motion, _standaloneErrors, reset);
+        return reset;
+    }
+
+    /// <summary>Called exclusively by the input stage, independently of output accumulation.</summary>
+    internal unsafe bool PrepareInput(byte* input, float[]? motion, float[] errors)
+        => _inputHistory.Prepare(input, motion, errors);
+
+    /// <summary>Called exclusively by the output stage with immutable metadata owned by this frame.</summary>
+    internal void SetPreparedFrame(float[]? motion, float[] errors, bool reset)
+    {
+        if (errors.Length != _residualHistory.Length || motion != null && (!_useMotion || motion.Length != errors.Length * 2))
+            throw new ArgumentException("Invalid NR output history buffers.");
         _motion = motion;
-        if (_height >= 256)
-            Parallel.For(0, _height, row => PrepareRow(input, row));
-        else
-            for (var row = 0; row < _height; row++) PrepareRow(input, row);
-
-        _reset = !_hasHistory || IsSceneCut();
-        return _reset;
-    }
-
-    private unsafe void PrepareRow(byte* input, int row)
-    {
-        var end = (row + 1) * _width;
-        for (var pixel = row * _width; pixel < end; pixel++)
-        {
-            var current = Guide(ReadColor(input, pixel));
-            var previous = _motion != null && _hasHistory
-                ? (PreviousPosition(pixel, pixel % _width, row, out var x, out var y)
-                    ? Sample(_previousGuide, x, y) : new Vector3(float.NaN))
-                : _previousGuide[pixel];
-            _inputError[pixel] = IsFinite(current) && IsFinite(previous)
-                ? MaxComponent(Vector3.Abs(current - previous)) : float.PositiveInfinity;
-            _currentGuide[pixel] = current;
-        }
-
-    }
-
-    private bool IsSceneCut()
-    {
-        // Require a large change spread over most of the image. A moving object,
-        // subtitle or isolated flash must not reset otherwise useful NR history.
-        var changedTiles = 0;
-        for (var tileY = 0; tileY < 4; tileY++)
-        {
-            for (var tileX = 0; tileX < 4; tileX++)
-            {
-                var total = 0f;
-                var changed = 0;
-                for (var y = 0; y < 4; y++)
-                {
-                    var row = Math.Min(_height - 1, (tileY * 4 + y) * _height / 16);
-                    for (var x = 0; x < 4; x++)
-                    {
-                        var column = Math.Min(_width - 1, (tileX * 4 + x) * _width / 16);
-                        var error = _inputError[row * _width + column];
-                        total += error;
-                        if (error > .12f) changed++;
-                    }
-                }
-                if (total / 16 > .18f && changed >= 12) changedTiles++;
-            }
-        }
-        return changedTiles >= 12;
+        _inputError = errors;
+        _reset = reset;
     }
 
     /// <summary>Runs after successful NR and before encoding or publishing preview.</summary>
@@ -115,13 +75,11 @@ internal sealed class DlssNrTemporalStabilizer
         // Rows are independent; source, input-error and old correction at other
         // pixels are read-only. Parallelism keeps full-resolution video practical.
         if (_height >= 256)
-            Parallel.For(0, _height, row => ApplyRow(input, output, row));
+            Parallel.For(0, _height, FrameCpuBudget.HistoryOptions, row => ApplyRow(input, output, row));
         else
             for (var row = 0; row < _height; row++) ApplyRow(input, output, row);
-        _hasHistory = true;
         if (_useMotion)
         {
-            (_previousGuide, _currentGuide) = (_currentGuide, _previousGuide);
             (_residualHistory, _nextResidual) = (_nextResidual, _residualHistory);
         }
     }
@@ -166,6 +124,7 @@ internal sealed class DlssNrTemporalStabilizer
         }
     }
 
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private float Confidence(int x, int above, int center, int below)
     {
         var left = Math.Max(0, x - 1);
@@ -189,10 +148,12 @@ internal sealed class DlssNrTemporalStabilizer
                (1 - SmoothStep(.025f, .10f, maximum));
     }
 
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private bool MotionMatches(int pixel, int neighbor) =>
         Math.Abs(_motion![pixel * 2] - _motion[neighbor * 2]) <= 2 &&
         Math.Abs(_motion[pixel * 2 + 1] - _motion[neighbor * 2 + 1]) <= 2;
 
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private bool PreviousPosition(int pixel, int x, int y, out float previousX, out float previousY)
     {
         previousX = x + _motion![pixel * 2];
@@ -201,6 +162,7 @@ internal sealed class DlssNrTemporalStabilizer
             previousX >= 0 && previousY >= 0 && previousX <= _width - 1 && previousY <= _height - 1;
     }
 
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private Vector3 Sample(Vector3[] image, float x, float y)
     {
         var x0 = (int)x; var y0 = (int)y;
@@ -210,8 +172,7 @@ internal sealed class DlssNrTemporalStabilizer
         return Vector3.Lerp(a, b, y - y0);
     }
 
-    private Vector3 Guide(Vector3 color) => _hdr ? color / (Vector3.One + Vector3.Abs(color)) : color;
-
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private unsafe Vector3 ReadColor(byte* frame, int pixel)
     {
         var offset = pixel * 4;
@@ -223,6 +184,7 @@ internal sealed class DlssNrTemporalStabilizer
         return new Vector3(frame[offset], frame[offset + 1], frame[offset + 2]) / 255;
     }
 
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private unsafe void WriteColor(byte* frame, int pixel, Vector3 color)
     {
         var offset = pixel * 4;
@@ -246,8 +208,6 @@ internal sealed class DlssNrTemporalStabilizer
 
     private static bool IsFinite(Vector3 value) =>
         float.IsFinite(value.X) && float.IsFinite(value.Y) && float.IsFinite(value.Z);
-
-    private static float MaxComponent(Vector3 value) => Math.Max(value.X, Math.Max(value.Y, value.Z));
 
     private static float SmoothStep(float low, float high, float value)
     {

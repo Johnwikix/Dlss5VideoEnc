@@ -1,6 +1,6 @@
 # Dlss5VideoEnc
 
-Avalonia 视频转码工作台：可选 RTX Video Super Resolution（关闭 / 2× / 4×）→ DLSS NR → FFmpeg 编码。HDR 视频通过 RGBA16F / 10-bit 路径处理并保留 HDR 元数据。
+Avalonia 视频转码工作台：DLSS NR → 可选 RTX Video Super Resolution（关闭 / 2× / 4×）→ FFmpeg 编码。HDR 视频通过 RGBA16F / 10-bit 路径处理并保留 HDR 元数据。
 
 ## RTX Video Super Resolution
 
@@ -12,17 +12,21 @@ native\vsr_host\build.bat
 
 脚本会生成并放置 `runtime\vsr_host.dll` 和授权的 `runtime\nvngx_vsr.dll`。没有这两个文件时，关闭档仍可使用；选择 2×/4× 会在启动转码时给出明确错误。
 
-处理顺序固定为：
+界面默认处理顺序（勾选「NR 前置」）：
 
 ```text
-源视频 →（可选）RTX Video 2×/4× → DLSS NR → 编码
+源视频 → 光流/输入验证 → DLSS NR → 历史累积 →（可选）RTX Video 2×/4× → 编码
 ```
+
+「NR 前置（速度优先）」默认勾选并保存到设置。取消勾选可使用超分 → NR 的顺序，
+NR 会在放大后的分辨率处理，用于优先对照视觉质量；界面即时显示顺序。关闭超分时
+顺序开关禁用，保留选择，下次启用超分时恢复。
 
 ## DLSS NR 视频时序稳定
 
 视频转换默认保留 NR 会话的连续历史，并使用 NVIDIA 驱动中的 Optical Flow API
 估计当前帧到上一帧的运动向量。这些向量同时送入 NR，并用于对齐输出修正量的历史。
-向量基于实际 NR 输入生成，因此 VSR 放大后的坐标与 NR 输入保持一致。
+向量基于实际 NR 输入生成。默认 NR 在源分辨率处理，随后超分；运动向量与 NR 输入保持同一坐标系。
 
 抗闪烁处理累积的是「NR 输出 − NR 输入」的有符号修正量，再加回当前输入。
 局部颜色不匹配、运动边界、越界、无效像素和切镜会拒绝旧历史；切镜还会重置 NR
@@ -54,7 +58,41 @@ dotnet run --project tests/Dlss5Demo.Tests -c Release -- --gpu-flicker "输入�
 dotnet run --project tests/Dlss5Demo.Tests -c Release -- --compare-video "原片.mp4" "处理前.mp4" "处理后.mp4"
 ```
 
-HDR 源使用 FFmpeg zscale 解码为 RGBA16F，VSR 使用 10-bit RGB 纹理，之后继续以 RGBA16F 交给 DLSS NR，最后转换回 10-bit RGBA 输入编码器。
+HDR 源使用 FFmpeg zscale 解码为 RGBA16F，NR 和历史累积保留浮点像素，之后 VSR 使用 10-bit RGB 纹理并输出 RGBA16F，最后转换回 10-bit RGBA 输入编码器。
+
+## 转码性能与分阶段管线
+
+解码、光流/输入验证、NR、历史累积、SR、编码/预览分别处理不同的帧，用 3–5 个固定
+缓冲槽衔接。每个阶段按帧顺序工作；NR 自身历史和额外的修正量历史各有一个状态所有者，
+预览与编码仍使用同一处理结果。缓存有上限，但会比原先单帧循环多使用内存。
+
+SR 使用独立工作进程，通过共享内存直接读写帧，控制管道只传槽编号与完成状态。
+这样 SR 与 NR 不共用进程级 NGX 客户端，也不会因 SR 驱动清理阻塞而卡住主程序。
+取消或阶段异常会停止关联进程、等待各阶段退出，然后释放缓冲。双遍编码的 GPU
+资源在生成帧缓存后释放。光流使用独立 CUDA 流与锁页上传缓冲，避免全上下文同步。
+HDR 界面预览仅转换显示需要的像素，并复用池化缓冲。
+
+NR 使用宿主已有的双帧提交队列，上传下一帧与上一帧 GPU 工作重叠；所有 NGX 调用
+由同一个阶段线程按序执行。旧宿主没有队列接口时退回同步调用。Release 程序关闭初始
+分层编译，使逐像素热路径从第一次调用起使用优化机器码。
+
+本机素材的测速结果和限制见 [性能验证记录](docs/PIPELINE_PERFORMANCE.md)。
+可设置 `DLSS5_PROFILE=1`，在日志中查看各阶段的平均毫秒/帧；并行阶段的耗时不能相加
+当作总帧耗时。CLI 支持 `--sr 2` / `--sr 4`、`--sr-quality 1..4` 和 `--preview 0`。
+对照旧顺序可用 `--nr-before-sr 0`，对照同步 NR 可用 `--nr-queue 0`；Core 对应
+`NrBeforeSuperResolution` 和 `UseAsyncNrQueue`，均默认启用。改变顺序会改变 NR 作用的
+分辨率及画面结果。宿主独立测速可运行测试程序的 `--nr-benchmark "输入.mp4"`。
+
+```powershell
+$env:DLSS5_PROFILE = '1'
+dotnet run --project src/Dlss5Demo.Cli -c Release -- "输入.mp4" "输出.mp4" --frames 180 --sr 2
+# 使用至少 12 帧的小素材运行真实管线回归，含 SR、取消/重启与双遍编码
+dotnet run --project tests/Dlss5Demo.Tests -c Release -- --pipeline "小素材.mp4"
+```
+
+将 Core 嵌入其他程序时，在入口先调用 `RtxVideoWorker.TryServe(args)`；返回 `true`
+时结束正常启动流程。也可用 `TranscodeOptions.VsrWorkerExecutablePath` 指定具备该入口的
+工作程序。桌面程序、CLI 和测试程序已接入，无需额外安装工作程序。
 
 ## DLSS NR 运行库选择
 

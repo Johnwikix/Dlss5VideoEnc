@@ -54,6 +54,11 @@ public partial class MainWindow : Window
         Closed += MainWindow_Closed;
         SizeChanged += (_, _) => LogBox.Height = Height < 800 ? 70 : 110;
         _settings = AppSettingsStore.Load();
+        SuperResolutionBox.SelectionChanged += (_, _) => UpdateProcessingOrderHint();
+        NrBeforeSuperResolutionBox.PropertyChanged += (_, change) =>
+        {
+            if (change.Property.Name == nameof(CheckBox.IsChecked)) UpdateProcessingOrderHint();
+        };
         AttachValueLabel(IntensitySlider, IntensityValue);
         AttachValueLabel(LocalToneSlider, LocalToneValue);
         AttachValueLabel(LocalStructSlider, LocalStructValue);
@@ -102,6 +107,7 @@ public partial class MainWindow : Window
         DlssMotionGuidance = MotionGuidanceBox.IsChecked == true,
         DlssContinuousHistory = ContinuousHistoryBox.IsChecked == true,
         SuperResolutionIndex = SuperResolutionBox.SelectedIndex,
+        NrBeforeSuperResolution = NrBeforeSuperResolutionBox.IsChecked == true,
         ContainerIndex = ContainerBox.SelectedIndex,
         CodecIndex = CodecBox.SelectedIndex,
         HardwareIndex = HardwareBox.SelectedIndex,
@@ -142,6 +148,8 @@ public partial class MainWindow : Window
         MotionGuidanceBox.IsChecked = _settings.DlssMotionGuidance;
         ContinuousHistoryBox.IsChecked = _settings.DlssContinuousHistory;
         Select(SuperResolutionBox, _settings.SuperResolutionIndex);
+        NrBeforeSuperResolutionBox.IsChecked = _settings.NrBeforeSuperResolution;
+        UpdateProcessingOrderHint();
         Select(ContainerBox, _settings.ContainerIndex);
         Select(CodecBox, _settings.CodecIndex);
         Select(HardwareBox, _settings.HardwareIndex);
@@ -397,6 +405,16 @@ public partial class MainWindow : Window
         };
     }
 
+    private void UpdateProcessingOrderHint()
+    {
+        var enabled = CollectSuperResolutionScale() > 1;
+        NrBeforeSuperResolutionBox.IsEnabled = enabled;
+        ProcessingOrderHint.Text = !enabled ? "超分已关闭：仅处理 DLSS NR。"
+            : NrBeforeSuperResolutionBox.IsChecked == true
+                ? "NR → 超分 → 编码。NR 在源分辨率处理，速度更快。"
+                : "超分 → NR → 编码。NR 在放大后的分辨率处理，可对照更细的视觉效果，耗时增加。";
+    }
+
     private int CollectSuperResolutionScale()
     {
         if (SuperResolutionBox.SelectedItem is ComboBoxItem item &&
@@ -448,6 +466,7 @@ public partial class MainWindow : Window
             FfmpegPath = DemoPaths.FfmpegPath, HostDllPath = DemoPaths.HostDllPath, RuntimeDllPath = DemoPaths.RuntimeDllPath, LogPath = DemoPaths.LogPath,
             VsrHostDllPath = DemoPaths.VsrHostDllPath, VsrRuntimeDllPath = DemoPaths.VsrRuntimeDllPath, VsrLogPath = DemoPaths.VsrLogPath,
             SuperResolutionScale = CollectSuperResolutionScale(), SuperResolutionQuality = 4,
+            NrBeforeSuperResolution = NrBeforeSuperResolutionBox.IsChecked == true,
             Dlss = CollectDlssOptions(), Video = videoOptions, VideoEncoder = VideoCodecNames.Encoder(videoOptions),
             Quality = (int)QualitySlider.Value, MaxFrames = FramesLimitBox.IsChecked == true ? 60 : null,
             CopyAudio = videoOptions.AudioCodec != AudioCodec.None, EnablePreviewFrames = true,
@@ -456,9 +475,11 @@ public partial class MainWindow : Window
         _lastOutputPath = output; OutputBox.Text = output;
         // 转码定参即落盘：之后即使闪退，配置也不丢（窗口关闭时还会再存一次）。
         AppSettingsStore.Save(CaptureSettings());
-        var srLabel = options.SuperResolutionScale > 1 ? $"RTX Video {options.SuperResolutionScale}× → " : "";
-        PipelineStatus.Text = $"{srLabel}DLSS NR 正在处理帧…";
-        Log($"开始转码: {Path.GetFileName(input)} → {Path.GetFileName(output)} · {options.VideoEncoder} · {srLabel}DLSS NR");
+        var orderLabel = options.SuperResolutionScale <= 1 ? "DLSS NR"
+            : options.NrBeforeSuperResolution ? $"DLSS NR → RTX Video {options.SuperResolutionScale}×"
+            : $"RTX Video {options.SuperResolutionScale}× → DLSS NR";
+        PipelineStatus.Text = $"{orderLabel} 正在处理帧…";
+        Log($"开始转码: {Path.GetFileName(input)} → {Path.GetFileName(output)} · {options.VideoEncoder} · {orderLabel}");
         Log($"光流运动矢量: {(options.Dlss.MotionGuidance ? "开启" : "关闭")} · NR 连续历史: {(options.Dlss.ContinuousHistory ? "开启" : "关闭")}");
         try
         {

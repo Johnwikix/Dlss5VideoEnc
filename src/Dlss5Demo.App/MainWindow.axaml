@@ -228,7 +228,9 @@
                     <ComboBoxItem Tag="2" Content="2×（RTX Video）"/>
                     <ComboBoxItem Tag="4" Content="4×（RTX Video）"/>
                   </ComboBox>
-                  <TextBlock Classes="hint" Text="处理顺序：超分 → DLSS NR → 编码。"/>
+                  <CheckBox x:Name="NrBeforeSuperResolutionBox" Content="NR 前置（速度优先）" IsChecked="True" Margin="0,6,0,0"
+                            ToolTip.Tip="勾选：先 NR，再超分。取消勾选：先超分，再 NR，可对照后置 NR 的视觉效果。"/>
+                  <TextBlock x:Name="ProcessingOrderHint" Classes="hint" Text="超分已关闭：仅处理 DLSS NR。"/>
                 </StackPanel>
                 <Expander x:Name="FiltersExpander" Header="缩放、降噪与裁剪" HorizontalAlignment="Stretch">
                   <StackPanel Spacing="12" Margin="0,12,0,0">

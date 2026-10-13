@@ -1,11 +1,18 @@
 using Dlss5Demo.Core;
 
+if (RtxVideoWorker.TryServe(args)) return;
+
 var input = args.Length > 0 ? args[0] : @"F:\Captures\2021.02.17-19.27.mp4";
 var output = args.Length > 1 ? args[1] : "output_dlss.mp4";
 int? maxFrames = null;
 var options = new DlssNrOptions();
 var encoder = "hevc_nvenc";
 var quality = 19;
+var superResolutionScale = 1;
+var superResolutionQuality = 4;
+var previewEnabled = true;
+var nrFirst = true;
+var nrQueue = true;
 
 for (var index = 2; index < args.Length - 1; index++)
 {
@@ -23,6 +30,11 @@ for (var index = 2; index < args.Length - 1; index++)
         case "--motion-guidance": options = options with { MotionGuidance = args[++index] != "0" }; break;
         case "--encoder": encoder = args[++index]; break;
         case "--quality": quality = int.Parse(args[++index]); break;
+        case "--sr": superResolutionScale = RtxVideoSuperResolutionHost.NormalizeScale(int.Parse(args[++index])); break;
+        case "--sr-quality": superResolutionQuality = Math.Clamp(int.Parse(args[++index]), 1, 4); break;
+        case "--preview": previewEnabled = args[++index] != "0"; break;
+        case "--nr-before-sr": nrFirst = args[++index] != "0"; break;
+        case "--nr-queue": nrQueue = args[++index] != "0"; break;
     }
 }
 
@@ -63,6 +75,11 @@ var result = await DlssVideoPipeline.RunAsync(input, output, new TranscodeOption
     VideoEncoder = encoder,
     Quality = quality,
     MaxFrames = maxFrames,
+    SuperResolutionScale = superResolutionScale,
+    SuperResolutionQuality = superResolutionQuality,
+    NrBeforeSuperResolution = nrFirst,
+    UseAsyncNrQueue = nrQueue,
+    EnablePreviewFrames = previewEnabled,
     PreviewSink = previewSink,
 }, progress);
 

@@ -2,6 +2,8 @@ using Dlss5Demo.Core;
 using System.Numerics;
 using System.Diagnostics;
 
+if (RtxVideoWorker.TryServe(args)) return;
+
 var tests = new (string Name, Action Run)[]
 {
     ("Stable input suppresses alternating NR correction", StableCorrection),
@@ -14,6 +16,12 @@ var tests = new (string Name, Action Run)[]
     ("Parallel row path matches sequential behavior", ParallelRows),
     ("Translated correction follows matching input motion", MotionCorrection),
     ("Invalid motion and disocclusion reject history", InvalidMotion),
+    ("Bounded stages preserve frame order and buffer ownership", PipelineOrder),
+    ("Stage failures preserve the original error and stop peers", PipelineFailure),
+    ("Cancellation joins all frame stages", PipelineCancellation),
+    ("Input preparation can run ahead without changing temporal output", PreparedHistory),
+    ("Integer optical-flow luma retains exact ties-to-even rounding", GrayRounding),
+    ("Small HDR previews match full conversion then nearest resizing", HdrPreviewSampling),
 };
 foreach (var test in tests)
 {
@@ -27,17 +35,222 @@ if (args.Contains("--gpu"))
     NativeFormatSwitch();
     Console.WriteLine("PASS Native HDR to SDR session format switch");
     NativeHistorySwitch();
+    NativeQueueParity();
 }
+var benchmarkArgument = Array.IndexOf(args, "--nr-benchmark");
+if (benchmarkArgument >= 0) NativeNrBenchmark(args[benchmarkArgument + 1]);
 var flickerArgument = Array.IndexOf(args, "--gpu-flicker");
 if (flickerArgument >= 0)
     NativeFlicker(args[flickerArgument + 1]);
 var comparisonArgument = Array.IndexOf(args, "--compare-video");
 if (comparisonArgument >= 0)
     CompareVideo(args[comparisonArgument + 1], args[comparisonArgument + 2], args[comparisonArgument + 3]);
+var pipelineArgument = Array.IndexOf(args, "--pipeline");
+if (pipelineArgument >= 0)
+    PipelineIntegration(args[pipelineArgument + 1]).GetAwaiter().GetResult();
 
 static void Check(bool condition, string message)
 {
     if (!condition) throw new Exception(message);
+}
+
+static void GrayRounding()
+{
+    for (var sum = 0; sum <= 255 * 256; sum++)
+        Check(NvidiaOpticalFlow.ToGray(sum) == (byte)MathF.Round(sum / 256f), $"Luma rounding changed for weighted sum {sum}.");
+}
+
+static unsafe void HdrPreviewSampling()
+{
+    const int width = 32, height = 18, targetWidth = 13, targetHeight = 7;
+    var source = new Half[width * height * 4];
+    for (var index = 0; index < source.Length; index++) source[index] = (Half)((index % 173) / 172f);
+    var full = new byte[width * height * 4];
+    var small = new byte[targetWidth * targetHeight * 4];
+    fixed (Half* input = source)
+    {
+        DlssVideoPipeline.FillHdrPreview((ushort*)input, width, height, full, width, height);
+        DlssVideoPipeline.FillHdrPreview((ushort*)input, width, height, small, targetWidth, targetHeight);
+    }
+    for (var y = 0; y < targetHeight; y++)
+        for (var x = 0; x < targetWidth; x++)
+        {
+            var pixel = (y * height / targetHeight * width + x * width / targetWidth) * 4;
+            Check(small.AsSpan((y * targetWidth + x) * 4, 4).SequenceEqual(full.AsSpan(pixel, 4)), "HDR preview sampling changed the displayed colors.");
+        }
+}
+
+static async Task PipelineIntegration(string input)
+{
+    var source = MediaProbe.Probe(input);
+    var root = Path.Combine(Environment.CurrentDirectory, "build", "performance", "integration");
+    Directory.CreateDirectory(root);
+    var cases = new[]
+    {
+        (Name: "both", Scale: 1, Motion: true, History: true, NrFirst: true),
+        (Name: "history", Scale: 1, Motion: false, History: true, NrFirst: true),
+        (Name: "motion", Scale: 1, Motion: true, History: false, NrFirst: true),
+        (Name: "none", Scale: 1, Motion: false, History: false, NrFirst: true),
+        (Name: "sr2", Scale: 2, Motion: true, History: true, NrFirst: true),
+        (Name: "sr4", Scale: 4, Motion: true, History: true, NrFirst: true),
+        (Name: "sr2-first", Scale: 2, Motion: true, History: true, NrFirst: false),
+        (Name: "sr4-first", Scale: 4, Motion: true, History: true, NrFirst: false),
+    };
+    TranscodeOptions Options(string name, int scale, ITranscodePreviewSink? preview = null) => new()
+    {
+        HostDllPath = DemoPaths.HostDllPath, RuntimeDllPath = DemoPaths.RuntimeDllPath,
+        LogPath = Path.Combine(root, name + "-nr.log"), VsrLogPath = Path.Combine(root, name + "-sr.log"),
+        SuperResolutionScale = scale, MaxFrames = 12, CopyAudio = false, PreviewSink = preview,
+        Video = new VideoTranscodeOptions { AudioCodec = AudioCodec.None },
+    };
+    foreach (var item in cases)
+    {
+        using var preview = new TranscodePreviewBuffer(160, 90);
+        var output = Path.Combine(root, item.Name + (source.IsHdr ? "-hdr" : "") + ".mp4");
+        var options = Options(item.Name, item.Scale, preview) with
+        {
+            NrBeforeSuperResolution = item.NrFirst,
+            Dlss = new DlssNrOptions { MotionGuidance = item.Motion, ContinuousHistory = item.History, TemporalStabilization = item.History },
+        };
+        var result = await DlssVideoPipeline.RunAsync(input, output, options).WaitAsync(TimeSpan.FromSeconds(60));
+        var encoded = MediaProbe.Probe(output);
+        Check(result.FramesProcessed == 12 && encoded.FrameCount == 12, $"Wrong output frame count: {item.Name}.");
+        Check(encoded.Width == source.Width * item.Scale && encoded.Height == source.Height * item.Scale, "SR output dimensions changed.");
+        Check(encoded.IsHdr == source.IsHdr, "HDR metadata was not preserved.");
+        using var last = preview.TakeLatest();
+        Check(last != null && last.FramesDone == 12 && last.Width <= 160 && last.Height <= 90, "Final source/output preview pair was lost.");
+        Console.WriteLine($"PASS Pipeline {item.Name}: {encoded.Width}×{encoded.Height}, 12 frames, hdr={encoded.IsHdr}");
+    }
+    using (var preview = new TranscodePreviewBuffer(160, 90))
+    {
+        var output = Path.Combine(root, "one-frame.mp4");
+        var result = await DlssVideoPipeline.RunAsync(input, output, Options("one-frame", 2, preview) with { MaxFrames = 1 })
+            .WaitAsync(TimeSpan.FromSeconds(30));
+        using var last = preview.TakeLatest();
+        Check(result.FramesProcessed == 1 && MediaProbe.Probe(output).FrameCount == 1 && last?.FramesDone == 1,
+            "A partial NR submission queue did not flush its final frame.");
+        Console.WriteLine("PASS Pipeline flushes a single frame from the NR queue");
+    }
+    using (var cancel = new CancellationTokenSource())
+    {
+        var progress = new InlineProgress(_ => cancel.Cancel());
+        try
+        {
+            await DlssVideoPipeline.RunAsync(input, Path.Combine(root, "cancel.mp4"), Options("cancel", 2), progress, cancel.Token)
+                .WaitAsync(TimeSpan.FromSeconds(30));
+            throw new Exception("SR pipeline ignored cancellation.");
+        }
+        catch (OperationCanceledException) { }
+    }
+    // A new SR session must start after all canceled workers and native state have been reclaimed.
+    var restarted = await DlssVideoPipeline.RunAsync(input, Path.Combine(root, "restart.mp4"), Options("restart", 2))
+        .WaitAsync(TimeSpan.FromSeconds(30));
+    Check(restarted.FramesProcessed == 12, "SR session failed after cancellation.");
+    Console.WriteLine("PASS Pipeline cancellation and SR restart");
+    if (!source.IsHdr)
+    {
+        var options = Options("two-pass", 2) with
+        {
+            VideoEncoder = "libx264",
+            Video = new VideoTranscodeOptions
+            {
+                VideoCodec = VideoCodec.H264, HardwareBackend = HardwareBackend.Software,
+                RateControl = RateControlMode.Bitrate, VideoBitrateKbps = 1500, TwoPassEnabled = true, AudioCodec = AudioCodec.None,
+            },
+        };
+        var output = Path.Combine(root, "two-pass.mp4");
+        var result = await DlssVideoPipeline.RunAsync(input, output, options).WaitAsync(TimeSpan.FromSeconds(60));
+        Check(result.FramesProcessed == 12 && MediaProbe.Probe(output).FrameCount == 12, "Two-pass frame cache lost frames.");
+        Console.WriteLine("PASS Pipeline SR + two-pass encoding");
+    }
+    var invalidOutput = Path.Combine(root, "directory-as-output.mp4");
+    Directory.CreateDirectory(invalidOutput);
+    try
+    {
+        await DlssVideoPipeline.RunAsync(input, invalidOutput, Options("encoder-failure", 2)).WaitAsync(TimeSpan.FromSeconds(30));
+        throw new Exception("Failed encoder was not reported.");
+    }
+    catch (Exception error) when (error is IOException or InvalidOperationException) { }
+    Console.WriteLine("PASS Pipeline encoder failure cleans up all stages");
+}
+
+static void PipelineOrder()
+{
+    var buffers = Enumerable.Range(0, 3).Select(_ => new TestFrame()).ToArray();
+    var output = new List<long>();
+    var aborted = 0;
+    var frames = BoundedFramePipeline.Run(buffers,
+        (frame, index) => { frame.Value = index; return index < 120; },
+        [ (frame, index) => { Thread.SpinWait(10000); Check(frame.Value == index, "Input slot reused during processing."); frame.Value += 1000; },
+          (frame, index) => { Thread.Yield(); Check(frame.Value == index + 1000, "Stage metadata/frame pairing changed."); } ],
+        (frame, index) => { if (index % 7 == 0) Thread.Sleep(1); output.Add(frame.Value); },
+        () => Interlocked.Increment(ref aborted), CancellationToken.None);
+    Check(frames == 120 && output.SequenceEqual(Enumerable.Range(0, 120).Select(index => index + 1000L)), "Dropped/reordered output frames.");
+    Check(aborted == 0, "Normal EOF aborted workers.");
+}
+
+static void PipelineFailure()
+{
+    var buffers = Enumerable.Range(0, 3).Select(_ => new TestFrame()).ToArray();
+    var original = new IOException("injected stage failure");
+    var aborted = 0;
+    var task = Task.Run(() => BoundedFramePipeline.Run(buffers, (_, index) => index < 10000,
+        [ (_, index) => { if (index == 5) throw original; } ], (_, _) => Thread.Sleep(1),
+        () => Interlocked.Increment(ref aborted), CancellationToken.None));
+    try { task.WaitAsync(TimeSpan.FromSeconds(5)).GetAwaiter().GetResult(); throw new Exception("Stage error was swallowed."); }
+    catch (IOException error) { Check(ReferenceEquals(error, original), "Cleanup masked the original failure."); }
+    Check(aborted == 1, "Failure did not unblock the other stages exactly once.");
+}
+
+static void PipelineCancellation()
+{
+    using var stop = new CancellationTokenSource(TimeSpan.FromMilliseconds(30));
+    var buffers = Enumerable.Range(0, 3).Select(_ => new TestFrame()).ToArray();
+    var aborted = 0;
+    var task = Task.Run(() => BoundedFramePipeline.Run(buffers, (_, _) => true,
+        [ (_, _) => Thread.Sleep(2) ], (_, _) => Thread.Sleep(2),
+        () => Interlocked.Increment(ref aborted), stop.Token));
+    try { task.WaitAsync(TimeSpan.FromSeconds(5)).GetAwaiter().GetResult(); throw new Exception("Cancellation was ignored."); }
+    catch (OperationCanceledException) { }
+    Check(aborted == 1, "Cancellation did not unblock stage IO.");
+}
+
+static unsafe void PreparedHistory()
+{
+    const int width = 32, height = 24, count = 30;
+    var reference = new DlssNrTemporalStabilizer(width, height, false, 60, true);
+    var staged = new DlssNrTemporalStabilizer(width, height, false, 60, true);
+    var inputs = new byte[count][];
+    var outputs = new byte[count][];
+    var expected = new byte[count][];
+    var motions = new float[count][];
+    var errors = new float[count][];
+    var resets = new bool[count];
+    for (var frame = 0; frame < count; frame++)
+    {
+        inputs[frame] = Rgba(width, height, frame < 12 ? (byte)60 : (byte)180);
+        for (var pixel = 0; pixel < width * height; pixel++)
+            inputs[frame][pixel * 4] += (byte)((pixel % width - frame + 32) % 16);
+        outputs[frame] = inputs[frame].ToArray();
+        for (var pixel = 0; pixel < width * height; pixel++) outputs[frame][pixel * 4] += frame % 2 == 0 ? (byte)10 : (byte)0;
+        expected[frame] = outputs[frame].ToArray();
+        motions[frame] = new float[width * height * 2];
+        for (var pixel = 0; pixel < width * height; pixel++) motions[frame][pixel * 2] = -1;
+        errors[frame] = new float[width * height];
+        fixed (byte* input = inputs[frame], result = expected[frame])
+        {
+            reference.PrepareFrame(input, motions[frame]);
+            reference.Apply(input, result);
+            // Prepare the entire input sequence before applying any staged output.
+            resets[frame] = staged.PrepareInput(input, motions[frame], errors[frame]);
+        }
+    }
+    for (var frame = 0; frame < count; frame++)
+    {
+        staged.SetPreparedFrame(motions[frame], errors[frame], resets[frame]);
+        fixed (byte* input = inputs[frame], result = outputs[frame]) staged.Apply(input, result);
+        Check(outputs[frame].SequenceEqual(expected[frame]), $"Prepared input changed frame {frame} history/cut behavior.");
+    }
 }
 
 static byte[] Rgba(int width, int height, byte value, byte alpha = 255)
@@ -301,6 +514,114 @@ static unsafe void NativeHistorySwitch()
     Console.WriteLine("PASS Native continuous-history switch resets each frame and survives option updates");
 }
 
+static unsafe void NativeQueueParity()
+{
+    const int width = 512, height = 288, count = 12;
+    var root = Path.Combine(Environment.CurrentDirectory, "build", "performance");
+    Directory.CreateDirectory(root);
+    foreach (var hdr in new[] { false, true })
+        foreach (var history in new[] { false, true })
+        {
+            var inputs = new byte[count][];
+            var expected = new byte[count][];
+            var motion = new float[width * height * 2];
+            for (var pixel = 0; pixel < width * height; pixel++) motion[pixel * 2] = -1;
+            for (var index = 0; index < count; index++)
+            {
+                var rgba = Rgba(width, height, (byte)(40 + index * 15));
+                inputs[index] = hdr ? new byte[rgba.Length * 2] : rgba;
+                if (hdr)
+                    fixed (byte* data = inputs[index])
+                        for (var value = 0; value < rgba.Length; value++) ((Half*)data)[value] = (Half)(rgba[value] / 255f);
+                expected[index] = new byte[inputs[index].Length];
+            }
+            var options = new DlssNrOptions { ContinuousHistory = history };
+            using (var host = DlssNrHost.Create(DemoPaths.HostDllPath, DemoPaths.RuntimeDllPath,
+                Path.Combine(root, "queue-sync.log"), width, height, options, hdr, hdr ? "smpte2084" : ""))
+            {
+                host.ConfigureMotionGuidance(true);
+                for (var index = 0; index < count; index++)
+                    fixed (byte* color = inputs[index], output = expected[index])
+                    fixed (float* vectors = motion)
+                        Check(host.ProcessVideoFrame(color, vectors, output, index is 0 or 7), "Synchronous NR fixture failed.");
+            }
+            using (var host = DlssNrHost.Create(DemoPaths.HostDllPath, DemoPaths.RuntimeDllPath,
+                Path.Combine(root, "queue-async.log"), width, height, options, hdr, hdr ? "smpte2084" : ""))
+            {
+                host.ConfigureMotionGuidance(true);
+                Check(host.QueueCapacity >= 2, "Native fixture must support two in-flight frames.");
+                var output = new byte[inputs[0].Length];
+                var pending = 0;
+                var collected = 0;
+                void Collect()
+                {
+                    fixed (byte* destination = output)
+                        Check(host.DequeueVideoFrame(destination), "Queued NR readback failed.");
+                    Check(output.AsSpan().SequenceEqual(expected[collected]), $"NR queue changed frame {collected}, hdr={hdr}, history={history}.");
+                    pending--; collected++;
+                }
+                for (var index = 0; index < count; index++)
+                {
+                    fixed (byte* color = inputs[index])
+                    fixed (float* vectors = motion)
+                        Check(host.EnqueueVideoFrame(color, vectors, index is 0 or 7), "Queued NR submission failed.");
+                    if (++pending == host.QueueCapacity) Collect();
+                }
+                while (pending > 0) Collect();
+                Check(collected == count, "Final native queued frame was lost.");
+            }
+            Console.WriteLine($"PASS Native NR queue exact parity: hdr={hdr}, history={history}, reset midstream");
+        }
+}
+
+static unsafe void NativeNrBenchmark(string inputPath)
+{
+    var video = MediaProbe.Probe(inputPath);
+    var input = new byte[checked(video.Width * video.Height * 4)];
+    var output = new byte[input.Length];
+    var start = new ProcessStartInfo(DemoPaths.FfmpegPath) { UseShellExecute = false, CreateNoWindow = true, RedirectStandardOutput = true };
+    foreach (var argument in new[] { "-v", "error", "-i", inputPath, "-frames:v", "1", "-f", "rawvideo", "-pix_fmt", "rgba", "pipe:1" })
+        start.ArgumentList.Add(argument);
+    using (var decoder = Process.Start(start)!)
+    {
+        decoder.StandardOutput.BaseStream.ReadExactly(input);
+        decoder.WaitForExit();
+        Check(decoder.ExitCode == 0, "NR benchmark source decoding failed.");
+    }
+    foreach (var queued in new[] { false, true })
+        foreach (var guidance in new[] { false, true })
+        {
+            using var host = DlssNrHost.Create(DemoPaths.HostDllPath, DemoPaths.RuntimeDllPath,
+                DemoPaths.LogPath, video.Width, video.Height, new DlssNrOptions());
+            host.ConfigureMotionGuidance(guidance);
+            var motion = guidance ? new float[checked(video.Width * video.Height * 2)] : null;
+            fixed (byte* color = input, destination = output)
+            fixed (float* vectors = motion)
+            {
+                for (var warm = 0; warm < 10; warm++) Check(host.ProcessVideoFrame(color, vectors, destination, warm == 0), "Warm-up failed.");
+                const int count = 180;
+                var timer = Stopwatch.StartNew();
+                var pending = 0;
+                for (var frame = 0; frame < count; frame++)
+                {
+                    if (!queued) Check(host.ProcessVideoFrame(color, vectors, destination, false), "NR evaluation failed.");
+                    else
+                    {
+                        Check(host.EnqueueVideoFrame(color, vectors, false), "NR enqueue failed.");
+                        if (++pending == host.QueueCapacity)
+                        {
+                            Check(host.DequeueVideoFrame(destination), "NR dequeue failed.");
+                            pending--;
+                        }
+                    }
+                }
+                while (pending-- > 0) Check(host.DequeueVideoFrame(destination), "NR tail failed.");
+                timer.Stop();
+                Console.WriteLine($"NR_HOST queued={queued} guidance={guidance}: {timer.Elapsed.TotalMilliseconds / count:F2} ms/frame (CPU input/upload/inference/fence/readback; predecoded repeated frame)");
+            }
+        }
+}
+
 static unsafe void NativeFlicker(string inputPath)
 {
     const int width = 512, height = 288;
@@ -485,4 +806,14 @@ static float Smooth(float low, float high, float value)
 {
     var t = Math.Clamp((value - low) / (high - low), 0, 1);
     return t * t * (3 - 2 * t);
+}
+
+sealed class TestFrame
+{
+    internal long Value;
+}
+
+sealed class InlineProgress(Action<TranscodeProgress> report) : IProgress<TranscodeProgress>
+{
+    public void Report(TranscodeProgress value) => report(value);
 }

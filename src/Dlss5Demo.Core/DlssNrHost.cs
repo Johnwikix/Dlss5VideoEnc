@@ -101,6 +101,15 @@ public sealed class DlssNrHost : IDisposable
         void* output, int reset);
 
     [DllImport(DllName, CallingConvention = CallingConvention.Cdecl)]
+    private static extern int dlssnr_capabilities();
+    [DllImport(DllName, CallingConvention = CallingConvention.Cdecl)]
+    private static extern int dlssnr_queue_capacity();
+    [DllImport(DllName, CallingConvention = CallingConvention.Cdecl)]
+    private static extern unsafe int dlssnr_enqueue(void* color, void* motion, void* depth, int reset);
+    [DllImport(DllName, CallingConvention = CallingConvention.Cdecl)]
+    private static extern unsafe int dlssnr_dequeue(void* output);
+
+    [DllImport(DllName, CallingConvention = CallingConvention.Cdecl)]
     private static extern void dlssnr_shutdown();
 
     [DllImport(DllName, CallingConvention = CallingConvention.Cdecl)]
@@ -244,6 +253,30 @@ public sealed class DlssNrHost : IDisposable
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
         return dlssnr_process(color, motion, null, output, reset || !_options.ContinuousHistory ? 1 : 0) != 0;
+    }
+
+    internal int QueueCapacity
+    {
+        get
+        {
+            ObjectDisposedException.ThrowIf(_disposed, this);
+            try { return (dlssnr_capabilities() & 2) != 0 ? Math.Clamp(dlssnr_queue_capacity(), 1, 16) : 1; }
+            catch (EntryPointNotFoundException) { return 1; }
+        }
+    }
+
+    // Both methods must be called by the same stage owner. Native enqueue copies
+    // all CPU inputs before returning; dequeue waits for the oldest GPU fence.
+    internal unsafe bool EnqueueVideoFrame(byte* color, float* motion, bool reset)
+    {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+        return dlssnr_enqueue(color, motion, null, reset || !_options.ContinuousHistory ? 1 : 0) != 0;
+    }
+
+    internal unsafe bool DequeueVideoFrame(byte* output)
+    {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+        return dlssnr_dequeue(output) != 0;
     }
 
     private static DlssNrOptions NormalizeOptions(DlssNrOptions options) => options with

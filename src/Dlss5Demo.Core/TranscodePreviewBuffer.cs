@@ -6,6 +6,9 @@ namespace Dlss5Demo.Core;
 /// <summary>A synchronous preview consumer. Spans are valid only for the duration of Publish.</summary>
 public interface ITranscodePreviewSink
 {
+    /// <summary>Optional size hint; zero preserves full-size frame delivery for existing sinks.</summary>
+    int MaxFrameWidth => 0;
+    int MaxFrameHeight => 0;
     void Publish(ReadOnlySpan<byte> sourceRgba, int sourceWidth, int sourceHeight,
         ReadOnlySpan<byte> processedRgba, int processedWidth, int processedHeight,
         long framesDone, long totalFrames, double sourceFps);
@@ -61,6 +64,8 @@ public sealed class TranscodePreviewBuffer : ITranscodePreviewSink, IDisposable
     private readonly int _maxHeight;
     private TranscodePreviewFrame? _latest;
     private bool _disposed;
+    public int MaxFrameWidth => _maxWidth;
+    public int MaxFrameHeight => _maxHeight;
 
     public TranscodePreviewBuffer(int maxWidth = 960, int maxHeight = 540)
     {
