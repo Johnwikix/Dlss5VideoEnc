@@ -72,7 +72,7 @@ public static class DlssVideoPipeline
         try
         {
             var result = await RunCoreAsync(inputPath, outputPath, options, progress, cancellationToken).ConfigureAwait(false);
-            PipelineLog.Info($"管线完成: {result.FramesProcessed} 帧 · {result.AverageFps:0.0} fps → {outputPath}");
+            PipelineLog.Info($"管线完成: {result.FramesProcessed} 帧 · {result.AverageFps:0.0} fps → {result.OutputPath}");
             return result;
         }
         catch (OperationCanceledException)
@@ -106,13 +106,15 @@ public static class DlssVideoPipeline
         if (!File.Exists(inputPath))
             throw new FileNotFoundException("输入视频不存在。", inputPath);
 
-        PipelineLog.Info($"管线开始: {Path.GetFileName(inputPath)} → {Path.GetFileName(outputPath)} · {options.VideoEncoder}");
-
         var video = MediaProbe.Probe(inputPath, DemoPaths.FfprobePath);
         var scale = RtxVideoSuperResolutionHost.NormalizeScale(options.SuperResolutionScale);
         var plan = CreateProcessingPlan(video, scale, options.Video.PreserveHdr, options.NrBeforeSuperResolution);
         if ((plan.SourceWidth & 1) != 0 || (plan.SourceHeight & 1) != 0)
             throw new NotSupportedException($"暂不支持奇数尺寸视频（当前 {plan.SourceWidth}x{plan.SourceHeight}）。");
+
+        using var outputOwnership = OutputFileNames.Reserve(outputPath);
+        outputPath = outputOwnership.Path;
+        PipelineLog.Info($"管线开始: {Path.GetFileName(inputPath)} → {Path.GetFileName(outputPath)} · {options.VideoEncoder}");
 
         var totalFrames = options.MaxFrames is { } limit
             ? Math.Min(limit, video.FrameCount > 0 ? video.FrameCount : limit)
@@ -304,11 +306,13 @@ public static class DlssVideoPipeline
         if (plan.SourceWidth != plan.ProcessWidth) bytes += plan.ProcessBytes;
         if (plan.Hdr) bytes += plan.ProcessBytes;
         var pixels = (long)plan.NrWidth * plan.NrHeight;
-        if (motion) bytes += pixels * 8;
+        if (motion) bytes += pixels * 9;
         if (history) bytes += pixels * 4;
         // The lower bound permits SR, NR and CPU output history to overlap. Large
         // frames use fewer slots; histories/driver allocations are separate.
-        return (int)Math.Clamp(512L * 1024 * 1024 / Math.Max(bytes, 1), 3, 5);
+        // Leave room for confidence metadata without dropping a whole in-flight
+        // slot at common 1440p → 5K sizes. Histories/driver memory are separate.
+        return (int)Math.Clamp(576L * 1024 * 1024 / Math.Max(bytes, 1), 3, 5);
     }
 
     private static unsafe (long Frames, TimeSpan Elapsed) RunFrameCore(
@@ -318,7 +322,7 @@ public static class DlssVideoPipeline
         CancellationToken cancellationToken)
     {
         using var flow = host.MotionGuidance
-            ? NvidiaOpticalFlow.TryCreate(plan.NrWidth, plan.NrHeight, plan.Hdr) : null;
+            ? NvidiaOpticalFlow.TryCreate(plan.NrWidth, plan.NrHeight, plan.Hdr, host.FineMotion ? 1 : 4) : null;
         host.ConfigureMotionGuidance(flow != null);
         var temporal = host.TemporalStabilization
             ? new DlssNrTemporalStabilizer(plan.NrWidth, plan.NrHeight, plan.Hdr, sourceFps, flow != null) : null;
@@ -358,11 +362,13 @@ public static class DlssVideoPipeline
             void Prepare(VideoFrameSlot frame, long index)
             {
                 var started = metrics.Start();
-                flow?.Calculate(frame.Input, index == 0, frame.Motion);
+                flow?.Calculate(frame.Input, index == 0, frame.Motion, frame.RejectedMotion);
                 metrics.Record(2, started);
                 started = metrics.Start();
                 frame.Reset = temporal?.PrepareInput(frame.Input, frame.Motion, frame.Errors!) ?? index == 0;
                 if (frame.Reset) flow?.ResetHistory();
+                if (frame.Motion != null)
+                    MotionReliability.Apply(frame.Motion, frame.RejectedMotion!, frame.Errors, !frame.Reset);
                 metrics.Record(3, started);
             }
             void NeuralRendering(VideoFrameSlot frame, long index)
@@ -582,6 +588,8 @@ public static class DlssVideoPipeline
         int rawWidth, int rawHeight, bool hdr,
         string? rawInputPath = null, int pass = 0, string? passLog = null)
     {
+        // The path is a newly created file owned by this session; its live
+        // reservation prevents replacement. Existing user files are never passed here.
         var arguments = new List<string> { "-hide_banner", "-loglevel", "error", "-y" };
         if (rawInputPath is null)
             arguments.AddRange(["-f", "rawvideo", "-framerate", video.FrameRate,

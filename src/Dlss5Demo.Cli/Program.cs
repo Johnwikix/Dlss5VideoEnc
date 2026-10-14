@@ -28,6 +28,7 @@ for (var index = 2; index < args.Length - 1; index++)
         case "--temporal": options = options with { TemporalStabilization = args[++index] != "0" }; break;
         case "--continuous-history": options = options with { ContinuousHistory = args[++index] != "0" }; break;
         case "--motion-guidance": options = options with { MotionGuidance = args[++index] != "0" }; break;
+        case "--fine-motion": options = options with { FineMotion = args[++index] != "0" }; break;
         case "--encoder": encoder = args[++index]; break;
         case "--quality": quality = int.Parse(args[++index]); break;
         case "--sr": superResolutionScale = RtxVideoSuperResolutionHost.NormalizeScale(int.Parse(args[++index])); break;

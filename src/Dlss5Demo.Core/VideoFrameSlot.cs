@@ -12,6 +12,7 @@ internal sealed unsafe class VideoFrameSlot : IDisposable
     internal byte* FinalOutput { get; private set; }
     internal byte* Encoded { get; private set; }
     internal float[]? Motion { get; }
+    internal bool[]? RejectedMotion { get; }
     internal float[]? Errors { get; }
     internal bool Reset { get; set; }
     private readonly bool _shared, _hdr, _nrFirst;
@@ -29,6 +30,7 @@ internal sealed unsafe class VideoFrameSlot : IDisposable
             Encoded = hdr ? Allocate(processBytes) : FinalOutput;
             // Allocated once per slot, never rented/returned while a native call owns a pointer.
             Motion = motion ? GC.AllocateUninitializedArray<float>(checked(pixels * 2), pinned: true) : null;
+            RejectedMotion = motion ? new bool[pixels] : null;
             Errors = history ? GC.AllocateUninitializedArray<float>(pixels) : null;
         }
         catch { Dispose(); throw; }

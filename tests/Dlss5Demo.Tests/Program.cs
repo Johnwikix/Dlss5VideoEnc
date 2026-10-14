@@ -6,6 +6,9 @@ if (RtxVideoWorker.TryServe(args)) return;
 
 var tests = new (string Name, Action Run)[]
 {
+    ("NR controls reject model-extrapolating and nonfinite strengths", StrengthBoundaries),
+    ("Output names skip existing files and directories", OutputNames),
+    ("Rejected motion cannot poison NR or correction history", ReliableMotion),
     ("Stable input suppresses alternating NR correction", StableCorrection),
     ("Changing source details remain immediate", SourceDetails),
     ("Local movement rejects mismatched history", LocalMovement),
@@ -32,6 +35,7 @@ Console.WriteLine($"{tests.Length} regression checks passed.");
 if (args.Contains("--gpu"))
 {
     NativeOpticalFlow();
+    NativeFineMotion();
     NativeFormatSwitch();
     Console.WriteLine("PASS Native HDR to SDR session format switch");
     NativeHistorySwitch();
@@ -52,6 +56,73 @@ if (pipelineArgument >= 0)
 static void Check(bool condition, string message)
 {
     if (!condition) throw new Exception(message);
+}
+
+static void StrengthBoundaries()
+{
+    var high = DlssNrHost.NormalizeOptions(new DlssNrOptions { Intensity = 20, LocalTone = 20, LocalStructure = 20, SkinStructure = 20 });
+    Check(high.Intensity == 5 && high.LocalTone == 5 && high.LocalStructure == 5 && high.SkinStructure == 5,
+        "Legacy 20× strengths can still reach the NR model.");
+    var invalid = DlssNrHost.NormalizeOptions(new DlssNrOptions { Intensity = float.NaN, LocalTone = float.PositiveInfinity,
+        LocalStructure = float.NegativeInfinity, SkinStructure = float.NaN });
+    Check(invalid.Intensity == 1 && invalid.LocalTone == 1 && invalid.LocalStructure == 1 && invalid.SkinStructure == .5f,
+        "Nonfinite strengths were not replaced by defaults.");
+    var low = DlssNrHost.NormalizeOptions(new DlssNrOptions { Intensity = -1, LocalTone = -1, LocalStructure = -1, SkinStructure = -1 });
+    Check(low.Intensity == 0 && low.LocalTone == 0 && low.LocalStructure == 0 && low.SkinStructure == 0, "Negative strengths escaped normalization.");
+    var normal = new DlssNrOptions { Intensity = .35f, LocalTone = 1.25f, LocalStructure = 2, SkinStructure = .5f };
+    Check(DlssNrHost.NormalizeOptions(normal) == normal, "Valid strengths changed.");
+}
+
+static void OutputNames()
+{
+    var root = Path.Combine(Path.GetTempPath(), "dlss5-names-" + Guid.NewGuid().ToString("N"));
+    Directory.CreateDirectory(root);
+    try
+    {
+        var input = Path.Combine(root, "input.mp4");
+        var output = Path.Combine(root, "input_dlss5.mp4");
+        File.WriteAllText(input, "source");
+        File.WriteAllText(output, "do not overwrite");
+        File.WriteAllText(Path.Combine(root, "input_dlss5_1.mp4"), "existing result");
+        Directory.CreateDirectory(Path.Combine(root, "input_dlss5_2.mp4"));
+        Check(OutputFileNames.ForInput(input, ".mp4") == Path.Combine(root, "input_dlss5_3.mp4"), "Duplicate suffix did not advance.");
+        Check(OutputFileNames.Available(input) == Path.Combine(root, "input_1.mp4"), "Input video could become its own output.");
+        Check(File.ReadAllText(output) == "do not overwrite" && File.ReadAllText(input) == "source", "Name generation modified a file.");
+        Check(OutputFileNames.ForInput(Path.Combine(root, "other.mkv"), ".gif") == Path.Combine(root, "other_dlss5.gif"), "Input/container changes did not change the suggestion.");
+        var reservations = Enumerable.Range(0, 8).Select(_ => Task.Run(() => OutputFileNames.Reserve(output))).ToArray();
+        Task.WaitAll(reservations);
+        try
+        {
+            Check(reservations.Select(task => task.Result.Path).Distinct().Count() == 8, "Concurrent writers claimed the same output name.");
+            Check(File.ReadAllText(output) == "do not overwrite", "A reservation truncated an existing file.");
+        }
+        finally { foreach (var task in reservations) task.Result.Dispose(); }
+    }
+    finally
+    {
+        // This fixture owns only these flat files and one empty child directory.
+        foreach (var file in Directory.EnumerateFiles(root)) File.Delete(file);
+        Directory.Delete(Path.Combine(root, "input_dlss5_2.mp4"));
+        Directory.Delete(root);
+    }
+}
+
+static void ReliableMotion()
+{
+    var motion = new float[] { 2, 1, 100, 100, float.NaN, float.PositiveInfinity, 3, 0 };
+    var rejected = new[] { false, true, false, false };
+    var errors = new[] { .01f, .01f, .01f, .2f };
+    MotionReliability.Apply(motion, rejected, errors, true);
+    Check(motion[0] == 2 && motion[1] == 1 && errors[0] == .01f, "Reliable displacement changed.");
+    for (var pixel = 1; pixel < 4; pixel++)
+        Check(rejected[pixel] && motion[pixel * 2] == 0 && motion[pixel * 2 + 1] == 0 && float.IsPositiveInfinity(errors[pixel]),
+            "An unreliable vector reached NR or remained eligible for history.");
+    var initial = new[] { 1f, 0f };
+    MotionReliability.Apply(initial, [false], [1f], false);
+    Check(initial[0] == 1, "Reset frame was tested against an absent color history.");
+    var withoutHistory = new[] { 5f, 6f };
+    MotionReliability.Apply(withoutHistory, [true], null, false);
+    Check(withoutHistory.All(value => value == 0), "Confidence rejection depended on the extra temporal filter.");
 }
 
 static void GrayRounding()
@@ -113,7 +184,7 @@ static async Task PipelineIntegration(string input)
             Dlss = new DlssNrOptions { MotionGuidance = item.Motion, ContinuousHistory = item.History, TemporalStabilization = item.History },
         };
         var result = await DlssVideoPipeline.RunAsync(input, output, options).WaitAsync(TimeSpan.FromSeconds(60));
-        var encoded = MediaProbe.Probe(output);
+        var encoded = MediaProbe.Probe(result.OutputPath);
         Check(result.FramesProcessed == 12 && encoded.FrameCount == 12, $"Wrong output frame count: {item.Name}.");
         Check(encoded.Width == source.Width * item.Scale && encoded.Height == source.Height * item.Scale, "SR output dimensions changed.");
         Check(encoded.IsHdr == source.IsHdr, "HDR metadata was not preserved.");
@@ -127,7 +198,7 @@ static async Task PipelineIntegration(string input)
         var result = await DlssVideoPipeline.RunAsync(input, output, Options("one-frame", 2, preview) with { MaxFrames = 1 })
             .WaitAsync(TimeSpan.FromSeconds(30));
         using var last = preview.TakeLatest();
-        Check(result.FramesProcessed == 1 && MediaProbe.Probe(output).FrameCount == 1 && last?.FramesDone == 1,
+        Check(result.FramesProcessed == 1 && MediaProbe.Probe(result.OutputPath).FrameCount == 1 && last?.FramesDone == 1,
             "A partial NR submission queue did not flush its final frame.");
         Console.WriteLine("PASS Pipeline flushes a single frame from the NR queue");
     }
@@ -160,14 +231,36 @@ static async Task PipelineIntegration(string input)
         };
         var output = Path.Combine(root, "two-pass.mp4");
         var result = await DlssVideoPipeline.RunAsync(input, output, options).WaitAsync(TimeSpan.FromSeconds(60));
-        Check(result.FramesProcessed == 12 && MediaProbe.Probe(output).FrameCount == 12, "Two-pass frame cache lost frames.");
+        Check(result.FramesProcessed == 12 && MediaProbe.Probe(result.OutputPath).FrameCount == 12, "Two-pass frame cache lost frames.");
         Console.WriteLine("PASS Pipeline SR + two-pass encoding");
     }
-    var invalidOutput = Path.Combine(root, "directory-as-output.mp4");
-    Directory.CreateDirectory(invalidOutput);
+    var protectedOutput = Path.Combine(root, "protected.mp4");
+    File.WriteAllText(protectedOutput, "never overwrite this file");
+    var renamed = await DlssVideoPipeline.RunAsync(input, protectedOutput, Options("no-overwrite", 1) with { MaxFrames = 1 })
+        .WaitAsync(TimeSpan.FromSeconds(30));
+    Check(File.ReadAllText(protectedOutput) == "never overwrite this file" && renamed.OutputPath != protectedOutput
+        && MediaProbe.Probe(renamed.OutputPath).FrameCount == 1, "Existing output was overwritten or the renamed video was lost.");
+    Console.WriteLine("PASS Pipeline suffixes existing outputs without modifying them");
+    var racedOutput = Path.Combine(root, "raced-" + Guid.NewGuid().ToString("N") + ".mp4");
+    // RunAsync reserves the destination before asynchronous SR initialization.
+    // A second process must be unable to claim that name or replace its file.
+    var racing = DlssVideoPipeline.RunAsync(input, racedOutput, Options("race", 2) with { MaxFrames = 1 });
+    var claimed = false;
     try
     {
-        await DlssVideoPipeline.RunAsync(input, invalidOutput, Options("encoder-failure", 2)).WaitAsync(TimeSpan.FromSeconds(30));
+        using var competitor = File.Open(racedOutput, FileMode.CreateNew, FileAccess.Write);
+        claimed = true;
+    }
+    catch (IOException) { }
+    var racedResult = await racing.WaitAsync(TimeSpan.FromSeconds(30));
+    Check(!claimed && racedResult.OutputPath == racedOutput && MediaProbe.Probe(racedResult.OutputPath).FrameCount == 1,
+        "Output reservation did not protect the name through encoder startup.");
+    Console.WriteLine("PASS Pipeline atomically reserves output names through encoder startup");
+    var invalidOutput = Path.Combine(root, "encoder-failure.mp4");
+    try
+    {
+        await DlssVideoPipeline.RunAsync(input, invalidOutput, Options("encoder-failure", 2) with { VideoEncoder = "missing_encoder_for_regression" })
+            .WaitAsync(TimeSpan.FromSeconds(30));
         throw new Exception("Failed encoder was not reported.");
     }
     catch (Exception error) when (error is IOException or InvalidOperationException) { }
@@ -707,8 +800,53 @@ static unsafe void NativeOpticalFlow()
         flow.Calculate(source, false);
         var center = (height / 2 * width + width / 2) * 2;
         Check(Math.Abs(flow.Motion[center] - shift) < 1, "Optical-flow hints survived the cut/reset.");
-        Console.WriteLine($"PASS Native optical flow current→previous displacement ({medianX:F2}, {medianY:F2})");
+        Console.WriteLine($"PASS Native optical flow current→previous displacement ({medianX:F2}, {medianY:F2}), grid={flow.GridSize}");
     }
+}
+
+static unsafe void NativeFineMotion()
+{
+    const int width = 512, height = 288, shift = 8;
+    var previous = new byte[width * height * 4];
+    new Random(271828).NextBytes(previous);
+    var current = new byte[previous.Length];
+    for (var y = 0; y < height; y++)
+        for (var x = 0; x < width; x++)
+        {
+            var dx = x < width / 2 ? shift : -shift;
+            var sourceX = Math.Clamp(x + dx, 0, width - 1);
+            previous.AsSpan((y * width + sourceX) * 4, 4).CopyTo(current.AsSpan((y * width + x) * 4, 4));
+        }
+    var results = new List<(double Error, double Coverage)>();
+    foreach (var grid in new[] { 4, 1 })
+    {
+        using var flow = NvidiaOpticalFlow.TryCreate(width, height, false, grid);
+        Check(flow != null, "Native quality comparison requires optical flow.");
+        fixed (byte* source = previous, destination = current)
+        {
+            flow!.Calculate(source, true);
+            flow.Calculate(destination, false);
+        }
+        double error = 0;
+        var valid = 0;
+        var total = 0;
+        for (var y = 48; y < height - 48; y++)
+            for (var x = width / 2 - 12; x < width / 2 + 12; x++)
+            {
+                total++;
+                var pixel = y * width + x;
+                Check(float.IsFinite(flow!.Motion[pixel * 2]) && float.IsFinite(flow.Motion[pixel * 2 + 1]), "Nonfinite guidance escaped the driver filter.");
+                if (flow.RejectedMotion[pixel]) continue;
+                var expected = x < width / 2 ? shift : -shift;
+                error += Math.Sqrt(Math.Pow(flow.Motion[pixel * 2] - expected, 2) + Math.Pow(flow.Motion[pixel * 2 + 1], 2));
+                valid++;
+            }
+        Check(valid > total * .5, "Quality comparison rejected most of its motion boundary.");
+        results.Add((error / valid, (double)valid / total));
+        Console.WriteLine($"Native opposing-motion boundary grid={flow!.GridSize}: EPE={error / valid:F3}px, coverage={(double)valid / total:P1}");
+    }
+    Check(results[1].Error <= results[0].Error + .5, "Fine flow degraded the opposing-motion boundary.");
+    Console.WriteLine("PASS Native fine motion retains distinct motion on opposite sides of an edge");
 }
 
 static unsafe void CompareVideo(string sourcePath, string beforePath, string afterPath)

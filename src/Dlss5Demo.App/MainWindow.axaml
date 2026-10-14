@@ -1,5 +1,6 @@
 <Window xmlns="https://github.com/avaloniaui"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:core="using:Dlss5Demo.Core"
         x:Class="Dlss5Demo.App.MainWindow"
         Icon="/Assets/dlss5-video-enc.png"
         Title="DLSS5 Video Enc"
@@ -92,6 +93,8 @@
                   <CheckBox x:Name="MotionGuidanceBox" Content="光流运动矢量" IsChecked="True"
                             ToolTip.Tip="估计当前帧到上一帧的运动，提供给 NR；关闭后不计算光流。"/>
                   <TextBlock Classes="hint" Text="对齐运动中的画面；启用后转码耗时增加。" Margin="28,0,0,0"/>
+                  <CheckBox x:Name="FineMotionBox" Content="精细光流匹配（更慢）" Margin="28,2,0,0"
+                            ToolTip.Tip="细化运动边缘的匹配；显卡不支持时自动回退到标准匹配。"/>
                   <CheckBox x:Name="ContinuousHistoryBox" Content="NR 连续历史" IsChecked="True"
                             ToolTip.Tip="保留 NR 连续帧历史并累积可信修正量；关闭后每帧重置 NR，停止修正量累积。"/>
                   <TextBlock Classes="hint" Text="利用前帧减轻闪烁；切镜时自动重置。" Margin="28,0,0,0"/>
@@ -102,28 +105,28 @@
                     <TextBlock Classes="fieldLabel" Text="强度"/>
                     <TextBlock x:Name="IntensityValue" Grid.Column="1" Text="1.0×" Foreground="#5CE1E6"/>
                   </Grid>
-                  <Slider x:Name="IntensitySlider" Minimum="0" Maximum="20" Value="1" TickFrequency="1" IsSnapToTickEnabled="True"/>
+                  <Slider x:Name="IntensitySlider" Minimum="0" Maximum="{x:Static core:DlssNrOptions.MaximumStrength}" Value="1" TickFrequency="0.1" IsSnapToTickEnabled="True"/>
                 </StackPanel>
                 <StackPanel Spacing="4">
                   <Grid ColumnDefinitions="*,Auto">
                     <TextBlock Classes="fieldLabel" Text="局部色调"/>
                     <TextBlock x:Name="LocalToneValue" Grid.Column="1" Text="1.0×" Foreground="#B8F4F0"/>
                   </Grid>
-                  <Slider x:Name="LocalToneSlider" Minimum="0" Maximum="20" Value="1" TickFrequency="1" IsSnapToTickEnabled="True"/>
+                  <Slider x:Name="LocalToneSlider" Minimum="0" Maximum="{x:Static core:DlssNrOptions.MaximumStrength}" Value="1" TickFrequency="0.1" IsSnapToTickEnabled="True"/>
                 </StackPanel>
                 <StackPanel Spacing="4">
                   <Grid ColumnDefinitions="*,Auto">
                     <TextBlock Classes="fieldLabel" Text="局部结构"/>
                     <TextBlock x:Name="LocalStructValue" Grid.Column="1" Text="1.0×" Foreground="#B8F4F0"/>
                   </Grid>
-                  <Slider x:Name="LocalStructSlider" Minimum="0" Maximum="20" Value="1" TickFrequency="1" IsSnapToTickEnabled="True"/>
+                  <Slider x:Name="LocalStructSlider" Minimum="0" Maximum="{x:Static core:DlssNrOptions.MaximumStrength}" Value="1" TickFrequency="0.1" IsSnapToTickEnabled="True"/>
                 </StackPanel>
                 <StackPanel Spacing="4">
                   <Grid ColumnDefinitions="*,Auto">
                     <TextBlock Classes="fieldLabel" Text="皮肤结构"/>
                     <TextBlock x:Name="SkinValue" Grid.Column="1" Text="0.5×" Foreground="#B8F4F0"/>
                   </Grid>
-                  <Slider x:Name="SkinSlider" Minimum="0" Maximum="20" Value="0.5" TickFrequency="0.5" IsSnapToTickEnabled="True"/>
+                  <Slider x:Name="SkinSlider" Minimum="0" Maximum="{x:Static core:DlssNrOptions.MaximumStrength}" Value="0.5" TickFrequency="0.1" IsSnapToTickEnabled="True"/>
                 </StackPanel>
                 <CheckBox x:Name="AutoMaskBox" Content="自动掩码（保护人脸与皮肤）"/>
               </StackPanel>

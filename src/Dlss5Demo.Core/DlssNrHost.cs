@@ -5,26 +5,29 @@ namespace Dlss5Demo.Core;
 /// <summary>DLSS NR 外观参数（对应上游 dlss5tool 的公开设置）。</summary>
 public sealed record DlssNrOptions
 {
+    public const double MaximumStrength = 5;
     /// <summary>保留 NR 自身的连续帧历史；关闭时每帧重置 NR。</summary>
     public bool ContinuousHistory { get; init; } = true;
     /// <summary>在视频管线中累积可信的 NR 修正量，降低稳定区域闪烁。</summary>
     public bool TemporalStabilization { get; init; } = true;
     /// <summary>使用驱动光流向 NR 提供当前帧到上一帧的运动向量。</summary>
     public bool MotionGuidance { get; init; } = true;
+    /// <summary>Request a finer driver-supported motion grid; costs more bandwidth than standard guidance.</summary>
+    public bool FineMotion { get; init; }
 
     /// <summary>风格索引（0 起，由运行库定义）。</summary>
     public int Style { get; init; }
 
-    /// <summary>降噪/增强强度 0..20，1.0 为默认。</summary>
+    /// <summary>增强强度 0..5，1.0 为默认；过高的局部参数会使模型外推失稳。</summary>
     public float Intensity { get; init; } = 1.0f;
 
-    /// <summary>局部色调强度 0..20。</summary>
+    /// <summary>局部色调强度 0..5。</summary>
     public float LocalTone { get; init; } = 1.0f;
 
-    /// <summary>局部结构强度 0..20。</summary>
+    /// <summary>局部结构强度 0..5。</summary>
     public float LocalStructure { get; init; } = 1.0f;
 
-    /// <summary>皮肤结构强度 0..20（配合自动掩码生效）。</summary>
+    /// <summary>皮肤结构强度 0..5（配合自动掩码生效）。</summary>
     public float SkinStructure { get; init; } = 0.5f;
 
     /// <summary>启用自动掩码（保护人脸/皮肤区域）。</summary>
@@ -126,6 +129,7 @@ public sealed class DlssNrHost : IDisposable
     public int Height => _height;
     internal bool TemporalStabilization => _options.TemporalStabilization;
     internal bool MotionGuidance => _options.MotionGuidance;
+    internal bool FineMotion => _options.FineMotion;
 
     /// <summary>列出可用图形适配器（无需初始化 NGX）。</summary>
     public static IReadOnlyList<GpuAdapter> EnumerateAdapters(string hostDllPath)
@@ -279,13 +283,16 @@ public sealed class DlssNrHost : IDisposable
         return dlssnr_dequeue(output) != 0;
     }
 
-    private static DlssNrOptions NormalizeOptions(DlssNrOptions options) => options with
+    internal static DlssNrOptions NormalizeOptions(DlssNrOptions options) => options with
     {
-        Intensity = Math.Clamp(options.Intensity, 0f, 20f),
-        LocalTone = Math.Clamp(options.LocalTone, 0f, 20f),
-        LocalStructure = Math.Clamp(options.LocalStructure, 0f, 20f),
-        SkinStructure = Math.Clamp(options.SkinStructure, 0f, 20f),
+        Intensity = NormalizeStrength(options.Intensity, 1),
+        LocalTone = NormalizeStrength(options.LocalTone, 1),
+        LocalStructure = NormalizeStrength(options.LocalStructure, 1),
+        SkinStructure = NormalizeStrength(options.SkinStructure, .5f),
     };
+
+    private static float NormalizeStrength(float value, float fallback) =>
+        float.IsFinite(value) ? Math.Clamp(value, 0f, (float)DlssNrOptions.MaximumStrength) : fallback;
 
     /// <summary>
     /// 处理一帧（RGBA8，行长 width*4）。零引导路径：motion/depth 传空。

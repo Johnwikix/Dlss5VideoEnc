@@ -18,6 +18,7 @@ public partial class MainWindow : Window
     private VideoInfo? _video;
     private CancellationTokenSource? _cancellationTokenSource;
     private string? _lastOutputPath;
+    private string? _suggestedOutputPath;
     private TranscodePreviewBuffer? _previewBuffer;
     private VideoInfo? _activeVideo;
     /// <summary>内层管线任务：清理（NGX shutdown、ffmpeg 回收）完成即结束，不依赖 UI 线程。</summary>
@@ -54,6 +55,10 @@ public partial class MainWindow : Window
         Closed += MainWindow_Closed;
         SizeChanged += (_, _) => LogBox.Height = Height < 800 ? 70 : 110;
         _settings = AppSettingsStore.Load();
+        MotionGuidanceBox.PropertyChanged += (_, change) =>
+        {
+            if (change.Property.Name == nameof(CheckBox.IsChecked)) FineMotionBox.IsEnabled = MotionGuidanceBox.IsChecked == true;
+        };
         SuperResolutionBox.SelectionChanged += (_, _) => UpdateProcessingOrderHint();
         NrBeforeSuperResolutionBox.PropertyChanged += (_, change) =>
         {
@@ -70,8 +75,7 @@ public partial class MainWindow : Window
         ApplySettings();
         // 环境变量优先于持久化设置（自动化覆盖手工配置）。
         var inputOverride = Environment.GetEnvironmentVariable("DLSS5_INPUT");
-        if (!string.IsNullOrWhiteSpace(inputOverride) || _settings.InputPath.Length > 0)
-            InputBox.Text = string.IsNullOrWhiteSpace(inputOverride) ? _settings.InputPath : inputOverride;
+        if (!string.IsNullOrWhiteSpace(inputOverride)) InputBox.Text = inputOverride;
         RuntimeBadge.Text = File.Exists(DemoPaths.RuntimeDllPath) ? "DLSS Runtime · ready" : "DLSS Runtime · missing";
         Log("就绪。DLSS 宿主: " + DemoPaths.HostDllPath);
         Log($"DLSS 运行库: {DemoPaths.RuntimeDllPath}" +
@@ -96,8 +100,6 @@ public partial class MainWindow : Window
     /// <summary>把控件状态写回设置模型（保存于开始转码与窗口关闭时）。</summary>
     private AppSettings CaptureSettings() => new()
     {
-        InputPath = InputBox.Text?.Trim().Trim('"') ?? "",
-        OutputPath = OutputBox.Text?.Trim().Trim('"') ?? "",
         DlssStyle = StyleBox.SelectedIndex,
         DlssIntensity = IntensitySlider.Value,
         DlssLocalTone = LocalToneSlider.Value,
@@ -105,6 +107,7 @@ public partial class MainWindow : Window
         DlssSkinStructure = SkinSlider.Value,
         DlssUseAutoMask = AutoMaskBox.IsChecked == true,
         DlssMotionGuidance = MotionGuidanceBox.IsChecked == true,
+        DlssFineMotion = FineMotionBox.IsChecked == true,
         DlssContinuousHistory = ContinuousHistoryBox.IsChecked == true,
         SuperResolutionIndex = SuperResolutionBox.SelectedIndex,
         NrBeforeSuperResolution = NrBeforeSuperResolutionBox.IsChecked == true,
@@ -146,6 +149,8 @@ public partial class MainWindow : Window
         SkinSlider.Value = _settings.DlssSkinStructure;
         AutoMaskBox.IsChecked = _settings.DlssUseAutoMask;
         MotionGuidanceBox.IsChecked = _settings.DlssMotionGuidance;
+        FineMotionBox.IsChecked = _settings.DlssFineMotion;
+        FineMotionBox.IsEnabled = MotionGuidanceBox.IsChecked == true;
         ContinuousHistoryBox.IsChecked = _settings.DlssContinuousHistory;
         Select(SuperResolutionBox, _settings.SuperResolutionIndex);
         NrBeforeSuperResolutionBox.IsChecked = _settings.NrBeforeSuperResolution;
@@ -176,8 +181,6 @@ public partial class MainWindow : Window
         GifColorsBox.Text = _settings.GifMaxColors.ToString(CultureInfo.InvariantCulture);
         Select(GifDitherBox, _settings.GifDitherIndex);
         FramesLimitBox.IsChecked = _settings.FramesLimit;
-        if (_settings.OutputPath.Length > 0)
-            OutputBox.Text = _settings.OutputPath;
     }
 
     private static void Select(ComboBox box, int index)
@@ -300,6 +303,8 @@ public partial class MainWindow : Window
     {
         var generation = ++_probeGeneration;
         var path = InputBox.Text?.Trim().Trim('"') ?? "";
+        _suggestedOutputPath = null;
+        if (OutputBox != null) OutputBox.Text = "";
         _video = null;
         if (StartButton?.IsEnabled == true)
         {
@@ -317,6 +322,8 @@ public partial class MainWindow : Window
         }
         try
         {
+            _suggestedOutputPath = OutputFileNames.ForInput(path, ContainerExtension(CollectVideoOptions().Container));
+            OutputBox!.Text = _suggestedOutputPath;
             var video = await Task.Run(() => MediaProbe.Probe(path, DemoPaths.FfprobePath));
             if (generation != _probeGeneration || _closed) return;
             _video = video;
@@ -325,8 +332,6 @@ public partial class MainWindow : Window
             HdrSourceText.Text = _video.IsHdr
                 ? $"HDR 源 · {_video.ColorPrimaries} / {_video.ColorTransfer} / {_video.ColorSpace} · 将保留色彩元数据"
                 : "SDR 源 · 输出会使用 SDR 色彩标记";
-            if (string.IsNullOrWhiteSpace(OutputBox.Text))
-                OutputBox.Text = Path.Combine(Path.GetDirectoryName(path) ?? ".", Path.GetFileNameWithoutExtension(path) + "_dlss5.mp4");
         }
         catch (Exception error)
         {
@@ -353,10 +358,11 @@ public partial class MainWindow : Window
         var file = await StorageProvider.SaveFilePickerAsync(new FilePickerSaveOptions
         {
             Title = "选择输出视频",
+            ShowOverwritePrompt = false,
             SuggestedFileName = string.IsNullOrWhiteSpace(OutputBox.Text) ? "dlss5-output.mp4" : Path.GetFileName(OutputBox.Text),
             FileTypeChoices = [new FilePickerFileType("MP4 视频") { Patterns = ["*.mp4"] }, new FilePickerFileType("MKV 视频") { Patterns = ["*.mkv"] }],
         });
-        if (file != null) OutputBox.Text = file.TryGetLocalPath();
+        if (file?.TryGetLocalPath() is { Length: > 0 } path) OutputBox.Text = OutputFileNames.Available(path);
     }
 
     private DlssNrOptions CollectDlssOptions()
@@ -370,6 +376,7 @@ public partial class MainWindow : Window
             SkinStructure = (float)SkinSlider.Value,
             UseAutoMask = AutoMaskBox.IsChecked == true,
             MotionGuidance = MotionGuidanceBox.IsChecked == true,
+            FineMotion = FineMotionBox.IsChecked == true,
             ContinuousHistory = ContinuousHistoryBox.IsChecked == true,
             TemporalStabilization = ContinuousHistoryBox.IsChecked == true,
         };
@@ -426,14 +433,34 @@ public partial class MainWindow : Window
     private static int Int(string? text) => int.TryParse(text, NumberStyles.Integer, CultureInfo.InvariantCulture, out var value) ? Math.Max(0, value) : 0;
     private static double Double(string? text) => double.TryParse(text, NumberStyles.Float, CultureInfo.InvariantCulture, out var value) ? Math.Clamp(value, -30, 30) : 0;
 
+    private static string ContainerExtension(VideoContainer container) => container switch
+    {
+        VideoContainer.Mkv => ".mkv", VideoContainer.Mov => ".mov", VideoContainer.Avi => ".avi",
+        VideoContainer.Gif => ".gif", _ => ".mp4",
+    };
+
     private async void Start_Click(object? sender, RoutedEventArgs e)
     {
         var input = InputBox.Text?.Trim().Trim('"') ?? "";
         if (!File.Exists(input)) { StatusText.Text = "输入文件不存在。"; return; }
         if (_video == null) { StatusText.Text = "视频尚未成功探测。"; return; }
-        var output = OutputBox.Text?.Trim().Trim('"');
-        if (string.IsNullOrWhiteSpace(output)) output = Path.Combine(Path.GetDirectoryName(input) ?? ".", Path.GetFileNameWithoutExtension(input) + "_dlss5.mp4");
-        Directory.CreateDirectory(Path.GetDirectoryName(Path.GetFullPath(output)) ?? ".");
+        var output = OutputBox.Text?.Trim().Trim('"') ?? "";
+        var automaticOutput = string.IsNullOrWhiteSpace(output) || output == _suggestedOutputPath;
+        var videoOptions = CollectVideoOptions();
+        try
+        {
+            var extension = ContainerExtension(videoOptions.Container);
+            if (automaticOutput)
+                output = OutputFileNames.ForInput(input, extension);
+            else if (Path.GetExtension(output).Length == 0) output = Path.ChangeExtension(output, extension);
+            output = OutputFileNames.Available(output);
+            Directory.CreateDirectory(Path.GetDirectoryName(output)!);
+        }
+        catch (Exception error) when (error is IOException or UnauthorizedAccessException or ArgumentException or NotSupportedException)
+        {
+            StatusText.Text = "输出路径无效: " + error.Message.Split('\n')[0];
+            return;
+        }
 
         // NGX 宿主是进程级单例状态：必须等上一任务完全清理（shutdown + ffmpeg 回收）
         // 后才能开新会话，否则并发 init/shutdown 会导致新任务速度异常甚至闪退。
@@ -454,11 +481,6 @@ public partial class MainWindow : Window
         _previewBuffer = new TranscodePreviewBuffer(960, 540);
         _cancellationTokenSource = new CancellationTokenSource();
         var token = _cancellationTokenSource.Token;
-        var videoOptions = CollectVideoOptions();
-        var containerExt = videoOptions.Container switch { VideoContainer.Mkv => ".mkv", VideoContainer.Mov => ".mov", VideoContainer.Avi => ".avi", VideoContainer.Gif => ".gif", _ => ".mp4" };
-        if (Path.GetExtension(output).Length == 0 ||
-            Path.GetFileNameWithoutExtension(output).EndsWith("_dlss5", StringComparison.OrdinalIgnoreCase))
-            output = Path.ChangeExtension(output, containerExt);
         StartButton.IsEnabled = false; CancelButton.IsEnabled = true; CompareButton.IsEnabled = false; Progress.Value = 0;
         PipelineStatus.Text = "DLSS NR 正在处理帧…"; LivePreviewText.Text = "SYNC · 源帧与输出帧同步";
         var options = new TranscodeOptions
@@ -490,7 +512,13 @@ public partial class MainWindow : Window
             var runTask = DlssVideoPipeline.RunAsync(input, output, options, progress, token);
             _pipelineTask = runTask;
             var result = await runTask;
-            Progress.Value = 100; CompareButton.IsEnabled = File.Exists(output); OutputText.Text = $"{result.OutputBytes / 1048576.0:0.0} MiB";
+            _lastOutputPath = result.OutputPath;
+            if (InputBox.Text?.Trim().Trim('"') == input)
+            {
+                OutputBox.Text = result.OutputPath;
+                if (automaticOutput) _suggestedOutputPath = result.OutputPath;
+            }
+            Progress.Value = 100; CompareButton.IsEnabled = File.Exists(result.OutputPath); OutputText.Text = $"{result.OutputBytes / 1048576.0:0.0} MiB";
             StatusText.Text = $"完成 · {result.FramesProcessed} 帧 · {result.AverageFps:0.0} fps"; PipelineStatus.Text = "转码完成 · 输出可实时播放";
             Log($"完成: {result.FramesProcessed} 帧，输出 {result.OutputBytes / 1048576.0:0.0} MiB");
             LivePreviewText.Text = "完成 · 停留在最后一帧";

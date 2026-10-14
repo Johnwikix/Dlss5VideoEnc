@@ -5,9 +5,6 @@ namespace Dlss5Demo.App;
 /// <summary>需跨会话保留的界面设置（与 MainWindow 控件一一对应；ComboBox 存选中索引）。</summary>
 public sealed class AppSettings
 {
-    public string InputPath { get; set; } = "";
-    public string OutputPath { get; set; } = "";
-
     // DLSS NR
     public int DlssStyle { get; set; }
     public double DlssIntensity { get; set; } = 1;
@@ -16,6 +13,7 @@ public sealed class AppSettings
     public double DlssSkinStructure { get; set; } = 0.5;
     public bool DlssUseAutoMask { get; set; }
     public bool DlssMotionGuidance { get; set; } = true;
+    public bool DlssFineMotion { get; set; }
     public bool DlssContinuousHistory { get; set; } = true;
 
     // 输出与滤镜
