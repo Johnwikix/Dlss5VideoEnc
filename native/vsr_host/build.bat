@@ -38,7 +38,7 @@ if not exist "%RTX_LIB%" (
   exit /b 1
 )
 
-cl /nologo /std:c++17 /O2 /EHsc /MT /LD /I"%RTX_INCLUDE%" /Fo"%INTERMEDIATE%\vsr_host.obj" ^
+cl /nologo /utf-8 /std:c++17 /O2 /EHsc /MT /LD /I"%RTX_INCLUDE%" /Fo"%INTERMEDIATE%\vsr_host.obj" ^
   "%~dp0vsr_host.cpp" "%RTX_LIB%" D3D12.lib DXGI.lib Advapi32.lib User32.lib ^
   /link /OUT:"%OUTPUT%\vsr_host.dll" /PDB:"%INTERMEDIATE%\vsr_host.pdb" /IMPLIB:"%INTERMEDIATE%\vsr_host.lib"
 if errorlevel 1 exit /b %errorlevel%
@@ -51,4 +51,18 @@ if not exist "%RTX_RUNTIME%" (
 )
 copy /y "%RTX_RUNTIME%" "%OUTPUT%\nvngx_vsr.dll" >nul
 echo [ok] Built vsr_host.dll and staged nvngx_vsr.dll.
+
+rem Optional direct GPU encoding. Point FFMPEG_SDK at a matching shared build
+rem containing include, lib and bin (the application currently bundles ABI 63/61/63).
+if defined FFMPEG_SDK (
+  if not exist "%FFMPEG_SDK%\include\libavcodec\avcodec.h" exit /b 1
+  cl /nologo /utf-8 /std:c++17 /O2 /EHsc /MT /LD /I"%FFMPEG_SDK%\include" ^
+    /Fo"%INTERMEDIATE%\vsr_encoder.obj" "%~dp0vsr_encoder.cpp" ^
+    "%FFMPEG_SDK%\lib\avcodec.lib" "%FFMPEG_SDK%\lib\avformat.lib" "%FFMPEG_SDK%\lib\avutil.lib" ^
+    D3D11.lib DXGI.lib /link /OUT:"%OUTPUT%\vsr_encoder.dll" ^
+    /PDB:"%INTERMEDIATE%\vsr_encoder.pdb" /IMPLIB:"%INTERMEDIATE%\vsr_encoder.lib"
+  if errorlevel 1 exit /b 1
+  for %%N in ("%FFMPEG_SDK%\bin\avcodec-*.dll" "%FFMPEG_SDK%\bin\avformat-*.dll" "%FFMPEG_SDK%\bin\avutil-*.dll" "%FFMPEG_SDK%\bin\swresample-*.dll") do copy /y "%%~fN" "%OUTPUT%\" >nul
+  echo [ok] Built optional GPU NVENC transport.
+)
 exit /b 0

@@ -107,3 +107,59 @@ dotnet run --project tests/Dlss5Demo.Tests -c Release -- --nr-benchmark '1080p�
 `DLSS5_PROFILE=1` 开启平均阶段计时。可临时设置 `DLSS5_CPU_WORKERS` 和
 `DLSS5_HISTORY_WORKERS` 诊断不同 CPU 的并发预算；降低并发在本机没有改善吞吐，
 默认仍为准备阶段最多 8 线程、历史阶段最多 16 线程，并根据逻辑处理器数量调整。
+
+## 2026-10-15：VSR 队列与 GPU 编码传输
+
+RTX 5070 Ti、驱动 617.14，同一 `UMP45&RO_1.mp4` 的前 600 帧，1080p → 4K、
+SR 质量 4、HEVC NVENC p5/CQ 19，光流、NR 历史和修正量累积开启，关闭预览。
+所有 GPU 测试顺序运行。统计不含会话初始化与清理；兼容路径沿用处理循环口径，
+GPU 直编的最终耗时另计编码排空和无损封装（本次约 88–95 ms）。
+
+| VSR 提交 | 编码输入传输 | 最终吞吐 | 耗时 |
+| --- | --- | ---: | ---: |
+| 单帧同步 | CPU 原始帧 | 48.8 fps | 12.3 s |
+| 两帧 FIFO | CPU 原始帧 | 48.9 fps | 12.3 s |
+| 单帧同步 | GPU 共享纹理 → NVENC | 54.5–56.7 fps | 10.6–11.0 s |
+| 两帧 FIFO | GPU 共享纹理 → NVENC | 53.2–54.3 fps | 11.1–11.3 s |
+
+GPU 直编的两种提交方式各测两次。当前工况下，异步队列没有带来整条管线的吞吐收益；
+默认关闭 `UseAsyncVsrQueue`，保留 `--sr-queue 1` 供其他工况对照。
+`UseGpuVsrEncoding` 默认开启，主要收益来自消除超分整帧回读和编码前的重新上传。
+NR、光流、历史和解码等阶段仍按原有分阶段管线重叠执行。
+
+VSR 的 CPU 提交/回收平均耗时，原始帧路径从同步 13.62 ms 降到异步 6.71 ms；
+GPU 直编加异步队列为 1.59 ms。此数值包含等待和传输，不能解释成模型的 GPU 执行时间。
+CPU 其他阶段仍限制最终吞吐。异步队列启用时，在原 576 MiB 估算预算内最多使用
+6 个帧槽，避免额外在途帧挤占 CPU/NR 所需的缓冲；默认同步 VSR 仍最多 5 槽。
+
+### 数据与回归
+
+本机产物在忽略的 `build/performance/vsr-async/` 下：`final-sync.log`、
+`final-queue.log`、`final-gpu.log`、`final-gpu-sync.log`、`repeat-gpu-queue.log`、
+`repeat-gpu-sync.log`，同名 MP4 可直接对照。
+
+- 600 帧同步/异步 VSR 的解码 framemd5 全部一致；原生 SDR/HDR、深度 1/2/3、
+  11 张不同输入及环形槽复用/尾队列排空也逐字节一致。
+- SDR GPU 编码与原始帧编码输出的 600 帧平均 PSNR 为 46.65 dB；GPU 与 swscale
+  的色度滤波和舍入不同，编码后像素不保证完全一致。编码仍为 HEVC Main、
+  3840×2160、60 fps、600 帧、视频 10.000 s、音频 9.984 s，保留 B 帧时序。
+- HDR 的驱动 RGB10 → P010 VideoProcessor 转换出现明显颜色异常；原始 RGB10
+  纹理检查正常，异常发生在 GPU 色彩转换阶段。因此 Core 和原生宿主均禁用 HDR
+  GPU 直编，保持原传输/颜色转换，可选 FIFO 继续可用。HDR 回退输出的 PSNR 为 ∞，
+  PQ/BT.2020/10-bit 元数据保持。没有用元数据检查替代画面比较。
+- 19 项 CPU 回归、SDR H.264/HEVC/AV1 GPU 编码、29.97 fps、低频/最终预览、单帧
+  排空、音频合入、取消/重启、CPU 滤镜/软件编码及双遍编码、缺少可选编码 DLL、
+  旧宿主没有 FIFO 导出时的同步回退均通过。2×/4× 功能检查只用了小尺寸素材，
+  本次未进行 8K 性能优化或测速。
+- App、CLI 和原生 DLL 已以 Release 构建。GPU 编码需要可选的 `vsr_encoder.dll`
+  及匹配的 FFmpeg 共享库；构建方式见 `tools/RTX_VIDEO_SDK.md`。运行产生的压缩
+  NUT 缓存在结束/取消后清理，FFmpeg 最后只封装和合入音频，不再次编码视频。
+
+```powershell
+# 相同条件对照，只改变 VSR 排队或 GPU 编码传输
+./tools/benchmark-video.ps1 -CliAssembly src/Dlss5Demo.Cli/bin/Release/net10.0/Dlss5Demo.Cli.dll `
+  -InputVideo '输入.mp4' -OutputVideo 'gpu-sync.mp4' -Frames 600 -Scale 2 -Preview $false
+# 追加 -VsrQueue $true 测异步；追加 -GpuVsrEncoding $false 测原始帧传输
+
+dotnet run --project tests/Dlss5Demo.Tests -c Release -- --vsr-gpu --vsr-transport '至少12帧的小素材.mp4'
+```

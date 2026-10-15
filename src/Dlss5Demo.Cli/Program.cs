@@ -13,6 +13,8 @@ var superResolutionQuality = 4;
 var previewEnabled = true;
 var nrFirst = true;
 var nrQueue = true;
+var vsrQueue = false;
+var gpuVsrEncoding = true;
 
 for (var index = 2; index < args.Length - 1; index++)
 {
@@ -36,6 +38,8 @@ for (var index = 2; index < args.Length - 1; index++)
         case "--preview": previewEnabled = args[++index] != "0"; break;
         case "--nr-before-sr": nrFirst = args[++index] != "0"; break;
         case "--nr-queue": nrQueue = args[++index] != "0"; break;
+        case "--sr-queue": vsrQueue = args[++index] != "0"; break;
+        case "--sr-gpu-encode": gpuVsrEncoding = args[++index] != "0"; break;
     }
 }
 
@@ -80,6 +84,8 @@ var result = await DlssVideoPipeline.RunAsync(input, output, new TranscodeOption
     SuperResolutionQuality = superResolutionQuality,
     NrBeforeSuperResolution = nrFirst,
     UseAsyncNrQueue = nrQueue,
+    UseAsyncVsrQueue = vsrQueue,
+    UseGpuVsrEncoding = gpuVsrEncoding,
     EnablePreviewFrames = previewEnabled,
     PreviewSink = previewSink,
 }, progress);
@@ -91,6 +97,8 @@ Console.WriteLine($"同步预览: {previewSink.Pairs} 对帧，尺寸不一致 {
 
 sealed class CountingPreviewSink : ITranscodePreviewSink
 {
+    public int MaxFrameWidth => 960;
+    public int MaxFrameHeight => 540;
     public long Pairs { get; private set; }
     public long MismatchedSizes { get; private set; }
 

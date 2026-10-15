@@ -1,6 +1,8 @@
 using System.Diagnostics;
 using System.IO.MemoryMappedFiles;
 using System.Globalization;
+using System.Text.Json;
+using System.Text;
 
 namespace Dlss5Demo.Core;
 
@@ -20,6 +22,11 @@ public sealed unsafe class RtxVideoWorker : IDisposable
     private Task<string>? _errors;
     private bool _disposed, _ready;
     private long _sourceBytes, _processBytes, _slotBytes;
+    internal int QueueCapacity { get; private set; } = 1;
+    internal int FrameCapacity { get; private set; }
+    internal VsrEncoderConfiguration? Encoder { get; private set; }
+    internal bool GpuEncoding => Encoder != null;
+    private string? _encodedCache;
     internal byte* Source(int index) => _memory + index * _slotBytes;
     internal byte* Output(int index) => Source(index) + _sourceBytes;
 
@@ -27,12 +34,14 @@ public sealed unsafe class RtxVideoWorker : IDisposable
 
     internal static RtxVideoWorker Create(string host, string runtime, string log,
         int width, int height, int scale, int quality, bool hdr, int capacity,
-        string workerExecutable = "", CancellationToken cancellationToken = default)
+        string workerExecutable = "", CancellationToken cancellationToken = default,
+        VsrEncoderConfiguration? encoder = null)
     {
         var worker = new RtxVideoWorker();
         try
         {
             cancellationToken.ThrowIfCancellationRequested();
+            worker.FrameCapacity = capacity;
             worker._sourceBytes = checked((long)width * height * (hdr ? 8 : 4));
             worker._processBytes = checked(worker._sourceBytes * scale * scale);
             worker._slotBytes = worker._sourceBytes + worker._processBytes;
@@ -57,6 +66,7 @@ public sealed unsafe class RtxVideoWorker : IDisposable
             {
                 UseShellExecute = false, CreateNoWindow = true,
                 RedirectStandardInput = true, RedirectStandardOutput = true, RedirectStandardError = true,
+                StandardErrorEncoding = Encoding.UTF8,
             };
             if (Path.GetFileNameWithoutExtension(start.FileName).Equals("dotnet", StringComparison.OrdinalIgnoreCase))
                 start.ArgumentList.Add(currentEntry);
@@ -73,7 +83,22 @@ public sealed unsafe class RtxVideoWorker : IDisposable
             // Only initialization has a deadline. Frame waits are unblocked by cancellation/abort.
             var status = Task.Run(worker._responses.ReadInt32).WaitAsync(TimeSpan.FromSeconds(45), cancellationToken).GetAwaiter().GetResult();
             if (status != 1) throw new InvalidOperationException("RTX Video worker initialization failed.");
+            worker.QueueCapacity = worker._responses.ReadInt32();
             worker._ready = true;
+            if (encoder != null)
+            {
+                worker._encodedCache = encoder.OutputPath;
+                worker._commands.Write(-3);
+                worker._commands.Write(JsonSerializer.Serialize(encoder)); worker._commands.Flush();
+                var encoderStatus = Task.Run(worker._responses.ReadInt32)
+                    .WaitAsync(TimeSpan.FromSeconds(45), cancellationToken).GetAwaiter().GetResult();
+                if (encoderStatus == 1)
+                {
+                    worker.Encoder = encoder;
+                    PipelineLog.Info("VSR GPU 编码已启用: 共享纹理 → NV12 → NVENC；仅按需回读预览，压缩包通过 NUT 保留时间戳。");
+                }
+                else PipelineLog.Info("VSR GPU 编码不可用，回退原始帧编码路径。");
+            }
             PipelineLog.Info($"RTX VSR 独立进程已就绪: {width}×{height} → {width * scale}×{height * scale}; 共享内存 {capacity} 帧");
             return worker;
         }
@@ -89,11 +114,32 @@ public sealed unsafe class RtxVideoWorker : IDisposable
 
     internal void ProcessFrame(int slot)
     {
-        ObjectDisposedException.ThrowIf(_disposed, this);
-        _commands!.Write(slot);
-        _commands.Flush();
-        if (_responses!.ReadInt32() != 1) throw new InvalidOperationException("RTX Video worker frame evaluation failed.");
+        EnqueueFrame(slot);
+        DequeueFrame(slot, true);
     }
+
+    internal void EnqueueFrame(int slot)
+    {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+        _commands!.Write(slot); _commands.Flush();
+        if (_responses!.ReadInt32() != 1) throw FrameError("submission");
+    }
+
+    internal void DequeueFrame(int slot, bool preview)
+    {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+        _commands!.Write(-2); _commands.Write(slot); _commands.Write(preview); _commands.Flush();
+        if (_responses!.ReadInt32() != 1) throw FrameError("collection");
+    }
+
+    internal void FinishEncoding()
+    {
+        _commands!.Write(-4); _commands.Flush();
+        if (_responses!.ReadInt32() != 1) throw FrameError("encoder drain");
+    }
+
+    private InvalidOperationException FrameError(string operation)
+        => new($"RTX Video worker {operation} failed. " + (_errors?.IsCompletedSuccessfully == true ? _errors.Result : ""));
 
     internal void Abort()
     {
@@ -121,6 +167,9 @@ public sealed unsafe class RtxVideoWorker : IDisposable
         if (_process != null)
         {
             try { _process.WaitForExit(5000); } catch { }
+            if (_encodedCache != null && Encoder == null && _errors?.IsCompletedSuccessfully == true
+                && !string.IsNullOrWhiteSpace(_errors.Result))
+                PipelineLog.Info("VSR GPU 编码回退详情: " + _errors.Result.Trim());
             _commands?.Dispose(); _responses?.Dispose(); _process.Dispose();
         }
         if (_view != null)
@@ -129,6 +178,7 @@ public sealed unsafe class RtxVideoWorker : IDisposable
             _view.Dispose();
         }
         _mapping?.Dispose();
+        if (_encodedCache != null) { try { File.Delete(_encodedCache); } catch { } }
     }
 
     /// <summary>Call before normal app/CLI initialization. Returns false for normal invocations.</summary>
@@ -136,6 +186,7 @@ public sealed unsafe class RtxVideoWorker : IDisposable
     {
         _hostSupportsWorker = true;
         if (args.Length == 0 || args[0] != "--vsr-worker") return false;
+        Console.OutputEncoding = Encoding.UTF8;
         try
         {
             if (!OperatingSystem.IsWindows()) throw new PlatformNotSupportedException("RTX Video shared-memory worker requires Windows.");
@@ -164,14 +215,39 @@ public sealed unsafe class RtxVideoWorker : IDisposable
                 using var host = RtxVideoSuperResolutionHost.Create(args[8], args[9], args[10], width, height, scale, hdr, quality);
                 using var responses = new BinaryWriter(Console.OpenStandardOutput());
                 using var commands = new BinaryReader(Console.OpenStandardInput());
-                responses.Write(1); responses.Flush();
+                responses.Write(1); responses.Write(host.QueueCapacity); responses.Flush();
+                var pending = new Queue<int>(host.QueueCapacity);
                 while (true)
                 {
                     var slot = commands.ReadInt32();
                     if (slot == -1) break;
+                    if (slot == -3)
+                    {
+                        var configuration = JsonSerializer.Deserialize<VsrEncoderConfiguration>(commands.ReadString())
+                            ?? throw new InvalidOperationException("Missing GPU encoder configuration.");
+                        var enabled = host.EnableEncoder(Path.Combine(Path.GetDirectoryName(args[8])!, "vsr_encoder.dll"), configuration);
+                        responses.Write(enabled ? 1 : 0); responses.Flush(); continue;
+                    }
+                    if (slot == -4)
+                    {
+                        responses.Write(pending.Count == 0 && host.FinishEncoding() ? 1 : 0); responses.Flush(); continue;
+                    }
+                    if (slot == -2)
+                    {
+                        slot = commands.ReadInt32();
+                        var preview = commands.ReadBoolean();
+                        if (pending.Count == 0 || pending.Dequeue() != slot) throw new InvalidOperationException("VSR queue order mismatch.");
+                        var output = pointer + view.PointerOffset + slot * slotBytes + sourceBytes;
+                        var collected = host.QueueCapacity == 1 || host.DequeueFrame(output, preview);
+                        responses.Write(collected ? 1 : 0); responses.Flush();
+                        if (!collected) throw new InvalidOperationException("VSR native collection failed.");
+                        continue;
+                    }
                     if ((uint)slot >= (uint)capacity) throw new ArgumentOutOfRangeException(nameof(slot));
+                    if (pending.Count == host.QueueCapacity || pending.Contains(slot)) throw new InvalidOperationException("VSR slot is still in flight.");
                     var source = pointer + view.PointerOffset + slot * slotBytes;
-                    var ok = host.ProcessFrame(source, source + sourceBytes);
+                    var ok = host.QueueCapacity > 1 ? host.EnqueueFrame(source) : host.ProcessFrame(source, source + sourceBytes);
+                    if (ok) pending.Enqueue(slot);
                     responses.Write(ok ? 1 : 0); responses.Flush();
                     if (!ok) throw new InvalidOperationException("VSR native evaluation failed.");
                 }

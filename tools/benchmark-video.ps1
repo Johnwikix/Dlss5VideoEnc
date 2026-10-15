@@ -7,6 +7,9 @@ param(
     [ValidateSet(1,2,4)][int]$Scale = 1,
     [bool]$NrFirst = $true,
     [bool]$NrQueue = $true,
+    [bool]$VsrQueue = $false,
+    [bool]$GpuVsrEncoding = $true,
+    [bool]$Preview = $true,
     [switch]$LegacyCleanup
 )
 
@@ -19,12 +22,13 @@ $taskStart.RedirectStandardError = $true
 $taskStart.StandardOutputEncoding = [Text.Encoding]::UTF8
 $taskStart.Environment['DLSS5_PROFILE'] = '1'
 foreach ($argument in @((Resolve-Path -LiteralPath $CliAssembly).Path, (Resolve-Path -LiteralPath $InputVideo).Path,
-    [IO.Path]::GetFullPath($OutputVideo), '--frames', "$Frames", '--sr', "$Scale")) {
+    [IO.Path]::GetFullPath($OutputVideo), '--frames', "$Frames", '--sr', "$Scale", '--preview', [int]$Preview)) {
     $taskStart.ArgumentList.Add($argument)
 }
 $taskOutputLog = [IO.Path]::ChangeExtension([IO.Path]::GetFullPath($OutputVideo), '.log')
 if (!$LegacyCleanup) {
-    foreach ($argument in @('--nr-before-sr', [int]$NrFirst, '--nr-queue', [int]$NrQueue)) {
+    foreach ($argument in @('--nr-before-sr', [int]$NrFirst, '--nr-queue', [int]$NrQueue,
+        '--sr-queue', [int]$VsrQueue, '--sr-gpu-encode', [int]$GpuVsrEncoding)) {
         $taskStart.ArgumentList.Add([string]$argument)
     }
 }

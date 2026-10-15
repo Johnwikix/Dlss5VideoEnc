@@ -75,7 +75,7 @@ HDR 源使用 FFmpeg zscale 解码为 RGBA16F，NR 和历史累积保留浮点�
 ## 转码性能与分阶段管线
 
 解码、光流/输入验证、NR、历史累积、SR、编码/预览分别处理不同的帧，用 3–5 个固定
-缓冲槽衔接。每个阶段按帧顺序工作；NR 自身历史和额外的修正量历史各有一个状态所有者，
+缓冲槽衔接（启用 VSR 异步队列时，在内存预算内最多 6 槽）。每个阶段按帧顺序工作；NR 自身历史和额外的修正量历史各有一个状态所有者，
 预览与编码仍使用同一处理结果。缓存有上限，但会比原先单帧循环多使用内存。
 
 SR 使用独立工作进程，通过共享内存直接读写帧，控制管道只传槽编号与完成状态。
@@ -88,18 +88,32 @@ NR 使用宿主已有的双帧提交队列，上传下一帧与上一帧 GPU 工
 由同一个阶段线程按序执行。旧宿主没有队列接口时退回同步调用。Release 程序关闭初始
 分层编译，使逐像素热路径从第一次调用起使用优化机器码。
 
+VSR 支持可选的单线程 FIFO 异步提交/回收，两帧在途，原生宿主支持三帧。每槽拥有独立的
+上传缓冲、纹理和命令分配器，只有对应 fence 完成才读取或复用；EOF 会排空尾队列。
+本机对照中异步队列未提高整条管线吞吐，因此默认关闭，可用 `--sr-queue 1` 启用。
+默认的 NR → VSR → NVENC 路径可让超分输出保留在显存，通过共享纹理在 GPU 上转换
+为 NV12 后交给编码器，省去超分整帧回读及编码前的重新上传。预览按需回读缩小
+后的画面。压缩视频先写临时 NUT，再无损封装并合入音频，临时文件在结束/取消时清理。
+这条路径需要可选的 `runtime/vsr_encoder.dll` 和匹配的 FFmpeg 共享库；构建方法见
+[RTX Video SDK 配置](tools/RTX_VIDEO_SDK.md)。GPU 直编目前限 SDR；HDR、软件编码、CPU 滤镜、SR 前置等
+不兼容配置会使用原有帧传输路径，VSR 异步队列仍然有效。
+
 本机素材的测速结果和限制见 [性能验证记录](docs/PIPELINE_PERFORMANCE.md)。
 可设置 `DLSS5_PROFILE=1`，在日志中查看各阶段的平均毫秒/帧；并行阶段的耗时不能相加
 当作总帧耗时。CLI 支持 `--sr 2` / `--sr 4`、`--sr-quality 1..4` 和 `--preview 0`。
 对照旧顺序可用 `--nr-before-sr 0`，对照同步 NR 可用 `--nr-queue 0`；Core 对应
 `NrBeforeSuperResolution` 和 `UseAsyncNrQueue`，均默认启用。改变顺序会改变 NR 作用的
 分辨率及画面结果。宿主独立测速可运行测试程序的 `--nr-benchmark "输入.mp4"`。
+VSR 对照可用 `--sr-queue 1` 和 `--sr-gpu-encode 0`，分别对应 Core 的
+`UseAsyncVsrQueue`（默认关闭）和 `UseGpuVsrEncoding`（默认开启）。
 
 ```powershell
 $env:DLSS5_PROFILE = '1'
 dotnet run --project src/Dlss5Demo.Cli -c Release -- "输入.mp4" "输出.mp4" --frames 180 --sr 2
 # 使用至少 12 帧的小素材运行真实管线回归，含 SR、取消/重启与双遍编码
 dotnet run --project tests/Dlss5Demo.Tests -c Release -- --pipeline "小素材.mp4"
+# VSR SDR/HDR FIFO 输出一致性；真实 GPU 编码、预览、音频与取消重启（输入至少 12 帧）
+dotnet run --project tests/Dlss5Demo.Tests -c Release -- --vsr-gpu --vsr-transport "小素材.mp4"
 ```
 
 将 Core 嵌入其他程序时，在入口先调用 `RtxVideoWorker.TryServe(args)`；返回 `true`

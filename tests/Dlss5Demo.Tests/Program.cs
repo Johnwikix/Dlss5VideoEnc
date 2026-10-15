@@ -52,6 +52,9 @@ if (comparisonArgument >= 0)
 var pipelineArgument = Array.IndexOf(args, "--pipeline");
 if (pipelineArgument >= 0)
     PipelineIntegration(args[pipelineArgument + 1]).GetAwaiter().GetResult();
+if (args.Contains("--vsr-gpu")) NativeVsrQueueParity();
+var transportArgument = Array.IndexOf(args, "--vsr-transport");
+if (transportArgument >= 0) VsrTransportIntegration(args[transportArgument + 1]).GetAwaiter().GetResult();
 
 static void Check(bool condition, string message)
 {
@@ -665,6 +668,179 @@ static unsafe void NativeQueueParity()
             }
             Console.WriteLine($"PASS Native NR queue exact parity: hdr={hdr}, history={history}, reset midstream");
         }
+}
+
+static unsafe void NativeVsrQueueParity()
+{
+    const int width = 320, height = 180, scale = 2, count = 11, slots = 3;
+    foreach (var hdr in new[] { false, true })
+    {
+        var bytes = width * height * (hdr ? 8 : 4);
+        var inputs = new byte[count][];
+        for (var frame = 0; frame < count; frame++)
+        {
+            inputs[frame] = new byte[bytes];
+            if (!hdr)
+            {
+                for (var pixel = 0; pixel < width * height; pixel++)
+                {
+                    inputs[frame][pixel * 4] = (byte)((pixel % width + frame * 13) % 256);
+                    inputs[frame][pixel * 4 + 1] = (byte)((pixel / width + frame * 7) % 256);
+                    inputs[frame][pixel * 4 + 2] = (byte)((pixel + frame * 19) % 256);
+                    inputs[frame][pixel * 4 + 3] = 255;
+                }
+            }
+            else
+            {
+                var half = System.Runtime.InteropServices.MemoryMarshal.Cast<byte, Half>(inputs[frame].AsSpan());
+                for (var pixel = 0; pixel < width * height; pixel++)
+                {
+                    half[pixel * 4] = (Half)(((pixel % width + frame * 13) % 256) / 255f);
+                    half[pixel * 4 + 1] = (Half)(((pixel / width + frame * 7) % 256) / 255f);
+                    half[pixel * 4 + 2] = (Half)(((pixel + frame * 19) % 256) / 255f);
+                    half[pixel * 4 + 3] = (Half)1;
+                }
+            }
+        }
+        byte[][] Run(int depth)
+        {
+            using var worker = RtxVideoWorker.Create(DemoPaths.VsrHostDllPath, DemoPaths.VsrRuntimeDllPath,
+                Path.Combine(Environment.CurrentDirectory, "build", "performance", $"vsr-parity-{hdr}-{depth}.log"),
+                width, height, scale, 4, hdr, slots);
+            Check(worker.QueueCapacity == 3, "VSR fixture requires the new native FIFO exports.");
+            var result = new byte[count][];
+            var pending = new Queue<(int Slot, int Frame)>();
+            var free = new Queue<int>(Enumerable.Range(0, slots));
+            void Collect()
+            {
+                var item = pending.Dequeue();
+                worker.DequeueFrame(item.Slot, true);
+                result[item.Frame] = new ReadOnlySpan<byte>(worker.Output(item.Slot), bytes * scale * scale).ToArray();
+                free.Enqueue(item.Slot);
+            }
+            for (var index = 0; index < count; index++)
+            {
+                var slot = free.Dequeue();
+                inputs[index].CopyTo(new Span<byte>(worker.Source(slot), bytes));
+                worker.EnqueueFrame(slot);
+                pending.Enqueue((slot, index));
+                if (pending.Count == depth) Collect();
+            }
+            while (pending.Count > 0) Collect();
+            return result;
+        }
+        var serial = Run(1);
+        foreach (var depth in new[] { 2, 3 })
+        {
+            var queued = Run(depth);
+            for (var frame = 0; frame < count; frame++)
+                Check(serial[frame].AsSpan().SequenceEqual(queued[frame]), $"VSR FIFO changed hdr={hdr}, depth={depth}, frame={frame}.");
+        }
+        Console.WriteLine($"PASS VSR SDR/HDR FIFO parity: hdr={hdr}, depths 1/2/3, distinct frames, ring reuse and tail drain");
+    }
+}
+
+static async Task VsrTransportIntegration(string input)
+{
+    var root = Path.Combine(Environment.CurrentDirectory, "build", "performance", "vsr-transport-" + Guid.NewGuid().ToString("N"));
+    Directory.CreateDirectory(root);
+    var source = MediaProbe.Probe(input);
+    var logs = new System.Collections.Concurrent.ConcurrentQueue<string>();
+    var previous = PipelineLog.Sink;
+    PipelineLog.Sink = logs.Enqueue;
+    try
+    {
+        TranscodeOptions Options(string name) => new()
+        {
+            HostDllPath = DemoPaths.HostDllPath, RuntimeDllPath = DemoPaths.RuntimeDllPath,
+            LogPath = Path.Combine(root, name + "-nr.log"), VsrLogPath = Path.Combine(root, name + "-sr.log"),
+            SuperResolutionScale = 2, MaxFrames = 12, CopyAudio = false,
+            UseAsyncVsrQueue = true,
+            Video = new VideoTranscodeOptions { AudioCodec = AudioCodec.None },
+        };
+        async Task<TranscodeResult> Run(string name, TranscodeOptions options, bool gpu, int crop = 0)
+        {
+            // Packed RGB10 -> P010 on this driver fails the color fixture;
+            // HDR must keep its original pixels through the compatibility path.
+            gpu &= !source.IsHdr;
+            logs.Clear();
+            var result = await DlssVideoPipeline.RunAsync(input, Path.Combine(root, name + ".mp4"), options).WaitAsync(TimeSpan.FromSeconds(60));
+            var encoded = MediaProbe.Probe(result.OutputPath);
+            Check(encoded.FrameCount == options.MaxFrames && result.FramesProcessed == options.MaxFrames, $"{name}: lost or duplicated tail frames.");
+            Check(encoded.Width == source.Width * 2 - crop && encoded.Height == source.Height * 2, $"{name}: dimensions changed.");
+            Check(Math.Abs(encoded.Fps - source.Fps) < .0001, $"{name}: fractional frame rate changed.");
+            Check(encoded.IsHdr == source.IsHdr, $"{name}: HDR metadata changed.");
+            Check(logs.Any(line => line.StartsWith("VSR GPU 编码已启用")) == gpu, $"{name}: unexpected GPU transport/fallback.");
+            if (gpu) Check(File.ReadAllText(options.VsrLogPath).Contains("full-frame readback disabled"), "GPU path still downloads full frames.");
+            Console.WriteLine($"PASS VSR transport {name}: gpu={gpu}, {encoded.FrameCount} frames @ {encoded.FrameRate}");
+            return result;
+        }
+        var fastOutput = await Run("gpu-no-preview", Options("gpu-no-preview"), true);
+        using (var preview = new TranscodePreviewBuffer(160, 90))
+        {
+            await Run("gpu-preview", Options("gpu-preview") with { PreviewSink = preview, PreviewFramesPerSecond = 1 }, true);
+            using var last = preview.TakeLatest();
+            Check(last?.FramesDone == 12 && last.Width <= 160 && last.Height <= 90, "GPU transport lost the final preview at a low preview rate.");
+        }
+        using (var preview = new TranscodePreviewBuffer(160, 90))
+        {
+            await Run("gpu-one-frame", Options("gpu-one-frame") with { PreviewSink = preview, MaxFrames = 1 }, true);
+            using var last = preview.TakeLatest();
+            Check(last?.FramesDone == 1, "GPU one-frame queue did not drain its final preview.");
+        }
+        await Run("gpu-sync", Options("gpu-sync") with { UseAsyncVsrQueue = false }, true);
+        var rawOutput = await Run("raw-queue", Options("raw-queue") with { UseGpuVsrEncoding = false }, false);
+        var compare = new ProcessStartInfo(DemoPaths.FfmpegPath)
+        {
+            UseShellExecute = false, CreateNoWindow = true, RedirectStandardError = true,
+        };
+        foreach (var argument in new[] { "-nostdin", "-hide_banner", "-i", rawOutput.OutputPath,
+            "-i", fastOutput.OutputPath, "-lavfi", "psnr", "-an", "-f", "null", OperatingSystem.IsWindows() ? "NUL" : "/dev/null" })
+            compare.ArgumentList.Add(argument);
+        using (var process = Process.Start(compare)!)
+        {
+            var statistics = process.StandardError.ReadToEndAsync();
+            await process.WaitForExitAsync().WaitAsync(TimeSpan.FromSeconds(30));
+            var match = System.Text.RegularExpressions.Regex.Match(await statistics, @"PSNR.*average:([0-9.]+|inf)");
+            Check(process.ExitCode == 0 && match.Success, "Could not compare GPU/compatibility colors.");
+            var psnr = match.Groups[1].Value == "inf" ? double.PositiveInfinity
+                : double.Parse(match.Groups[1].Value, System.Globalization.CultureInfo.InvariantCulture);
+            Check(psnr >= (source.IsHdr ? 50 : 35), $"GPU transport changed color/channel interpretation: PSNR={psnr} dB.");
+            Console.WriteLine($"PASS VSR transport pixel/color regression: PSNR={psnr:0.00} dB, hdr={source.IsHdr}");
+        }
+        await Run("raw-sync", Options("raw-sync") with { UseGpuVsrEncoding = false, UseAsyncVsrQueue = false }, false);
+        await Run("cpu-filter", Options("cpu-filter") with { Video = new VideoTranscodeOptions
+            { AudioCodec = AudioCodec.None, CropEnabled = true, CropLeft = 2 } }, false, 2);
+        var missingEncoderDirectory = Path.Combine(root, "host-without-encoder");
+        Directory.CreateDirectory(missingEncoderDirectory);
+        var fallbackHost = Path.Combine(missingEncoderDirectory, "vsr_host.dll");
+        File.Copy(DemoPaths.VsrHostDllPath, fallbackHost);
+        var fallbackRuntime = Path.Combine(missingEncoderDirectory, "nvngx_vsr.dll");
+        File.Copy(DemoPaths.VsrRuntimeDllPath, fallbackRuntime);
+        await Run("missing-encoder", Options("missing-encoder") with
+            { VsrHostDllPath = fallbackHost, VsrRuntimeDllPath = fallbackRuntime }, false);
+        if (!source.IsHdr)
+        {
+            await Run("h264", Options("h264") with { VideoEncoder = "h264_nvenc" }, true);
+            await Run("av1", Options("av1") with { VideoEncoder = "av1_nvenc" }, true);
+        }
+        var audio = await Run("audio", Options("audio") with { CopyAudio = true,
+            Video = new VideoTranscodeOptions { AudioCodec = AudioCodec.Copy } }, true);
+        Check(MediaProbe.Probe(audio.OutputPath).HasAudio == source.HasAudio, "GPU remux lost source audio.");
+        using (var stop = new CancellationTokenSource())
+        {
+            try
+            {
+                await DlssVideoPipeline.RunAsync(input, Path.Combine(root, "cancel.mp4"), Options("cancel"),
+                    new InlineProgress(_ => stop.Cancel()), stop.Token).WaitAsync(TimeSpan.FromSeconds(30));
+                throw new Exception("GPU encoding ignored cancellation with frames in flight.");
+            }
+            catch (OperationCanceledException) { }
+        }
+        await Run("restart", Options("restart"), true);
+        Console.WriteLine("PASS GPU encoding cancellation, resource cleanup and restart");
+    }
+    finally { PipelineLog.Sink = previous; }
 }
 
 static unsafe void NativeNrBenchmark(string inputPath)

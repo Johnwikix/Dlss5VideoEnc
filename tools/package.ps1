@@ -13,6 +13,8 @@ $repoRoot = Split-Path -Parent $PSScriptRoot
 $project = Join-Path $repoRoot 'src\Dlss5Demo.App\Dlss5Demo.App.csproj'
 $runtimeSource = Join-Path $repoRoot 'runtime'
 $nativeNames = @('dlssnr_host_v2.dll', 'nvngx_dlssnr.dll', 'vsr_host.dll', 'nvngx_vsr.dll')
+$gpuEncoder = Join-Path $runtimeSource 'vsr_encoder.dll'
+if (Test-Path -LiteralPath $gpuEncoder -PathType Leaf) { $nativeNames += 'vsr_encoder.dll' }
 
 function Assert-File([string]$Path) {
     if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) {

@@ -51,6 +51,37 @@ UINT g_output_height = 0;
 bool g_hdr = false;
 unsigned int g_quality = 4;
 FILE *g_log = nullptr;
+constexpr int kQueueCapacity = 3;
+struct FrameSlot
+{
+    ID3D12Resource *input = nullptr, *output = nullptr, *upload = nullptr, *readback = nullptr;
+    ID3D12CommandAllocator *allocator = nullptr;
+    ID3D12GraphicsCommandList *list = nullptr;
+    unsigned char *upload_map = nullptr, *readback_map = nullptr;
+    UINT64 fence = 0;
+};
+FrameSlot g_slots[kQueueCapacity];
+int g_head = 0, g_pending = 0;
+
+// Optional encoder DLL keeps the basic VSR host independent of FFmpeg's ABI.
+HMODULE g_encoder_library = nullptr;
+using EncoderOpen = int (__cdecl *)(ID3D12Device *, ID3D12CommandQueue *, ID3D12Resource **,
+    int, int, int, const wchar_t *, const char *, const char *, int, int, int, int);
+using EncoderFrame = int (__cdecl *)(int, void *, int);
+using EncoderFinish = int (__cdecl *)();
+using EncoderClose = void (__cdecl *)();
+EncoderFrame g_encode_frame = nullptr;
+EncoderFinish g_encode_finish = nullptr;
+EncoderClose g_encode_close = nullptr;
+
+void SelectSlot(int index)
+{
+    auto &slot = g_slots[index];
+    g_input = slot.input; g_output = slot.output;
+    g_upload = slot.upload; g_readback = slot.readback;
+    g_upload_map = slot.upload_map; g_readback_map = slot.readback_map;
+    g_allocator = slot.allocator; g_list = slot.list;
+}
 
 template <typename T>
 void Release(T *&value)
@@ -160,15 +191,8 @@ bool BeginCommands()
     return SUCCEEDED(g_list->Reset(g_allocator, nullptr));
 }
 
-bool ExecuteAndWait()
+bool WaitForFence(UINT64 value)
 {
-    if (FAILED(g_list->Close()))
-        return false;
-    ID3D12CommandList *lists[] = {g_list};
-    g_queue->ExecuteCommandLists(1, lists);
-    const UINT64 value = ++g_fence_value;
-    if (FAILED(g_queue->Signal(g_fence, value)))
-        return false;
     if (g_fence->GetCompletedValue() < value)
     {
         ResetEvent(g_fence_event);
@@ -178,6 +202,21 @@ bool ExecuteAndWait()
             return false;
     }
     return true;
+}
+
+UINT64 ExecuteCommands()
+{
+    if (FAILED(g_list->Close())) return 0;
+    ID3D12CommandList *lists[] = {g_list};
+    g_queue->ExecuteCommandLists(1, lists);
+    const UINT64 value = ++g_fence_value;
+    return SUCCEEDED(g_queue->Signal(g_fence, value)) ? value : 0;
+}
+
+bool ExecuteAndWait()
+{
+    const auto value = ExecuteCommands();
+    return value != 0 && WaitForFence(value);
 }
 
 void RecordUpload()
@@ -376,6 +415,10 @@ bool CreateDevice()
 
 void Shutdown()
 {
+    if (g_encode_close != nullptr) g_encode_close();
+    g_encode_frame = nullptr; g_encode_finish = nullptr; g_encode_close = nullptr;
+    if (g_encoder_library != nullptr) FreeLibrary(g_encoder_library);
+    g_encoder_library = nullptr;
     if (g_queue != nullptr && g_fence != nullptr)
     {
         const UINT64 value = ++g_fence_value;
@@ -398,18 +441,21 @@ void Shutdown()
     if (g_device != nullptr)
         NVSDK_NGX_D3D12_Shutdown1(g_device);
 
-    if (g_upload != nullptr && g_upload_map != nullptr)
-        g_upload->Unmap(0, nullptr);
-    if (g_readback != nullptr && g_readback_map != nullptr)
-        g_readback->Unmap(0, nullptr);
+    // Slot zero also owns the command objects created before texture allocation.
+    if (g_slots[0].allocator == nullptr) g_slots[0].allocator = g_allocator;
+    if (g_slots[0].list == nullptr) g_slots[0].list = g_list;
+    for (auto &slot : g_slots)
+    {
+        if (slot.upload && slot.upload_map) slot.upload->Unmap(0, nullptr);
+        if (slot.readback && slot.readback_map) slot.readback->Unmap(0, nullptr);
+        Release(slot.upload); Release(slot.readback); Release(slot.input); Release(slot.output);
+        Release(slot.list); Release(slot.allocator);
+        slot = {};
+    }
     g_upload_map = nullptr;
     g_readback_map = nullptr;
-    Release(g_upload);
-    Release(g_readback);
-    Release(g_input);
-    Release(g_output);
-    Release(g_list);
-    Release(g_allocator);
+    g_upload = g_readback = g_input = g_output = nullptr;
+    g_list = nullptr; g_allocator = nullptr;
     Release(g_queue);
     Release(g_fence);
     Release(g_device);
@@ -425,6 +471,7 @@ void Shutdown()
     }
     SetDllDirectoryW(nullptr);
     g_fence_value = 0;
+    g_head = g_pending = 0;
 }
 }
 
@@ -458,19 +505,26 @@ extern "C" __declspec(dllexport) int vsr_init(
         return 0;
     }
     const DXGI_FORMAT format = g_hdr ? DXGI_FORMAT_R10G10B10A2_UNORM : DXGI_FORMAT_R8G8B8A8_UNORM;
-    g_input = CreateTexture(g_input_width, g_input_height, format, D3D12_RESOURCE_FLAG_NONE);
-    g_output = CreateTexture(g_output_width, g_output_height, format,
-                             D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS);
-    if (g_input == nullptr || g_output == nullptr ||
-        !CreateStaging(g_input, D3D12_HEAP_TYPE_UPLOAD, &g_upload, &g_input_footprint,
-                       &g_input_staging_size, &g_upload_map) ||
-        !CreateStaging(g_output, D3D12_HEAP_TYPE_READBACK, &g_readback, &g_output_footprint,
-                       &g_output_staging_size, &g_readback_map))
+    g_slots[0].allocator = g_allocator; g_slots[0].list = g_list;
+    for (int index = 0; index < kQueueCapacity; ++index)
     {
-        Log("texture/staging allocation failed");
-        Shutdown();
-        return 0;
+        auto &slot = g_slots[index];
+        slot.input = CreateTexture(g_input_width, g_input_height, format, D3D12_RESOURCE_FLAG_NONE);
+        slot.output = CreateTexture(g_output_width, g_output_height, format,
+            D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS);
+        if (index > 0 && (FAILED(g_device->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT,
+                IID_PPV_ARGS(&slot.allocator))) || FAILED(g_device->CreateCommandList(0,
+                D3D12_COMMAND_LIST_TYPE_DIRECT, slot.allocator, nullptr, IID_PPV_ARGS(&slot.list)))))
+        { Shutdown(); return 0; }
+        if (index > 0) slot.list->Close();
+        if (slot.input == nullptr || slot.output == nullptr ||
+            !CreateStaging(slot.input, D3D12_HEAP_TYPE_UPLOAD, &slot.upload, &g_input_footprint,
+                           &g_input_staging_size, &slot.upload_map) ||
+            !CreateStaging(slot.output, D3D12_HEAP_TYPE_READBACK, &slot.readback, &g_output_footprint,
+                           &g_output_staging_size, &slot.readback_map))
+        { Log("texture/staging allocation failed"); Shutdown(); return 0; }
     }
+    SelectSlot(0);
 
     const wchar_t *application_path =
         runtime_directory != nullptr && *runtime_directory != L'\0' ? runtime_directory : L".";
@@ -513,10 +567,14 @@ extern "C" __declspec(dllexport) int vsr_init(
     return 1;
 }
 
-extern "C" __declspec(dllexport) int vsr_process(const void *input_rgba, void *output_rgba)
+extern "C" __declspec(dllexport) int vsr_queue_capacity() { return kQueueCapacity; }
+
+extern "C" __declspec(dllexport) int vsr_enqueue(const void *input_rgba)
 {
-    if (g_feature == nullptr || input_rgba == nullptr || output_rgba == nullptr)
+    if (g_feature == nullptr || input_rgba == nullptr || g_pending == kQueueCapacity)
         return 0;
+    const int tail = (g_head + g_pending) % kQueueCapacity;
+    SelectSlot(tail);
     CopyInput(input_rgba);
     if (!BeginCommands())
         return 0;
@@ -535,11 +593,74 @@ extern "C" __declspec(dllexport) int vsr_process(const void *input_rgba, void *o
         g_list->Close();
         return 0;
     }
-    RecordReadback();
-    if (!ExecuteAndWait())
-        return 0;
-    CopyOutput(output_rgba);
+    if (g_encode_frame == nullptr) RecordReadback();
+    const auto fence = ExecuteCommands();
+    if (fence == 0) return 0;
+    g_slots[tail].fence = fence;
+    ++g_pending;
     return 1;
+}
+
+extern "C" __declspec(dllexport) int vsr_dequeue(void *output_rgba, int preview)
+{
+    if (g_pending == 0 || (g_encode_frame == nullptr && output_rgba == nullptr)) return 0;
+    SelectSlot(g_head);
+    if (!WaitForFence(g_slots[g_head].fence)) return 0;
+    if (g_encode_frame != nullptr)
+    {
+        if (!g_encode_frame(g_head, output_rgba, preview)) return 0;
+    }
+    else CopyOutput(output_rgba);
+    g_head = (g_head + 1) % kQueueCapacity;
+    --g_pending;
+    return 1;
+}
+
+extern "C" __declspec(dllexport) int vsr_process(const void *input_rgba, void *output_rgba)
+{
+    if (g_pending != 0) return 0;
+    return vsr_enqueue(input_rgba) && vsr_dequeue(output_rgba, 1);
+}
+
+extern "C" __declspec(dllexport) int vsr_encoder_init(const wchar_t *library_path,
+    const wchar_t *output_path, const char *codec, const char *options, int fps_num, int fps_den,
+    int preview_width, int preview_height)
+{
+    if (g_pending != 0 || g_encoder_library != nullptr) return 0;
+    // The driver's packed RGB10 video-processor conversion failed the color
+    // regression fixture. HDR retains the byte-preserving CPU transport.
+    if (g_hdr) return 0;
+    auto module = LoadLibraryExW(library_path, nullptr,
+        LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR | LOAD_LIBRARY_SEARCH_DEFAULT_DIRS);
+    if (module == nullptr) { Log("GPU encoder DLL unavailable error=%lu", GetLastError()); return 0; }
+    auto open = reinterpret_cast<EncoderOpen>(GetProcAddress(module, "vsr_nvenc_open"));
+    auto frame = reinterpret_cast<EncoderFrame>(GetProcAddress(module, "vsr_nvenc_frame"));
+    auto finish = reinterpret_cast<EncoderFinish>(GetProcAddress(module, "vsr_nvenc_finish"));
+    auto close = reinterpret_cast<EncoderClose>(GetProcAddress(module, "vsr_nvenc_close"));
+    ID3D12Resource *outputs[kQueueCapacity];
+    for (int i = 0; i < kQueueCapacity; ++i) outputs[i] = g_slots[i].output;
+    if (!open || !frame || !finish || !close || !open(g_device, g_queue, outputs, kQueueCapacity,
+        g_output_width, g_output_height, output_path, codec, options,
+        fps_num, fps_den, preview_width, preview_height))
+    { if (close) close(); FreeLibrary(module); Log("GPU encoder initialization failed; use CPU transport"); return 0; }
+    g_encoder_library = module; g_encode_frame = frame; g_encode_finish = finish; g_encode_close = close;
+    // D3D11 creates the shared textures so their sharing metadata contains a
+    // D3D11 resource description. Arbitrary D3D12 textures cannot be opened by 11.
+    for (int i = 0; i < kQueueCapacity; ++i)
+    { Release(g_slots[i].output); g_slots[i].output = outputs[i]; }
+    Log("GPU encode enabled: shared D3D12 textures -> NV12 -> NVENC; full-frame readback disabled");
+    // Encoding only needs RGB readback when a preview is requested, handled by the encoder DLL.
+    for (auto &slot : g_slots)
+    {
+        slot.readback->Unmap(0, nullptr); Release(slot.readback); slot.readback_map = nullptr;
+    }
+    SelectSlot(0);
+    return 1;
+}
+
+extern "C" __declspec(dllexport) int vsr_encoder_finish()
+{
+    return g_pending == 0 && g_encode_finish != nullptr && g_encode_finish();
 }
 
 extern "C" __declspec(dllexport) void vsr_shutdown()
