@@ -8,7 +8,7 @@ public sealed class RtxVideoSuperResolutionHost : IDisposable
     private const string DllName = "vsr_host.dll";
     private IntPtr _library;
     private bool _disposed;
-    public int QueueCapacity { get; }
+    private readonly bool _supportsPreviewControl;
 
     [DllImport(DllName, CallingConvention = CallingConvention.Cdecl)]
     private static extern int vsr_init(int inputWidth, int inputHeight, int scale, int quality, int hdr,
@@ -19,11 +19,7 @@ public sealed class RtxVideoSuperResolutionHost : IDisposable
     private static extern unsafe int vsr_process(void* input, void* output);
 
     [DllImport(DllName, CallingConvention = CallingConvention.Cdecl)]
-    private static extern int vsr_queue_capacity();
-    [DllImport(DllName, CallingConvention = CallingConvention.Cdecl)]
-    private static extern unsafe int vsr_enqueue(void* input);
-    [DllImport(DllName, CallingConvention = CallingConvention.Cdecl)]
-    private static extern unsafe int vsr_dequeue(void* output, int preview);
+    private static extern unsafe int vsr_process_ex(void* input, void* output, int preview);
     [DllImport(DllName, CallingConvention = CallingConvention.Cdecl, CharSet = CharSet.Unicode)]
     private static extern int vsr_encoder_init(string libraryPath, string outputPath,
         [MarshalAs(UnmanagedType.LPUTF8Str)] string codec, [MarshalAs(UnmanagedType.LPUTF8Str)] string options,
@@ -37,9 +33,7 @@ public sealed class RtxVideoSuperResolutionHost : IDisposable
     private RtxVideoSuperResolutionHost(IntPtr library, int width, int height, int scale, bool hdr)
     {
         _library = library;
-        QueueCapacity = NativeLibrary.TryGetExport(library, "vsr_queue_capacity", out _)
-            && NativeLibrary.TryGetExport(library, "vsr_enqueue", out _)
-            && NativeLibrary.TryGetExport(library, "vsr_dequeue", out _) ? Math.Clamp(vsr_queue_capacity(), 1, 3) : 1;
+        _supportsPreviewControl = NativeLibrary.TryGetExport(library, "vsr_process_ex", out _);
         InputWidth = width;
         InputHeight = height;
         Scale = scale;
@@ -104,10 +98,13 @@ public sealed class RtxVideoSuperResolutionHost : IDisposable
         return vsr_process(input, output) != 0;
     }
 
-    internal unsafe bool EnqueueFrame(byte* input) => vsr_enqueue(input) != 0;
-    internal unsafe bool DequeueFrame(byte* output, bool preview) => vsr_dequeue(output, preview ? 1 : 0) != 0;
+    internal unsafe bool ProcessFrame(byte* input, byte* output, bool preview)
+    {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+        return (_supportsPreviewControl ? vsr_process_ex(input, output, preview ? 1 : 0) : vsr_process(input, output)) != 0;
+    }
     internal bool EnableEncoder(string libraryPath, VsrEncoderConfiguration configuration)
-        => NativeLibrary.TryGetExport(_library, "vsr_encoder_init", out _)
+        => _supportsPreviewControl && NativeLibrary.TryGetExport(_library, "vsr_encoder_init", out _)
            && vsr_encoder_init(libraryPath, configuration.OutputPath, configuration.Encoder, configuration.Options,
                configuration.FpsNumerator, configuration.FpsDenominator,
                configuration.PreviewWidth, configuration.PreviewHeight) != 0;

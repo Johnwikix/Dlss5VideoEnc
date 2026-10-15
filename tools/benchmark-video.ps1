@@ -7,7 +7,6 @@ param(
     [ValidateSet(1,2,4)][int]$Scale = 1,
     [bool]$NrFirst = $true,
     [bool]$NrQueue = $true,
-    [bool]$VsrQueue = $false,
     [bool]$GpuVsrEncoding = $true,
     [bool]$Preview = $true,
     [switch]$LegacyCleanup
@@ -28,7 +27,7 @@ foreach ($argument in @((Resolve-Path -LiteralPath $CliAssembly).Path, (Resolve-
 $taskOutputLog = [IO.Path]::ChangeExtension([IO.Path]::GetFullPath($OutputVideo), '.log')
 if (!$LegacyCleanup) {
     foreach ($argument in @('--nr-before-sr', [int]$NrFirst, '--nr-queue', [int]$NrQueue,
-        '--sr-queue', [int]$VsrQueue, '--sr-gpu-encode', [int]$GpuVsrEncoding)) {
+        '--sr-gpu-encode', [int]$GpuVsrEncoding)) {
         $taskStart.ArgumentList.Add([string]$argument)
     }
 }

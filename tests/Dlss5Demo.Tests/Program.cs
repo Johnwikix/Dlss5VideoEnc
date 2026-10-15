@@ -52,7 +52,6 @@ if (comparisonArgument >= 0)
 var pipelineArgument = Array.IndexOf(args, "--pipeline");
 if (pipelineArgument >= 0)
     PipelineIntegration(args[pipelineArgument + 1]).GetAwaiter().GetResult();
-if (args.Contains("--vsr-gpu")) NativeVsrQueueParity();
 var transportArgument = Array.IndexOf(args, "--vsr-transport");
 if (transportArgument >= 0) VsrTransportIntegration(args[transportArgument + 1]).GetAwaiter().GetResult();
 
@@ -670,76 +669,6 @@ static unsafe void NativeQueueParity()
         }
 }
 
-static unsafe void NativeVsrQueueParity()
-{
-    const int width = 320, height = 180, scale = 2, count = 11, slots = 3;
-    foreach (var hdr in new[] { false, true })
-    {
-        var bytes = width * height * (hdr ? 8 : 4);
-        var inputs = new byte[count][];
-        for (var frame = 0; frame < count; frame++)
-        {
-            inputs[frame] = new byte[bytes];
-            if (!hdr)
-            {
-                for (var pixel = 0; pixel < width * height; pixel++)
-                {
-                    inputs[frame][pixel * 4] = (byte)((pixel % width + frame * 13) % 256);
-                    inputs[frame][pixel * 4 + 1] = (byte)((pixel / width + frame * 7) % 256);
-                    inputs[frame][pixel * 4 + 2] = (byte)((pixel + frame * 19) % 256);
-                    inputs[frame][pixel * 4 + 3] = 255;
-                }
-            }
-            else
-            {
-                var half = System.Runtime.InteropServices.MemoryMarshal.Cast<byte, Half>(inputs[frame].AsSpan());
-                for (var pixel = 0; pixel < width * height; pixel++)
-                {
-                    half[pixel * 4] = (Half)(((pixel % width + frame * 13) % 256) / 255f);
-                    half[pixel * 4 + 1] = (Half)(((pixel / width + frame * 7) % 256) / 255f);
-                    half[pixel * 4 + 2] = (Half)(((pixel + frame * 19) % 256) / 255f);
-                    half[pixel * 4 + 3] = (Half)1;
-                }
-            }
-        }
-        byte[][] Run(int depth)
-        {
-            using var worker = RtxVideoWorker.Create(DemoPaths.VsrHostDllPath, DemoPaths.VsrRuntimeDllPath,
-                Path.Combine(Environment.CurrentDirectory, "build", "performance", $"vsr-parity-{hdr}-{depth}.log"),
-                width, height, scale, 4, hdr, slots);
-            Check(worker.QueueCapacity == 3, "VSR fixture requires the new native FIFO exports.");
-            var result = new byte[count][];
-            var pending = new Queue<(int Slot, int Frame)>();
-            var free = new Queue<int>(Enumerable.Range(0, slots));
-            void Collect()
-            {
-                var item = pending.Dequeue();
-                worker.DequeueFrame(item.Slot, true);
-                result[item.Frame] = new ReadOnlySpan<byte>(worker.Output(item.Slot), bytes * scale * scale).ToArray();
-                free.Enqueue(item.Slot);
-            }
-            for (var index = 0; index < count; index++)
-            {
-                var slot = free.Dequeue();
-                inputs[index].CopyTo(new Span<byte>(worker.Source(slot), bytes));
-                worker.EnqueueFrame(slot);
-                pending.Enqueue((slot, index));
-                if (pending.Count == depth) Collect();
-            }
-            while (pending.Count > 0) Collect();
-            return result;
-        }
-        var serial = Run(1);
-        foreach (var depth in new[] { 2, 3 })
-        {
-            var queued = Run(depth);
-            for (var frame = 0; frame < count; frame++)
-                Check(serial[frame].AsSpan().SequenceEqual(queued[frame]), $"VSR FIFO changed hdr={hdr}, depth={depth}, frame={frame}.");
-        }
-        Console.WriteLine($"PASS VSR SDR/HDR FIFO parity: hdr={hdr}, depths 1/2/3, distinct frames, ring reuse and tail drain");
-    }
-}
-
 static async Task VsrTransportIntegration(string input)
 {
     var root = Path.Combine(Environment.CurrentDirectory, "build", "performance", "vsr-transport-" + Guid.NewGuid().ToString("N"));
@@ -755,7 +684,6 @@ static async Task VsrTransportIntegration(string input)
             HostDllPath = DemoPaths.HostDllPath, RuntimeDllPath = DemoPaths.RuntimeDllPath,
             LogPath = Path.Combine(root, name + "-nr.log"), VsrLogPath = Path.Combine(root, name + "-sr.log"),
             SuperResolutionScale = 2, MaxFrames = 12, CopyAudio = false,
-            UseAsyncVsrQueue = true,
             Video = new VideoTranscodeOptions { AudioCodec = AudioCodec.None },
         };
         async Task<TranscodeResult> Run(string name, TranscodeOptions options, bool gpu, int crop = 0)
@@ -786,10 +714,9 @@ static async Task VsrTransportIntegration(string input)
         {
             await Run("gpu-one-frame", Options("gpu-one-frame") with { PreviewSink = preview, MaxFrames = 1 }, true);
             using var last = preview.TakeLatest();
-            Check(last?.FramesDone == 1, "GPU one-frame queue did not drain its final preview.");
+            Check(last?.FramesDone == 1, "GPU one-frame processing lost its final preview.");
         }
-        await Run("gpu-sync", Options("gpu-sync") with { UseAsyncVsrQueue = false }, true);
-        var rawOutput = await Run("raw-queue", Options("raw-queue") with { UseGpuVsrEncoding = false }, false);
+        var rawOutput = await Run("raw-frames", Options("raw-frames") with { UseGpuVsrEncoding = false }, false);
         var compare = new ProcessStartInfo(DemoPaths.FfmpegPath)
         {
             UseShellExecute = false, CreateNoWindow = true, RedirectStandardError = true,
@@ -808,7 +735,6 @@ static async Task VsrTransportIntegration(string input)
             Check(psnr >= (source.IsHdr ? 50 : 35), $"GPU transport changed color/channel interpretation: PSNR={psnr} dB.");
             Console.WriteLine($"PASS VSR transport pixel/color regression: PSNR={psnr:0.00} dB, hdr={source.IsHdr}");
         }
-        await Run("raw-sync", Options("raw-sync") with { UseGpuVsrEncoding = false, UseAsyncVsrQueue = false }, false);
         await Run("cpu-filter", Options("cpu-filter") with { Video = new VideoTranscodeOptions
             { AudioCodec = AudioCodec.None, CropEnabled = true, CropLeft = 2 } }, false, 2);
         var missingEncoderDirectory = Path.Combine(root, "host-without-encoder");

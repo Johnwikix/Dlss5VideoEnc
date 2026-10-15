@@ -13,7 +13,6 @@ var superResolutionQuality = 4;
 var previewEnabled = true;
 var nrFirst = true;
 var nrQueue = true;
-var vsrQueue = false;
 var gpuVsrEncoding = true;
 
 for (var index = 2; index < args.Length - 1; index++)
@@ -38,7 +37,6 @@ for (var index = 2; index < args.Length - 1; index++)
         case "--preview": previewEnabled = args[++index] != "0"; break;
         case "--nr-before-sr": nrFirst = args[++index] != "0"; break;
         case "--nr-queue": nrQueue = args[++index] != "0"; break;
-        case "--sr-queue": vsrQueue = args[++index] != "0"; break;
         case "--sr-gpu-encode": gpuVsrEncoding = args[++index] != "0"; break;
     }
 }
@@ -84,7 +82,6 @@ var result = await DlssVideoPipeline.RunAsync(input, output, new TranscodeOption
     SuperResolutionQuality = superResolutionQuality,
     NrBeforeSuperResolution = nrFirst,
     UseAsyncNrQueue = nrQueue,
-    UseAsyncVsrQueue = vsrQueue,
     UseGpuVsrEncoding = gpuVsrEncoding,
     EnablePreviewFrames = previewEnabled,
     PreviewSink = previewSink,

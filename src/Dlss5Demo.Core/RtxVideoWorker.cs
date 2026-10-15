@@ -22,7 +22,6 @@ public sealed unsafe class RtxVideoWorker : IDisposable
     private Task<string>? _errors;
     private bool _disposed, _ready;
     private long _sourceBytes, _processBytes, _slotBytes;
-    internal int QueueCapacity { get; private set; } = 1;
     internal int FrameCapacity { get; private set; }
     internal VsrEncoderConfiguration? Encoder { get; private set; }
     internal bool GpuEncoding => Encoder != null;
@@ -83,7 +82,6 @@ public sealed unsafe class RtxVideoWorker : IDisposable
             // Only initialization has a deadline. Frame waits are unblocked by cancellation/abort.
             var status = Task.Run(worker._responses.ReadInt32).WaitAsync(TimeSpan.FromSeconds(45), cancellationToken).GetAwaiter().GetResult();
             if (status != 1) throw new InvalidOperationException("RTX Video worker initialization failed.");
-            worker.QueueCapacity = worker._responses.ReadInt32();
             worker._ready = true;
             if (encoder != null)
             {
@@ -112,24 +110,11 @@ public sealed unsafe class RtxVideoWorker : IDisposable
         }
     }
 
-    internal void ProcessFrame(int slot)
-    {
-        EnqueueFrame(slot);
-        DequeueFrame(slot, true);
-    }
-
-    internal void EnqueueFrame(int slot)
+    internal void ProcessFrame(int slot, bool preview)
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
-        _commands!.Write(slot); _commands.Flush();
-        if (_responses!.ReadInt32() != 1) throw FrameError("submission");
-    }
-
-    internal void DequeueFrame(int slot, bool preview)
-    {
-        ObjectDisposedException.ThrowIf(_disposed, this);
-        _commands!.Write(-2); _commands.Write(slot); _commands.Write(preview); _commands.Flush();
-        if (_responses!.ReadInt32() != 1) throw FrameError("collection");
+        _commands!.Write(slot); _commands.Write(preview); _commands.Flush();
+        if (_responses!.ReadInt32() != 1) throw FrameError("processing");
     }
 
     internal void FinishEncoding()
@@ -215,8 +200,7 @@ public sealed unsafe class RtxVideoWorker : IDisposable
                 using var host = RtxVideoSuperResolutionHost.Create(args[8], args[9], args[10], width, height, scale, hdr, quality);
                 using var responses = new BinaryWriter(Console.OpenStandardOutput());
                 using var commands = new BinaryReader(Console.OpenStandardInput());
-                responses.Write(1); responses.Write(host.QueueCapacity); responses.Flush();
-                var pending = new Queue<int>(host.QueueCapacity);
+                responses.Write(1); responses.Flush();
                 while (true)
                 {
                     var slot = commands.ReadInt32();
@@ -230,24 +214,12 @@ public sealed unsafe class RtxVideoWorker : IDisposable
                     }
                     if (slot == -4)
                     {
-                        responses.Write(pending.Count == 0 && host.FinishEncoding() ? 1 : 0); responses.Flush(); continue;
-                    }
-                    if (slot == -2)
-                    {
-                        slot = commands.ReadInt32();
-                        var preview = commands.ReadBoolean();
-                        if (pending.Count == 0 || pending.Dequeue() != slot) throw new InvalidOperationException("VSR queue order mismatch.");
-                        var output = pointer + view.PointerOffset + slot * slotBytes + sourceBytes;
-                        var collected = host.QueueCapacity == 1 || host.DequeueFrame(output, preview);
-                        responses.Write(collected ? 1 : 0); responses.Flush();
-                        if (!collected) throw new InvalidOperationException("VSR native collection failed.");
-                        continue;
+                        responses.Write(host.FinishEncoding() ? 1 : 0); responses.Flush(); continue;
                     }
                     if ((uint)slot >= (uint)capacity) throw new ArgumentOutOfRangeException(nameof(slot));
-                    if (pending.Count == host.QueueCapacity || pending.Contains(slot)) throw new InvalidOperationException("VSR slot is still in flight.");
+                    var preview = commands.ReadBoolean();
                     var source = pointer + view.PointerOffset + slot * slotBytes;
-                    var ok = host.QueueCapacity > 1 ? host.EnqueueFrame(source) : host.ProcessFrame(source, source + sourceBytes);
-                    if (ok) pending.Enqueue(slot);
+                    var ok = host.ProcessFrame(source, source + sourceBytes, preview);
                     responses.Write(ok ? 1 : 0); responses.Flush();
                     if (!ok) throw new InvalidOperationException("VSR native evaluation failed.");
                 }

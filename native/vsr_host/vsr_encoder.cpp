@@ -30,9 +30,9 @@ ID3D11VideoContext *video_context = nullptr;
 ID3D11VideoContext1 *video_context1 = nullptr;
 ID3D11VideoProcessorEnumerator *enumerator = nullptr, *preview_enumerator = nullptr;
 ID3D11VideoProcessor *processor = nullptr, *preview_processor = nullptr;
-ID3D11Texture2D *inputs[3] = {}, *preview_texture = nullptr, *preview_staging = nullptr;
-ID3D12Resource *shared_outputs[3] = {};
-ID3D11VideoProcessorInputView *input_views[3] = {}, *preview_views[3] = {};
+ID3D11Texture2D *input_texture = nullptr, *preview_texture = nullptr, *preview_staging = nullptr;
+ID3D12Resource *shared_output = nullptr;
+ID3D11VideoProcessorInputView *input_view = nullptr, *preview_view = nullptr;
 ID3D11VideoProcessorOutputView *preview_output = nullptr;
 ID3D11Fence *conversion_fence11 = nullptr;
 ID3D12Fence *conversion_fence12 = nullptr;
@@ -107,11 +107,11 @@ bool DrainPackets()
     }
 }
 
-bool CopyPreview(int slot, void *output)
+bool CopyPreview(void *output)
 {
     if (!output || !preview_output) return false;
     D3D11_VIDEO_PROCESSOR_STREAM input = {};
-    input.Enable = TRUE; input.pInputSurface = preview_views[slot];
+    input.Enable = TRUE; input.pInputSurface = preview_view;
     if (!Check(video_context->VideoProcessorBlt(preview_processor, preview_output, 0, 1, &input), "preview conversion")) return false;
     context->CopyResource(preview_staging, preview_texture);
     D3D11_MAPPED_SUBRESOURCE mapped = {};
@@ -147,7 +147,7 @@ extern "C" __declspec(dllexport) void vsr_nvenc_close()
         }
     }
     Release(preview_output); Release(preview_texture); Release(preview_staging);
-    for (int i = 0; i < 3; ++i) { Release(input_views[i]); Release(preview_views[i]); Release(inputs[i]); Release(shared_outputs[i]); }
+    Release(input_view); Release(preview_view); Release(input_texture); Release(shared_output);
     Release(processor); Release(enumerator); Release(preview_processor); Release(preview_enumerator);
     Release(video_context1); Release(video_context); Release(video_device);
     Release(conversion_fence11); Release(conversion_fence12); Release(context4); Release(context); Release(device);
@@ -159,7 +159,8 @@ extern "C" __declspec(dllexport) int vsr_nvenc_open(ID3D12Device *source_device,
     const wchar_t *output_path, const char *encoder, const char *options, int fps_num, int fps_den,
     int pw, int ph)
 {
-    if (device || count > 3 || count < 1 || w <= 0 || h <= 0 || fps_num <= 0 || fps_den <= 0) return 0;
+    // Keep the optional DLL ABI compatible, while owning a single VSR texture.
+    if (device || count != 1 || w <= 0 || h <= 0 || fps_num <= 0 || fps_den <= 0) return 0;
     width = w; height = h; queue = source_queue;
     preview_width = pw; preview_height = ph;
     IDXGIFactory4 *factory = nullptr;
@@ -176,7 +177,6 @@ extern "C" __declspec(dllexport) int vsr_nvenc_open(ID3D12Device *source_device,
         !Check(context->QueryInterface(IID_PPV_ARGS(&video_context1)), "video context 1") ||
         !Check(context->QueryInterface(IID_PPV_ARGS(&context4)), "D3D11 context 4")) return 0;
     ID3D11Device5 *device5 = nullptr;
-    for (int i = 0; i < count; ++i)
     {
         D3D11_TEXTURE2D_DESC description = {};
         description.Width = width; description.Height = height; description.MipLevels = description.ArraySize = 1;
@@ -184,15 +184,15 @@ extern "C" __declspec(dllexport) int vsr_nvenc_open(ID3D12Device *source_device,
         description.SampleDesc.Count = 1;
         description.BindFlags = D3D11_BIND_RENDER_TARGET | D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_UNORDERED_ACCESS;
         description.MiscFlags = D3D11_RESOURCE_MISC_SHARED_NTHANDLE | D3D11_RESOURCE_MISC_SHARED;
-        if (!Check(device->CreateTexture2D(&description, nullptr, &inputs[i]), "shared VSR texture")) return 0;
+        if (!Check(device->CreateTexture2D(&description, nullptr, &input_texture), "shared VSR texture")) return 0;
         IDXGIResource1 *resource = nullptr;
-        if (!Check(inputs[i]->QueryInterface(IID_PPV_ARGS(&resource)), "shared resource interface")) return 0;
+        if (!Check(input_texture->QueryInterface(IID_PPV_ARGS(&resource)), "shared resource interface")) return 0;
         HANDLE shared = nullptr;
         const HRESULT handle_result = resource->CreateSharedHandle(nullptr,
             DXGI_SHARED_RESOURCE_READ | DXGI_SHARED_RESOURCE_WRITE, nullptr, &shared);
         Release(resource);
         if (!Check(handle_result, "shared VSR handle")) return 0;
-        const HRESULT opened = source_device->OpenSharedHandle(shared, IID_PPV_ARGS(&shared_outputs[i]));
+        const HRESULT opened = source_device->OpenSharedHandle(shared, IID_PPV_ARGS(&shared_output));
         CloseHandle(shared);
         if (!Check(opened, "D3D12 shared VSR texture")) return 0;
     }
@@ -210,11 +210,10 @@ extern "C" __declspec(dllexport) int vsr_nvenc_open(ID3D12Device *source_device,
     // the raw-RGBA compatibility encoder.
     DXGI_COLOR_SPACE_TYPE output_space = DXGI_COLOR_SPACE_YCBCR_STUDIO_G22_LEFT_P601;
     if (!CreateProcessor(width, height, &enumerator, &processor, output_space)) return 0;
-    for (int i = 0; i < count; ++i)
     {
         D3D11_VIDEO_PROCESSOR_INPUT_VIEW_DESC view = {};
         view.ViewDimension = D3D11_VPIV_DIMENSION_TEXTURE2D;
-        if (!Check(video_device->CreateVideoProcessorInputView(inputs[i], enumerator, &view, &input_views[i]), "VSR input view")) return 0;
+        if (!Check(video_device->CreateVideoProcessorInputView(input_texture, enumerator, &view, &input_view), "VSR input view")) return 0;
     }
 
     hw_device = av_hwdevice_ctx_alloc(AV_HWDEVICE_TYPE_D3D11VA);
@@ -278,20 +277,19 @@ extern "C" __declspec(dllexport) int vsr_nvenc_open(ID3D12Device *source_device,
         D3D11_VIDEO_PROCESSOR_OUTPUT_VIEW_DESC view = {};
         view.ViewDimension = D3D11_VPOV_DIMENSION_TEXTURE2D;
         if (!Check(video_device->CreateVideoProcessorOutputView(preview_texture, preview_enumerator, &view, &preview_output), "preview output view")) return 0;
-        for (int i = 0; i < count; ++i)
         {
             D3D11_VIDEO_PROCESSOR_INPUT_VIEW_DESC input = {};
             input.ViewDimension = D3D11_VPIV_DIMENSION_TEXTURE2D;
-            if (!Check(video_device->CreateVideoProcessorInputView(inputs[i], preview_enumerator, &input, &preview_views[i]), "preview input view")) return 0;
+            if (!Check(video_device->CreateVideoProcessorInputView(input_texture, preview_enumerator, &input, &preview_view), "preview input view")) return 0;
         }
     }
-    for (int i = 0; i < count; ++i) { outputs[i] = shared_outputs[i]; shared_outputs[i] = nullptr; }
+    *outputs = shared_output; shared_output = nullptr;
     return 1;
 }
 
 extern "C" __declspec(dllexport) int vsr_nvenc_frame(int slot, void *preview, int want_preview)
 {
-    if (!codec_context || finished || slot < 0 || slot >= 3 || !inputs[slot]) return 0;
+    if (!codec_context || finished || slot != 0 || !input_texture) return 0;
     AVFrame *frame = av_frame_alloc();
     if (!frame) return 0;
     bool ok = CheckAv(av_hwframe_get_buffer(hw_frames, frame, 0), "NVENC frame");
@@ -306,11 +304,11 @@ extern "C" __declspec(dllexport) int vsr_nvenc_frame(int slot, void *preview, in
     if (ok)
     {
         D3D11_VIDEO_PROCESSOR_STREAM input = {};
-        input.Enable = TRUE; input.pInputSurface = input_views[slot];
+        input.Enable = TRUE; input.pInputSurface = input_view;
         ok = Check(video_context->VideoProcessorBlt(processor, output, 0, 1, &input), "RGB to NV12");
     }
     Release(output);
-    if (ok && want_preview) ok = CopyPreview(slot, preview);
+    if (ok && want_preview) ok = CopyPreview(preview);
     if (ok)
     {
         // GPU-to-GPU dependency: later D3D12 submissions cannot overwrite a VSR

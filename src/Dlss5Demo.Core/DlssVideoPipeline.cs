@@ -24,8 +24,6 @@ public sealed record TranscodeOptions
     public bool NrBeforeSuperResolution { get; init; } = true;
     /// <summary>Overlap NR input uploads with prior GPU work using the host's FIFO queue.</summary>
     public bool UseAsyncNrQueue { get; init; } = true;
-    /// <summary>Overlap ordered VSR submissions using a bounded two-frame FIFO.</summary>
-    public bool UseAsyncVsrQueue { get; init; }
     /// <summary>Keep VSR output on the GPU for compatible NVENC exports.</summary>
     public bool UseGpuVsrEncoding { get; init; } = true;
     public DlssNrOptions Dlss { get; init; } = new();
@@ -141,7 +139,7 @@ public static class DlssVideoPipeline
             outcome = await Task.Run(() => RunFrameStream(
                 decoder, Stream.Null, host, vsr, plan, totalFrames, options.LogPath, progress,
                 options.EnablePreviewFrames ? options.PreviewSink : null, options.PreviewFramesPerSecond,
-                video.Fps, options.UseAsyncNrQueue, options.UseAsyncVsrQueue, cancellationToken)).ConfigureAwait(false);
+                video.Fps, options.UseAsyncNrQueue, cancellationToken)).ConfigureAwait(false);
             decoder.Process.WaitForExit(30_000);
             if (decoder.Process.ExitCode != 0 || totalFrames > 0 && outcome.Frames < totalFrames)
                 throw new InvalidOperationException("ffmpeg 解码提前结束：\n" + decoder.ErrorTail);
@@ -161,8 +159,7 @@ public static class DlssVideoPipeline
             outcome = await Task.Run(() => RunFrameLoop(
                 decoder, encoder, host, vsr, plan, totalFrames, options.LogPath, progress,
                 options.EnablePreviewFrames ? options.PreviewSink : null,
-                options.PreviewFramesPerSecond, video.Fps, options.UseAsyncNrQueue,
-                options.UseAsyncVsrQueue, cancellationToken)).ConfigureAwait(false);
+                options.PreviewFramesPerSecond, video.Fps, options.UseAsyncNrQueue, cancellationToken)).ConfigureAwait(false);
         }
 
         var outputInfo = new FileInfo(outputPath);
@@ -215,7 +212,7 @@ public static class DlssVideoPipeline
         return RtxVideoWorker.Create(
             host, runtime, log, plan.SourceWidth, plan.SourceHeight,
             plan.ProcessWidth / plan.SourceWidth, options.SuperResolutionQuality, plan.Hdr,
-            FrameSlotCount(plan, options.Dlss.MotionGuidance, options.Dlss.TemporalStabilization, options.UseAsyncVsrQueue),
+            FrameSlotCount(plan, options.Dlss.MotionGuidance, options.Dlss.TemporalStabilization),
             options.VsrWorkerExecutablePath, cancellationToken, CreateGpuEncoderConfiguration(options, plan, video));
     }
 
@@ -277,7 +274,7 @@ public static class DlssVideoPipeline
                     outcome = await Task.Run(() => RunFrameStream(
                         decoder, raw, host, vsr, plan, totalFrames, options.LogPath,
                         progress, options.EnablePreviewFrames ? options.PreviewSink : null,
-                        options.PreviewFramesPerSecond, video.Fps, options.UseAsyncNrQueue, options.UseAsyncVsrQueue, cancellationToken)).ConfigureAwait(false);
+                        options.PreviewFramesPerSecond, video.Fps, options.UseAsyncNrQueue, cancellationToken)).ConfigureAwait(false);
                     decoder.Process.WaitForExit(30_000);
                     if (decoder.Process.ExitCode != 0)
                         throw new InvalidOperationException("ffmpeg 解码失败：\n" + decoder.ErrorTail);
@@ -323,19 +320,19 @@ public static class DlssVideoPipeline
     private static (long Frames, TimeSpan Elapsed) RunFrameStream(
         CommandDrain decoder, Stream destination, DlssNrHost host, RtxVideoWorker? vsr,
         ProcessingPlan plan, long totalFrames, string logPath, IProgress<TranscodeProgress>? progress,
-        ITranscodePreviewSink? preview, int previewFramesPerSecond, double sourceFps, bool useAsyncNrQueue, bool useAsyncVsrQueue,
+        ITranscodePreviewSink? preview, int previewFramesPerSecond, double sourceFps, bool useAsyncNrQueue,
         CancellationToken cancellationToken)
         => RunFrameCore(decoder, destination, host, vsr, plan, totalFrames, logPath, progress,
-            preview, previewFramesPerSecond, sourceFps, useAsyncNrQueue, useAsyncVsrQueue, () => TryKill(decoder.Process), cancellationToken);
+            preview, previewFramesPerSecond, sourceFps, useAsyncNrQueue, () => TryKill(decoder.Process), cancellationToken);
 
     private static (long Frames, TimeSpan Elapsed) RunFrameLoop(
         CommandDrain decoder, CommandDrain encoder, DlssNrHost host, RtxVideoWorker? vsr,
         ProcessingPlan plan, long totalFrames, string logPath, IProgress<TranscodeProgress>? progress,
-        ITranscodePreviewSink? preview, int previewFramesPerSecond, double sourceFps, bool useAsyncNrQueue, bool useAsyncVsrQueue,
+        ITranscodePreviewSink? preview, int previewFramesPerSecond, double sourceFps, bool useAsyncNrQueue,
         CancellationToken cancellationToken)
     {
         var result = RunFrameCore(decoder, encoder.Process.StandardInput.BaseStream, host, vsr, plan,
-            totalFrames, logPath, progress, preview, previewFramesPerSecond, sourceFps, useAsyncNrQueue, useAsyncVsrQueue,
+            totalFrames, logPath, progress, preview, previewFramesPerSecond, sourceFps, useAsyncNrQueue,
             () => { TryKill(decoder.Process); TryKill(encoder.Process); }, cancellationToken);
         encoder.Process.StandardInput.Close();
         encoder.Process.WaitForExit(120_000);
@@ -350,7 +347,7 @@ public static class DlssVideoPipeline
         return result;
     }
 
-    private static int FrameSlotCount(ProcessingPlan plan, bool motion, bool history, bool queuedVsr = false)
+    private static int FrameSlotCount(ProcessingPlan plan, bool motion, bool history)
     {
         var bytes = plan.SourceBytes + plan.NrBytes;
         if (plan.SourceWidth != plan.ProcessWidth) bytes += plan.ProcessBytes;
@@ -362,16 +359,13 @@ public static class DlssVideoPipeline
         // frames use fewer slots; histories/driver allocations are separate.
         // Leave room for confidence metadata without dropping a whole in-flight
         // slot at common 1440p → 5K sizes. Histories/driver memory are separate.
-        // SR retains one extra frame while another is on the GPU. Permit a sixth
-        // slot within the same memory budget so this cannot starve CPU/NR stages.
-        var maximum = queuedVsr && plan.SourceWidth != plan.ProcessWidth ? 6 : 5;
-        return (int)Math.Clamp(576L * 1024 * 1024 / Math.Max(bytes, 1), 3, maximum);
+        return (int)Math.Clamp(576L * 1024 * 1024 / Math.Max(bytes, 1), 3, 5);
     }
 
     private static unsafe (long Frames, TimeSpan Elapsed) RunFrameCore(
         CommandDrain decoder, Stream destination, DlssNrHost host, RtxVideoWorker? vsr,
         ProcessingPlan plan, long totalFrames, string logPath, IProgress<TranscodeProgress>? progress,
-        ITranscodePreviewSink? preview, int previewFramesPerSecond, double sourceFps, bool useAsyncNrQueue, bool useAsyncVsrQueue, Action abort,
+        ITranscodePreviewSink? preview, int previewFramesPerSecond, double sourceFps, bool useAsyncNrQueue, Action abort,
         CancellationToken cancellationToken)
     {
         using var flow = host.MotionGuidance
@@ -396,14 +390,11 @@ public static class DlssVideoPipeline
             VideoFrameSlot? lastOutput = null;
             var capacity = useAsyncNrQueue ? Math.Min(host.QueueCapacity, slots.Length - 1) : 1;
             PipelineLog.Info($"NR 提交队列: {capacity} 帧（单线程按序提交/回读）");
-            // Two in-flight frames leave room for NR history and CPU stages in
-            // the shared five-slot budget; a deeper SR queue can starve them.
-            var vsrCapacity = useAsyncVsrQueue ? Math.Min(vsr?.QueueCapacity ?? 1, Math.Min(2, slots.Length - 1)) : 1;
-            if (vsr != null) PipelineLog.Info($"VSR 提交队列: {vsrCapacity} 帧（单线程 FIFO；GPU 编码={vsr.GpuEncoding}）");
+            if (vsr != null) PipelineLog.Info($"VSR 逐帧处理；GPU 编码={vsr.GpuEncoding}");
             var gpuEncoding = vsr?.GpuEncoding == true;
             var previewWidth = gpuEncoding ? vsr!.Encoder!.PreviewWidth : plan.ProcessWidth;
             var previewHeight = gpuEncoding ? vsr!.Encoder!.PreviewHeight : plan.ProcessHeight;
-            var metrics = new PipelineStageMetrics("管线", "read", "vsr", "flow", "prepare", "nr", "history", "write", "preview", "nr_submit", "nr_readback", "vsr_submit", "vsr_collect");
+            var metrics = new PipelineStageMetrics("管线", "read", "vsr", "flow", "prepare", "nr", "history", "write", "preview", "nr_submit", "nr_readback");
             bool Read(VideoFrameSlot frame, long index)
             {
                 if (totalFrames > 0 && index >= totalFrames) return false;
@@ -413,34 +404,16 @@ public static class DlssVideoPipeline
                 metrics.Record(0, started);
                 return true;
             }
-            void QueuedSuperResolution(IEnumerable<BoundedFramePipeline.Frame<VideoFrameSlot>> input,
-                Action<BoundedFramePipeline.Frame<VideoFrameSlot>> emit, CancellationToken token)
+            var lastCapture = -previewInterval;
+            void SuperResolution(VideoFrameSlot frame, long index)
             {
-                var pending = new Queue<BoundedFramePipeline.Frame<VideoFrameSlot>>(vsrCapacity);
-                var lastCapture = -previewInterval;
-                void Collect(bool last = false)
-                {
-                    token.ThrowIfCancellationRequested();
-                    var frame = pending.Dequeue();
-                    var capture = preview != null && (last || frame.Index + 1 == totalFrames
-                        || totalFrames <= 0 && vsrCapacity == 1 || stopwatch.Elapsed - lastCapture >= previewInterval);
-                    var started = metrics.Start();
-                    vsr!.DequeueFrame(frame.Buffer.Slot, capture);
-                    metrics.Record(1, started); metrics.Record(11, started);
-                    frame.Buffer.HasPreview = !gpuEncoding || capture;
-                    if (capture) lastCapture = stopwatch.Elapsed;
-                    emit(frame);
-                }
-                foreach (var frame in input)
-                {
-                    token.ThrowIfCancellationRequested();
-                    var started = metrics.Start();
-                    vsr!.EnqueueFrame(frame.Buffer.Slot);
-                    metrics.Record(1, started); metrics.Record(10, started);
-                    pending.Enqueue(frame);
-                    if (pending.Count >= vsrCapacity) Collect();
-                }
-                while (pending.Count > 0) Collect(pending.Count == 1);
+                var capture = preview != null && (index + 1 == totalFrames
+                    || totalFrames <= 0 || stopwatch.Elapsed - lastCapture >= previewInterval);
+                var started = metrics.Start();
+                vsr!.ProcessFrame(frame.Slot, capture);
+                metrics.Record(1, started);
+                frame.HasPreview = !gpuEncoding || capture;
+                if (capture) lastCapture = stopwatch.Elapsed;
             }
             void Prepare(VideoFrameSlot frame, long index)
             {
@@ -532,11 +505,11 @@ public static class DlssVideoPipeline
                 }
             }
             var stages = new List<BoundedFramePipeline.Stage<VideoFrameSlot>>();
-            if (vsr != null && !plan.NrFirst) stages.Add(QueuedSuperResolution);
+            if (vsr != null && !plan.NrFirst) stages.Add(BoundedFramePipeline.PerFrame<VideoFrameSlot>(SuperResolution));
             stages.Add(BoundedFramePipeline.PerFrame<VideoFrameSlot>(Prepare));
             stages.Add(capacity > 1 ? QueuedNeuralRendering : BoundedFramePipeline.PerFrame<VideoFrameSlot>(NeuralRendering));
             stages.Add(BoundedFramePipeline.PerFrame<VideoFrameSlot>(Accumulate));
-            if (vsr != null && plan.NrFirst) stages.Add(QueuedSuperResolution);
+            if (vsr != null && plan.NrFirst) stages.Add(BoundedFramePipeline.PerFrame<VideoFrameSlot>(SuperResolution));
             var processed = BoundedFramePipeline.RunStages(slots, Read, stages.ToArray(), Write,
                 () => { vsr?.Abort(); abort(); }, cancellationToken);
             // EOF/limit reads never overwrite a slot. The final written frame is
