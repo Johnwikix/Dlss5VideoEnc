@@ -156,6 +156,13 @@ CPU 其他阶段仍限制最终吞吐。当前分阶段管线在 576 MiB 估算�
   及匹配的 FFmpeg 共享库；构建方式见 `tools/RTX_VIDEO_SDK.md`。运行产生的压缩
   NUT 缓存在结束/取消后清理，FFmpeg 最后只封装和合入音频，不再次编码视频。
 
+移除 VSR 队列后，单组纹理版本重新通过 19 项 CPU 回归、SDR/HDR 传输测试和
+完整管线测试：包括 2×/4×、NR/SR 两种顺序、单帧与最终预览、取消/重启、
+双遍编码、输出文件保护及编码失败清理。12 帧 SDR 素材的 GPU/原始帧编码
+PSNR 为 44.42 dB，HDR 回退为 ∞。VSR 的容量查询、提交、回收三个队列导出已移除。
+日志保存在忽略的 `build/performance/vsr-single-sdr.log`、
+`vsr-single-hdr-resume.log` 和 `vsr-single-pipeline.log`。
+
 ```powershell
 # 相同条件对照 GPU 编码传输
 ./tools/benchmark-video.ps1 -CliAssembly src/Dlss5Demo.Cli/bin/Release/net10.0/Dlss5Demo.Cli.dll `
