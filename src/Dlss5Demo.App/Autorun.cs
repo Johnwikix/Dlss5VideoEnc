@@ -13,7 +13,10 @@ internal static class Autorun
         var twoPass = false;
         var enableNr = true;
         var enableInterpolation = false;
+        var gpuFrames = true;
         var interpolationMultiplier = 2;
+        var interpolationBackend = FrameInterpolationBackend.NvidiaOpticalFlow;
+        var rifeModel = RifeModel.Lite;
         var scale = 1;
         var decodeMode = VideoDecodeMode.Auto;
         var decodeDevice = 0;
@@ -27,6 +30,12 @@ internal static class Autorun
                 enableNr = args[++index] != "0";
             else if (args[index] == "--sr" && index + 1 < args.Length)
                 scale = RtxVideoSuperResolutionHost.NormalizeScale(int.Parse(args[++index]));
+            else if (args[index] == "--interpolation-backend" && index + 1 < args.Length)
+                interpolationBackend = FrameInterpolationBackends.Parse(args[++index]);
+            else if (args[index] == "--rife-model" && index + 1 < args.Length)
+                rifeModel = Enum.Parse<RifeModel>(args[++index], true);
+            else if (args[index] == "--gpu-frames" && index + 1 < args.Length)
+                gpuFrames = args[++index] != "0";
             else if (args[index] == "--interpolate" && index + 1 < args.Length)
                 enableInterpolation = args[++index] != "0";
             else if (args[index] == "--interpolation-multiplier" && index + 1 < args.Length)
@@ -64,7 +73,10 @@ internal static class Autorun
                 DecodeMode = decodeMode,
                 DecodeDeviceIndex = decodeDevice,
                 EnableInterpolation = enableInterpolation,
+                UseGpuFramePipeline = gpuFrames,
                 InterpolationMultiplier = interpolationMultiplier,
+                InterpolationBackend = interpolationBackend,
+                InterpolationModel = rifeModel,
                 SuperResolutionScale = scale,
                 Video = profile,
                 VideoEncoder = VideoCodecNames.Encoder(profile),

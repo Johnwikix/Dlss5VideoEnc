@@ -22,6 +22,7 @@ public sealed class AppSettings
     public bool NrBeforeSuperResolution { get; set; } = true;
     public bool EnableInterpolation { get; set; }
     public int InterpolationMultiplierIndex { get; set; }
+    public int InterpolationBackendIndex { get; set; }
     public int ContainerIndex { get; set; }
     public int CodecIndex { get; set; } = 1;
     public int HardwareIndex { get; set; } = 1;

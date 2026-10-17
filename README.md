@@ -1,16 +1,16 @@
 # Dlss5VideoEnc
 
-Avalonia 视频转码工作台：可选 DLSS NR → 可选 RTX Video Super Resolution（关闭 / 2× / 4×）→ 可选 NVIDIA Vulkan 光流补帧（2× / 4× / 6× 帧率）→ FFmpeg 编码。HDR 视频通过 RGBA16F / 16-bit 补帧 / 10-bit 编码路径处理。
+Avalonia 视频转码工作台：可选 DLSS NR → 可选 RTX Video Super Resolution（关闭 / 2× / 4×）→ 可选 NVIDIA Vulkan / RIFE GPU 补帧（2× / 4× / 6× 帧率）→ FFmpeg 编码。HDR 视频通过 RGBA16F / 16-bit 补帧 / 10-bit 编码路径处理。
 
 ## NVDEC 解码
 
 新增自动（优先 NVDEC）、强制 NVDEC、CPU 软件解码三档，GUI、CLI 与批处理入口共用同一实现。
 默认自动；CLI 使用 `--decoder auto|nvdec|cpu`，可用 `--decode-device 0` 指定 CUDA 设备编号。
-实际收到经过 CUDA 硬件表面回读的首帧后，日志才报告 NVDEC 已确认。
+实际收到 CUDA 硬件表面的首帧后，日志才报告 NVDEC 已确认；主机路径在回读成功后确认。
 自动模式在首帧初始化失败时重新从头软件解码；已经交付帧后遇到错误则停止，不混用两种后端的时序历史。
 
 参考 `little-fancy-tool-ava` 的 NVDEC 混合处理方式，保留现有 NR/VSR 的 CPU 帧接口与 HDR 色彩转换。
-当前版本仍有硬件帧回读、CPU 色彩转换和后续上传，并非全程显存管线。
+NR/VSR 原有接口仍有硬件帧回读、CPU 色彩转换和上传；2026-10-18 新增 SDR RIFE 的 NVDEC → CUDA → NVENC 管线，适用条件见下文。
 **RTX 5070 Ti / 617.14 已实测 4K/8K 的 SDR、PQ、HLG，以及 AV1 HDR；NVDEC 与软件解码的 RGBA 像素一致。**
 已验证独立开关组合、取消重启、软件双遍，以及发布包的 NVDEC → NR → RTX Video 4K→8K → PQ 补帧。
 实现边界、短片验证矩阵与解码阶段 CPU 耗时对比见 [NVDEC 接入记录](docs/NVDEC_DECODING.md)。
@@ -18,25 +18,42 @@ Avalonia 视频转码工作台：可选 DLSS NR → 可选 RTX Video Super Resol
 ## NVIDIA 光流补帧
 
 沿用 `little-fancy-tool-ava` 的 `fruc_vulkan` / `VK_NV_optical_flow` 后端，补帧默认关闭，
-可以与 NR、RTX Video 任意开关组合。需要带有 `fruc_vulkan` 的 FFmpeg master，独立的 NvOFFRUC SDK 不参与此路径。
+可以与 NR、RTX Video 任意开关组合。需要带有 `fruc_vulkan` 的 FFmpeg master，独立的 NvOFFRUC SDK 不参与此路径。光流滤镜在进程内通过 DLL 调用；解码、封装等兼容环节仍会使用 FFmpeg EXE。
 
 ```powershell
 # 下载并校验固定版本；也可以用 -ArchivePath 指定已经下载的 ZIP。
-.\tools\prepare-fruc-ffmpeg.ps1
+.\tools\prepare-ffmpeg.ps1
 # 独立补帧；增加 --nr 1、--sr 2 可组合 NR、超分。
 dotnet run --project src/Dlss5Demo.Cli -c Release -- input.mp4 output.mp4 --nr 0 --interpolate 1 --interpolation-multiplier 2
 ```
 
-依赖放在 `runtime/fruc-ffmpeg`，开发运行自动发现；`DLSS5_FFMPEG` 仍优先。
+匹配的 FFmpeg EXE 与 DLL 统一放在 `runtime` 根目录，已移除多余的 `runtime/fruc-ffmpeg`；开发运行自动发现；`DLSS5_FFMPEG` 仍优先。
 打包脚本会检查补帧滤镜并携带匹配的 FFmpeg。
 
 界面提供独立补帧开关与 2×/4×/6× 选择，启用后普通帧率设置暂停生效；关闭后恢复原设置。
-补帧在 NR/SR 和输出空间滤镜之后、编码之前运行。启用补帧时使用 VSR 回读路径，避免先编码再补帧造成二次压缩。
+补帧在 NR/SR 之后、最终输出空间滤镜和编码之前运行。Vulkan 优先线性图像以降低回读开销；不支持时探测原布局。启用补帧时避免先压缩再补帧。
 进度、速度和实时对照预览统计源帧；完成状态同时显示补帧后的帧数，预览不播放生成帧。
 
 RTX 5070 Ti / 617.14 已实测原生 3840×2160、7680×4320 的 SDR、PQ 和 HLG，
 以及 NR + RTX Video 4K→8K + PQ 补帧。HDR 补帧使用完整 16 位颜色，输出 HEVC/AV1 10-bit；
 保留 HDR 时不接受 H.264/GIF。短片功能验证、像素精度证据与限制见 [补帧验证记录](docs/NVIDIA_VULKAN_INTERPOLATION.md)。
+
+## RIFE GPU 补帧与显存编码
+
+界面可选 NVIDIA Vulkan、RIFE 4.25 Lite、RIFE 4.25。RIFE 需要 Windows 11 24H2+、NVIDIA GPU，以及 Windows ML 的 NVIDIA TensorRT RTX 提供程序；首次使用可能安装提供程序。仅支持 SDR 输入/输出，最大 3840×2160 像素。HDR 请选择 Vulkan，RIFE 不会静默丢弃 HDR 色彩信息。
+
+```powershell
+.\tools\prepare-rife-models.ps1
+# 两份校验后的 ONNX 模型直接放在 runtime 根目录。
+dotnet run --project src/Dlss5Demo.Cli -c Release -- input.mp4 output.mp4 --nr 0 --interpolate 1 --interpolation-backend rife --rife-model lite --interpolation-multiplier 4
+# --rife-model full 选择完整版；--gpu-frames 0 对照主机帧路径。
+```
+
+默认开启显存帧管线：SDR、8 位 YUV420/NV12、NVDEC、NVENC，且没有 NR/SR/CPU 滤镜时，像素沿 NVDEC → CUDA RIFE → NVENC 传递，预览仅回读缩小画面。NR/RTX Video 组合保持原处理顺序和历史累积，在主机输出后只上传一次，再由 RIFE → NVENC 全程处理生成帧。CPU 滤镜、软件编码、软件双遍等条件沿用兼容路径。
+
+单一任务门控制完整资源生命周期；保留一套同模型、同尺寸、同像素策略的 RIFE 会话，连续任务复用初始化，不共享视频时序历史。换模式、模型、尺寸、失败、取消或关闭应用时释放。嵌入 Core 的程序应在关闭时调用 `DlssVideoPipeline.ReleaseGpuResources()`。
+
+源帧计数与输出帧计数不同，4× 输出 fps 应除以 4 才是源帧处理速度。实测、画质差异、原始证据位置与限制见 [2026-10-18 GPU 管线报告](docs/INTERPOLATION_GPU_2026-10-18.md)，模型来源和 SHA256 见 [RIFE 模型说明](docs/RIFE_MODELS.md)。
 
 ## RTX Video Super Resolution
 

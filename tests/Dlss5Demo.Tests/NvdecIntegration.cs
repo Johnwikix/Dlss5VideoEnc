@@ -102,7 +102,7 @@ internal static class NvdecIntegration
             }
             Console.WriteLine("PASS actual NVDEC unavailable-device initialization falls back to software");
 
-            var root = Path.Combine(Environment.CurrentDirectory, "build", "nvdec", "integration-" + Guid.NewGuid().ToString("N"));
+            var root = Path.Combine(Environment.CurrentDirectory, ".qa", "nvdec", "integration-" + Guid.NewGuid().ToString("N"));
             Directory.CreateDirectory(root);
             async Task Run(string name, TranscodeOptions options)
             {

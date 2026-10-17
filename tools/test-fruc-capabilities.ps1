@@ -8,7 +8,7 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 $repo = Split-Path -Parent $PSScriptRoot
 if (!$CliPath) { $CliPath = Join-Path $repo 'build\fruc\cli\Dlss5Demo.Cli.dll' }
-if (!$FfmpegDirectory) { $FfmpegDirectory = Join-Path $repo 'runtime\fruc-ffmpeg\bin' }
+if (!$FfmpegDirectory) { $FfmpegDirectory = Join-Path $repo 'runtime' }
 if (!$OutputDirectory) { $OutputDirectory = Join-Path $repo ('build\fruc\capabilities-' + (Get-Date -Format yyyyMMdd-HHmmss)) }
 New-Item -ItemType Directory -Path $OutputDirectory -Force | Out-Null
 $ffmpeg = Join-Path $FfmpegDirectory 'ffmpeg.exe'

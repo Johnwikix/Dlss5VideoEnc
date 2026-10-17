@@ -14,7 +14,10 @@ var previewEnabled = true;
 var nrFirst = true;
 var enableNr = true;
 var enableInterpolation = false;
+var gpuFrames = true;
 var interpolationMultiplier = 2;
+var interpolationBackend = FrameInterpolationBackend.NvidiaOpticalFlow;
+var rifeModel = RifeModel.Lite;
 var nrQueue = true;
 var gpuVsrEncoding = true;
 var decodeMode = VideoDecodeMode.Auto;
@@ -42,6 +45,9 @@ for (var index = 2; index < args.Length - 1; index++)
         case "--preview": previewEnabled = args[++index] != "0"; break;
         case "--nr-before-sr": nrFirst = args[++index] != "0"; break;
         case "--nr": enableNr = args[++index] != "0"; break;
+        case "--interpolation-backend": interpolationBackend = FrameInterpolationBackends.Parse(args[++index]); break;
+        case "--rife-model": rifeModel = Enum.Parse<RifeModel>(args[++index], true); break;
+        case "--gpu-frames": gpuFrames = args[++index] != "0"; break;
         case "--interpolate": enableInterpolation = args[++index] != "0"; break;
         case "--interpolation-multiplier": interpolationMultiplier = int.Parse(args[++index]); break;
         case "--nr-queue": nrQueue = args[++index] != "0"; break;
@@ -93,7 +99,10 @@ var result = await DlssVideoPipeline.RunAsync(input, output, new TranscodeOption
     DecodeMode = decodeMode,
     DecodeDeviceIndex = decodeDevice,
     EnableInterpolation = enableInterpolation,
+                UseGpuFramePipeline = gpuFrames,
     InterpolationMultiplier = interpolationMultiplier,
+                InterpolationBackend = interpolationBackend,
+                InterpolationModel = rifeModel,
     VideoEncoder = encoder,
     Quality = quality,
     MaxFrames = maxFrames,
@@ -111,6 +120,8 @@ Console.WriteLine(
     $"耗时 {result.Elapsed.TotalSeconds:F1}s，输出 {result.OutputBytes / (1024.0 * 1024.0):F1} MiB → {result.OutputPath}");
 if (enableInterpolation) Console.WriteLine($"补帧输出: {result.FramesProcessed * interpolationMultiplier} 帧（{interpolationMultiplier}×；处理速度按源帧统计）");
 Console.WriteLine($"同步预览: {previewSink.Pairs} 对帧，尺寸不一致 {previewSink.MismatchedSizes} 次");
+
+DlssVideoPipeline.ReleaseGpuResources();
 
 sealed class CountingPreviewSink : ITranscodePreviewSink
 {

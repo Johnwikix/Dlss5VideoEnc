@@ -31,6 +31,7 @@ internal static class Program
         finally
         {
             WaitForPipelineShutdown();
+            DlssVideoPipeline.ReleaseGpuResources();
             Log.Information("进程退出。");
             Log.CloseAndFlush();
         }

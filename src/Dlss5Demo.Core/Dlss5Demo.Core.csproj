@@ -1,7 +1,7 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
-    <TargetFramework>net10.0</TargetFramework>
+    <TargetFramework>net10.0-windows10.0.19041.0</TargetFramework>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
@@ -11,4 +11,10 @@
     <DefaultItemExcludes>$(DefaultItemExcludes);**/obj/**;**/bin/**;**/build/**</DefaultItemExcludes>
   </PropertyGroup>
 
+  <ItemGroup>
+    <PackageReference Include="FFmpeg.AutoGen" Version="9.0.1.1" />
+    <PackageReference Include="Microsoft.Windows.AI.MachineLearning" Version="2.4.89" />
+    <EmbeddedResource Include="Cuda/*.ptx" LogicalName="Dlss5Demo.Cuda.%(Filename)%(Extension)" />
+    <EmbeddedResource Include="Pixels/*.pb" LogicalName="Dlss5Demo.Pixels.%(Filename)%(Extension)" />
+  </ItemGroup>
 </Project>

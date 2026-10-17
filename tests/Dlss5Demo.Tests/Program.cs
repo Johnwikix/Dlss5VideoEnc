@@ -59,12 +59,26 @@ var nrSwitchArgument = Array.IndexOf(args, "--nr-switch");
 if (nrSwitchArgument >= 0) NrSwitchIntegration(args[nrSwitchArgument + 1]).GetAwaiter().GetResult();
 var interpolationArgument = Array.IndexOf(args, "--interpolation");
 if (interpolationArgument >= 0) InterpolationIntegration.RunAsync(args[interpolationArgument + 1]).GetAwaiter().GetResult();
+var rifeGuards = Array.IndexOf(args, "--rife-guards");
+if (rifeGuards >= 0) RifeGuardTests.RunAsync(args[rifeGuards + 1], args[rifeGuards + 2]).GetAwaiter().GetResult();
+var cudaPipeline = Array.IndexOf(args, "--cuda-pipeline");
+if (cudaPipeline >= 0) CudaPipelineTests.RunAsync(args[cudaPipeline + 1]).GetAwaiter().GetResult();
+var mixedBenchmark = Array.IndexOf(args, "--mixed-benchmark");
+if (mixedBenchmark >= 0) MixedBenchmark.RunAsync(args[mixedBenchmark + 1], args[mixedBenchmark + 2]).GetAwaiter().GetResult();
+var rifeArgument = Array.IndexOf(args, "--rife");
+if (rifeArgument >= 0) InterpolationIntegration.RunAsync(args[rifeArgument + 1], FrameInterpolationBackend.Rife).GetAwaiter().GetResult();
+if (args.Contains("--cuda-pixels")) CudaPixelTests.Scenes();
+if (args.Contains("--rife-pixels")) RifeIntegration.PixelsAsync().GetAwaiter().GetResult();
+var rifeBenchmark = Array.IndexOf(args, "--rife-benchmark");
+if (rifeBenchmark >= 0) RifeIntegration.BenchmarkAsync(args[rifeBenchmark + 1], args[rifeBenchmark + 2], args.Contains("--benchmark-rife-only")).GetAwaiter().GetResult();
 if (args.Contains("--interpolation-pixels")) InterpolationIntegration.PixelsAsync().GetAwaiter().GetResult();
 if (args.Contains("--decoder-control")) DecoderControlTests.RunAsync().GetAwaiter().GetResult();
 var nvdecArgument = Array.IndexOf(args, "--nvdec");
 if (nvdecArgument >= 0) NvdecIntegration.RunAsync(args[nvdecArgument + 1]).GetAwaiter().GetResult();
 var nvdecBenchmarkArgument = Array.IndexOf(args, "--nvdec-benchmark");
 if (nvdecBenchmarkArgument >= 0) NvdecIntegration.BenchmarkAsync(args[nvdecBenchmarkArgument + 1]).GetAwaiter().GetResult();
+
+DlssVideoPipeline.ReleaseGpuResources();
 
 static void Check(bool condition, string message)
 {
@@ -73,7 +87,7 @@ static void Check(bool condition, string message)
 
 static async Task NrSwitchIntegration(string input)
 {
-    var root = Path.Combine(Environment.CurrentDirectory, "build", "nr-switch", "integration-" + Guid.NewGuid().ToString("N"));
+    var root = Path.Combine(Environment.CurrentDirectory, ".qa", "nr-switch", "integration-" + Guid.NewGuid().ToString("N"));
     Directory.CreateDirectory(root);
     var source = MediaProbe.Probe(input);
     var sourceFrames = source.FrameCount;
@@ -262,7 +276,7 @@ static unsafe void HdrPreviewSampling()
 static async Task PipelineIntegration(string input)
 {
     var source = MediaProbe.Probe(input);
-    var root = Path.Combine(Environment.CurrentDirectory, "build", "performance", "integration");
+    var root = Path.Combine(Environment.CurrentDirectory, ".qa", "performance", "integration");
     Directory.CreateDirectory(root);
     var cases = new[]
     {
@@ -661,7 +675,7 @@ static unsafe void InvalidMotion()
 static unsafe void NativeFormatSwitch()
 {
     const int width = 512, height = 288;
-    var logDirectory = Path.Combine(Environment.CurrentDirectory, "build", "temporal-tests");
+    var logDirectory = Path.Combine(Environment.CurrentDirectory, ".qa", "temporal-tests");
     Directory.CreateDirectory(logDirectory);
     var hdrLog = Path.Combine(logDirectory, "format-hdr.log");
     using (var hdr = DlssNrHost.Create(DemoPaths.HostDllPath, DemoPaths.RuntimeDllPath,
@@ -690,7 +704,7 @@ static unsafe void NativeFormatSwitch()
 static unsafe void NativeHistorySwitch()
 {
     const int width = 512, height = 288;
-    var logDirectory = Path.Combine(Environment.CurrentDirectory, "build", "temporal-tests");
+    var logDirectory = Path.Combine(Environment.CurrentDirectory, ".qa", "temporal-tests");
     Directory.CreateDirectory(logDirectory);
     var options = new DlssNrOptions { ContinuousHistory = false, TemporalStabilization = false };
     using var host = DlssNrHost.Create(DemoPaths.HostDllPath, DemoPaths.RuntimeDllPath,
@@ -718,7 +732,7 @@ static unsafe void NativeHistorySwitch()
 static unsafe void NativeQueueParity()
 {
     const int width = 512, height = 288, count = 12;
-    var root = Path.Combine(Environment.CurrentDirectory, "build", "performance");
+    var root = Path.Combine(Environment.CurrentDirectory, ".qa", "performance");
     Directory.CreateDirectory(root);
     foreach (var hdr in new[] { false, true })
         foreach (var history in new[] { false, true })
@@ -777,7 +791,7 @@ static unsafe void NativeQueueParity()
 
 static async Task VsrTransportIntegration(string input)
 {
-    var root = Path.Combine(Environment.CurrentDirectory, "build", "performance", "vsr-transport-" + Guid.NewGuid().ToString("N"));
+    var root = Path.Combine(Environment.CurrentDirectory, ".qa", "performance", "vsr-transport-" + Guid.NewGuid().ToString("N"));
     Directory.CreateDirectory(root);
     var source = MediaProbe.Probe(input);
     var logs = new System.Collections.Concurrent.ConcurrentQueue<string>();
@@ -942,7 +956,7 @@ static unsafe void NativeFlicker(string inputPath)
         decoder.WaitForExit();
         Check(decoder.ExitCode == 0, "Fixture decoding failed.");
     }
-    var logDirectory = Path.Combine(Environment.CurrentDirectory, "build", "temporal-tests");
+    var logDirectory = Path.Combine(Environment.CurrentDirectory, ".qa", "temporal-tests");
     Directory.CreateDirectory(logDirectory);
     using var host = DlssNrHost.Create(DemoPaths.HostDllPath, DemoPaths.RuntimeDllPath,
         Path.Combine(logDirectory, "native-flicker.log"), width, height, new DlssNrOptions());

@@ -250,13 +250,17 @@
                   <TextBlock x:Name="ProcessingOrderHint" Classes="hint" Text="超分已关闭：仅处理 DLSS NR。"/>
                 </StackPanel>
                 <StackPanel Spacing="4">
-                  <CheckBox x:Name="EnableInterpolationBox" Content="启用 NVIDIA 光流补帧"
+                  <CheckBox x:Name="EnableInterpolationBox" Content="启用补帧"
                             AutomationProperties.AutomationId="EnableInterpolation"/>
+                  <ComboBox x:Name="InterpolationBackendBox" SelectedIndex="0" IsEnabled="False"
+                            AutomationProperties.AutomationId="InterpolationBackend">
+                    <ComboBoxItem Content="NVIDIA Vulkan 光流"/><ComboBoxItem Content="RIFE 4.25 Lite（GPU）"/><ComboBoxItem Content="RIFE 4.25（GPU）"/>
+                  </ComboBox>
                   <ComboBox x:Name="InterpolationMultiplierBox" SelectedIndex="0" IsEnabled="False"
                             AutomationProperties.AutomationId="InterpolationMultiplier">
                     <ComboBoxItem Content="2× 帧率"/><ComboBoxItem Content="4× 帧率"/><ComboBoxItem Content="6× 帧率"/>
                   </ComboBox>
-                  <TextBlock Classes="hint" Text="独立于 NR 与超分，在编码前生成中间帧。保留 HDR 时使用 16 位颜色；预览显示处理后的源帧。"/>
+                  <TextBlock Classes="hint" Text="独立于 NR 与超分。Vulkan 支持 16 位 HDR；RIFE 当前仅支持 SDR 输入和输出，HDR 请使用 Vulkan。预览显示源帧。"/>
                 </StackPanel>
                 <Expander x:Name="FiltersExpander" Header="缩放、降噪与裁剪" HorizontalAlignment="Stretch">
                   <StackPanel Spacing="12" Margin="0,12,0,0">

@@ -17,9 +17,13 @@ public sealed record TranscodeOptions
     public int DecodeDeviceIndex { get; init; }
     /// <summary>Enable DLSS NR, optical flow and temporal correction. False needs no NR runtime.</summary>
     public bool EnableNr { get; init; } = true;
-    /// <summary>Independent NVIDIA Vulkan optical-flow interpolation, disabled by default.</summary>
+    /// <summary>独立 GPU 补帧，支持 NVIDIA Vulkan 与 RIFE，默认关闭。</summary>
     public bool EnableInterpolation { get; init; }
+    public bool UseGpuFramePipeline { get; init; } = true;
     public int InterpolationMultiplier { get; init; } = 2;
+    internal bool UseLinearVulkanImages { get; init; } = true;
+    public FrameInterpolationBackend InterpolationBackend { get; init; } = FrameInterpolationBackend.NvidiaOpticalFlow;
+    public RifeModel InterpolationModel { get; init; } = RifeModel.Lite;
     public string VsrHostDllPath { get; init; } = "";
     public string VsrRuntimeDllPath { get; init; } = "";
     public string VsrLogPath { get; init; } = "";
@@ -83,7 +87,9 @@ public static partial class DlssVideoPipeline
         await PipelineGate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
-            var result = await RunCoreAsync(inputPath, outputPath, options, progress, cancellationToken).ConfigureAwait(false);
+            TranscodeResult result;
+            try { result = await RunCoreAsync(inputPath, outputPath, options, progress, cancellationToken).ConfigureAwait(false); }
+            catch { ResetRifeSession(); throw; }
             PipelineLog.Info($"管线完成: {result.FramesProcessed} 帧 · {result.AverageFps:0.0} fps → {result.OutputPath}");
             return result;
         }
@@ -118,6 +124,7 @@ public static partial class DlssVideoPipeline
         if (!File.Exists(inputPath))
             throw new FileNotFoundException("输入视频不存在。", inputPath);
 
+        if (options.MaxFrames is <= 0) throw new ArgumentOutOfRangeException(nameof(options.MaxFrames));
         var video = MediaProbe.Probe(inputPath, DemoPaths.FfprobePath);
         ValidateDecodeOptions(options, video);
         if (options.EnableInterpolation && video.FrameCount == 0
@@ -129,8 +136,22 @@ public static partial class DlssVideoPipeline
             throw new NotSupportedException($"暂不支持奇数尺寸视频（当前 {plan.SourceWidth}x{plan.SourceHeight}）。");
 
         if (options.EnableInterpolation)
-            await VulkanFrameInterpolation.ValidateAsync(options, video, plan.Hdr, cancellationToken).ConfigureAwait(false);
+        {
+            if (!Enum.IsDefined(options.InterpolationBackend)) throw new ArgumentOutOfRangeException(nameof(options.InterpolationBackend));
+            if (options.InterpolationMultiplier is not (2 or 4 or 6)) throw new ArgumentOutOfRangeException(nameof(options.InterpolationMultiplier));
+            if (!double.IsFinite(video.Fps) || video.Fps <= 0) throw new NotSupportedException("补帧需要有效的源视频帧率。");
+        }
+        var rife = options.EnableInterpolation && options.InterpolationBackend == FrameInterpolationBackend.Rife
+            ? await AcquireRifeSessionAsync(options, video, plan.ProcessWidth, plan.ProcessHeight, cancellationToken).ConfigureAwait(false) : null;
+        if (rife == null) ResetRifeSession();
+        if (options.EnableInterpolation)
+        {
+            if (rife == null)
+                options = options with { UseLinearVulkanImages = await VulkanFrameInterpolation.ValidateAsync(options, video, plan.Hdr, cancellationToken, options.UseLinearVulkanImages).ConfigureAwait(false) };
+        }
 
+        using var vulkan = options.EnableInterpolation && options.InterpolationBackend == FrameInterpolationBackend.NvidiaOpticalFlow
+            ? new VulkanInterpolationSession(plan.ProcessWidth, plan.ProcessHeight, plan.Hdr, video, options.InterpolationMultiplier, options.UseLinearVulkanImages) : null;
         using var outputOwnership = OutputFileNames.Reserve(outputPath);
         outputPath = outputOwnership.Path;
         PipelineLog.Info($"管线开始: {Path.GetFileName(inputPath)} → {Path.GetFileName(outputPath)} · {options.VideoEncoder}");
@@ -140,7 +161,14 @@ public static partial class DlssVideoPipeline
             : video.FrameCount;
 
         if (options.Video.TwoPassEnabled && IsTwoPassSupported(options.Video))
-            return await RunTwoPassAsync(inputPath, outputPath, options, video, totalFrames, progress, cancellationToken).ConfigureAwait(false);
+            return await RunTwoPassAsync(inputPath, outputPath, options, video, totalFrames, progress, cancellationToken, rife, vulkan).ConfigureAwait(false);
+
+        if (rife != null && CanUseCudaRife(options, video) && rife.Cuda.DeviceId == options.DecodeDeviceIndex)
+        {
+            try { return await RunCudaRifeAsync(inputPath, outputPath, options, video, totalFrames, rife, progress, cancellationToken).ConfigureAwait(false); }
+            catch (CudaDecodeUnavailableException ex) when (options.DecodeMode == VideoDecodeMode.Auto)
+            { PipelineLog.Info(ex.Message + " 自动模式从头重试主机帧路径。"); }
+        }
 
         using var vsr = await Task.Run(() => CreateVsr(options, plan, video, cancellationToken), cancellationToken).ConfigureAwait(false);
         using var host = options.EnableNr ? DlssNrHost.Create(
@@ -167,6 +195,29 @@ public static partial class DlssVideoPipeline
             outcome.Elapsed += finalize.Elapsed;
             PipelineLog.Info($"VSR 编码排空与封装: {finalize.Elapsed.TotalMilliseconds:0} ms（计入最终处理耗时）");
         }
+        else if (rife != null && CanEncodeRifeOnGpu(options))
+        {
+            var cache = Path.Combine(Path.GetTempPath(), $"dlss5-rife-{Guid.NewGuid():N}.nut");
+            try
+            {
+                using var encoder = new CudaRifePipeline.HostInputEncoder(cache, options,
+                    video with { Width = plan.ProcessWidth, Height = plan.ProcessHeight }, rife, cancellationToken);
+                using var cancellation = cancellationToken.Register(decoder.Abort);
+                outcome = await Task.Run(() => RunFrameStream(decoder, encoder, host, vsr, plan, totalFrames,
+                    options.LogPath, progress, options.EnablePreviewFrames ? options.PreviewSink : null,
+                    options.PreviewFramesPerSecond, video.Fps, options.UseAsyncNrQueue, cancellationToken)).ConfigureAwait(false);
+                var finalize = Stopwatch.StartNew();
+                encoder.Complete();
+                if (!decoder.Process.WaitForExit(30_000)) throw new TimeoutException("解码进程未能退出。");
+                if (decoder.Process.ExitCode != 0 || totalFrames > 0 && outcome.Frames < totalFrames)
+                    throw new InvalidOperationException("解码提前结束：" + decoder.ErrorTail);
+                await RunPassAsync(options.FfmpegPath, EncoderArguments(inputPath, outputPath, options, video,
+                    plan.ProcessWidth, plan.ProcessHeight, false, cache, encodedInput: true,
+                    encodedFrameCount: encoder.OutputFrames), cancellationToken).ConfigureAwait(false);
+                outcome.Elapsed += finalize.Elapsed;
+            }
+            finally { try { File.Delete(cache); } catch (IOException) { } }
+        }
         else
         {
             await using var encoder = new CommandDrain("ffmpeg-encode", options.FfmpegPath,
@@ -176,7 +227,7 @@ public static partial class DlssVideoPipeline
             outcome = await Task.Run(() => RunFrameLoop(
                 decoder, encoder, host, vsr, plan, totalFrames, options.LogPath, progress,
                 options.EnablePreviewFrames ? options.PreviewSink : null,
-                options.PreviewFramesPerSecond, video.Fps, options.UseAsyncNrQueue, cancellationToken)).ConfigureAwait(false);
+                options.PreviewFramesPerSecond, video.Fps, options.UseAsyncNrQueue, cancellationToken, rife, vulkan, options.InterpolationMultiplier)).ConfigureAwait(false);
         }
 
         var outputInfo = new FileInfo(outputPath);
@@ -267,7 +318,7 @@ public static partial class DlssVideoPipeline
 
     private static async Task<TranscodeResult> RunTwoPassAsync(
         string inputPath, string outputPath, TranscodeOptions options, VideoInfo video,
-        long totalFrames, IProgress<TranscodeProgress>? progress, CancellationToken cancellationToken)
+        long totalFrames, IProgress<TranscodeProgress>? progress, CancellationToken cancellationToken, RifeGpuSession? rife, VulkanInterpolationSession? vulkan)
     {
         var plan = CreateProcessingPlan(video,
             RtxVideoSuperResolutionHost.NormalizeScale(options.SuperResolutionScale),
@@ -287,10 +338,13 @@ public static partial class DlssVideoPipeline
                 await using (var raw = new FileStream(rawPath, FileMode.CreateNew, FileAccess.Write, FileShare.Read))
                 {
                     using var cancellation = cancellationToken.Register(decoder.Abort);
+                    using InterpolationFrameStream? interpolation = rife != null ? new RifeFrameStream(raw, rife, options.InterpolationMultiplier, cancellationToken)
+                        : vulkan != null ? new VulkanFrameStream(raw, vulkan, cancellationToken) : null;
                     outcome = await Task.Run(() => RunFrameStream(
-                        decoder, raw, host, vsr, plan, totalFrames, options.LogPath,
+                        decoder, interpolation ?? (Stream)raw, host, vsr, plan, totalFrames, options.LogPath,
                         progress, options.EnablePreviewFrames ? options.PreviewSink : null,
                         options.PreviewFramesPerSecond, video.Fps, options.UseAsyncNrQueue, cancellationToken)).ConfigureAwait(false);
+                    interpolation?.Complete();
                     decoder.Process.WaitForExit(30_000);
                     if (decoder.Process.ExitCode != 0)
                         throw new InvalidOperationException("ffmpeg 解码失败：\n" + decoder.ErrorTail);
@@ -345,12 +399,15 @@ public static partial class DlssVideoPipeline
         FrameDecoder decoder, CommandDrain encoder, DlssNrHost? host, RtxVideoWorker? vsr,
         ProcessingPlan plan, long totalFrames, string logPath, IProgress<TranscodeProgress>? progress,
         ITranscodePreviewSink? preview, int previewFramesPerSecond, double sourceFps, bool useAsyncNrQueue,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken, RifeGpuSession? rife, VulkanInterpolationSession? vulkan, int multiplier)
     {
         var stopwatch = Stopwatch.StartNew();
-        var result = RunFrameCore(decoder, encoder.Process.StandardInput.BaseStream, host, vsr, plan,
+        using InterpolationFrameStream? interpolation = rife != null ? new RifeFrameStream(encoder.Process.StandardInput.BaseStream, rife, multiplier, cancellationToken)
+            : vulkan != null ? new VulkanFrameStream(encoder.Process.StandardInput.BaseStream, vulkan, cancellationToken) : null;
+        var result = RunFrameCore(decoder, interpolation ?? encoder.Process.StandardInput.BaseStream, host, vsr, plan,
             totalFrames, logPath, progress, preview, previewFramesPerSecond, sourceFps, useAsyncNrQueue,
             () => { decoder.Abort(); TryKill(encoder.Process); }, cancellationToken);
+        interpolation?.Complete();
         encoder.Process.StandardInput.Close();
         if (!encoder.Process.WaitForExit(120_000))
             throw new TimeoutException("ffmpeg 编码排空超时。\n" + encoder.ErrorTail);
@@ -693,14 +750,13 @@ public static partial class DlssVideoPipeline
         // The path is a newly created file owned by this session; its live
         // reservation prevents replacement. Existing user files are never passed here.
         var arguments = new List<string> { "-hide_banner", "-loglevel", "error", "-y" };
-        if (options.EnableInterpolation) VulkanFrameInterpolation.AddDeviceArguments(arguments);
         if (encodedInput)
             arguments.AddRange(["-i", rawInputPath ?? throw new ArgumentNullException(nameof(rawInputPath))]);
         else if (rawInputPath is null)
-            arguments.AddRange(["-f", "rawvideo", "-framerate", video.FrameRate,
+            arguments.AddRange(["-f", "rawvideo", "-framerate", options.EnableInterpolation ? VulkanFrameInterpolation.OutputRate(video, options.InterpolationMultiplier) : video.FrameRate,
                 "-pix_fmt", hdr ? "rgba64le" : "rgba", "-s", $"{rawWidth}x{rawHeight}", "-i", "pipe:0"]);
         else
-            arguments.AddRange(["-f", "rawvideo", "-framerate", video.FrameRate,
+            arguments.AddRange(["-f", "rawvideo", "-framerate", options.EnableInterpolation ? VulkanFrameInterpolation.OutputRate(video, options.InterpolationMultiplier) : video.FrameRate,
                 "-pix_fmt", hdr ? "rgba64le" : "rgba", "-s", $"{rawWidth}x{rawHeight}", "-i", rawInputPath]);
 
         var profile = options.Video;
@@ -721,7 +777,7 @@ public static partial class DlssVideoPipeline
         }
 
         var filters = encodedInput ? "" : BuildFilterChain(profile, video, options.VideoEncoder,
-            options.EnableInterpolation, options.InterpolationMultiplier, options.MaxFrames == 1 || video.FrameCount == 1);
+            options.EnableInterpolation);
         if (!string.IsNullOrWhiteSpace(filters))
         {
             arguments.Add("-vf");
@@ -774,7 +830,9 @@ public static partial class DlssVideoPipeline
             {
                 // Audio can demux far ahead of a slow rawvideo pipe. Bound both
                 // streams by source-frame duration instead of producer timing.
-                var limitedFrames = options.EnableInterpolation ? sourceFrameLimit!.Value
+                var limitedFrames = encodedInput && encodedFrameCount is { } actualOutputFrames
+                    ? actualOutputFrames / (options.EnableInterpolation ? options.InterpolationMultiplier : 1)
+                    : options.EnableInterpolation ? sourceFrameLimit!.Value
                     : video.FrameCount > 0 ? Math.Min(Math.Max(1, maxFrames), video.FrameCount) : Math.Max(1, maxFrames);
                 arguments.AddRange(["-t", (limitedFrames / video.Fps).ToString("0.#########", System.Globalization.CultureInfo.InvariantCulture)]);
             }
@@ -855,7 +913,7 @@ public static partial class DlssVideoPipeline
     };
 
     private static string BuildFilterChain(VideoTranscodeOptions o, VideoInfo source, string encoder,
-        bool interpolate = false, int multiplier = 2, bool singleFrame = false)
+        bool interpolate = false)
     {
         var filters = new List<string>();
         if (o.CropEnabled)
@@ -875,8 +933,6 @@ public static partial class DlssVideoPipeline
                 _ => $"scale={w}:{h}:flags=lanczos",
             });
         }
-        if (interpolate)
-            filters.Add(VulkanFrameInterpolation.Filter(multiplier, source.IsHdr && o.PreserveHdr, singleFrame));
         if (!interpolate && o.FpsMode != FpsMode.SameAsSource && o.FpsValue > 0) filters.Add($"fps={o.FpsValue.ToString("0.###", System.Globalization.CultureInfo.InvariantCulture)}");
         if (o.Container == VideoContainer.Gif)
         {

@@ -7,7 +7,7 @@ internal static class InterpolationIntegration
     internal static async Task PixelsAsync()
     {
         const int width = 512, height = 96, bytes = width * height * 8;
-        var root = Path.Combine(Environment.CurrentDirectory, "build", "fruc", "pixels-" + Guid.NewGuid().ToString("N"));
+        var root = Path.Combine(Environment.CurrentDirectory, ".qa", "interpolation-port-2026-10-17", "pixels-" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(root);
         var input = new byte[bytes * 3];
         var pixels = MemoryMarshal.Cast<byte, ushort>(input.AsSpan());
@@ -23,19 +23,13 @@ internal static class InterpolationIntegration
         var inputPath = Path.Combine(root, "input.rgba64");
         var outputPath = Path.Combine(root, "output.rgba64");
         await File.WriteAllBytesAsync(inputPath, input);
-        var start = new ProcessStartInfo(DemoPaths.FfmpegPath)
-        { UseShellExecute = false, CreateNoWindow = true, RedirectStandardError = true };
-        var arguments = new List<string> { "-v", "error", "-y" };
-        VulkanFrameInterpolation.AddDeviceArguments(arguments);
-        arguments.AddRange(["-f", "rawvideo", "-pixel_format", "rgba64le", "-video_size", $"{width}x{height}",
-            "-framerate", "24000/1001", "-i", inputPath, "-vf", VulkanFrameInterpolation.Filter(2, true, false),
-            "-frames:v", "6", "-fps_mode", "cfr", "-r", "48000/1001", "-f", "rawvideo", "-pix_fmt", "rgba64le", outputPath]);
-        foreach (var argument in arguments) start.ArgumentList.Add(argument);
-        using var process = Process.Start(start)!;
-        var error = process.StandardError.ReadToEndAsync();
-        await process.WaitForExitAsync().WaitAsync(TimeSpan.FromSeconds(30));
-        Require(process.ExitCode == 0, await error);
-        var output = await File.ReadAllBytesAsync(outputPath);
+        var video = new VideoInfo { Codec = "rawvideo", PixelFormat = "rgba64le", Width = width, Height = height, FrameRate = "24000/1001" };
+        using var session = new VulkanInterpolationSession(width, height, true, video, 2, true);
+        using var destination = new MemoryStream();
+        for (int i = 0; i < 3; i++) session.Write(input.AsSpan(i * bytes, bytes), destination, default);
+        session.Complete(destination, default);
+        var output = destination.ToArray();
+        await File.WriteAllBytesAsync(outputPath, output);
         Require(output.Length == bytes * 6, "Pixel probe did not double frames");
         Require(input.AsSpan(0, bytes).SequenceEqual(output.AsSpan(0, bytes)), "Original HDR frame changed inside FRUC");
         for (var frame = 0; frame < 3; frame++)
@@ -51,10 +45,10 @@ internal static class InterpolationIntegration
         Console.WriteLine("Pixel artifacts: " + root);
     }
 
-    internal static async Task RunAsync(string input)
+    internal static async Task RunAsync(string input, FrameInterpolationBackend backend = FrameInterpolationBackend.NvidiaOpticalFlow)
     {
         var source = MediaProbe.Probe(input, DemoPaths.FfprobePath);
-        var root = Path.Combine(Environment.CurrentDirectory, "build", "fruc", "integration-" + Guid.NewGuid().ToString("N"));
+        var root = Path.Combine(Environment.CurrentDirectory, ".qa", "interpolation-port-2026-10-17", "integration-" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(root);
         var logs = new List<string>();
         var previous = PipelineLog.Sink;
@@ -62,6 +56,7 @@ internal static class InterpolationIntegration
         TranscodeOptions Options() => new()
         {
             FfmpegPath = DemoPaths.FfmpegPath, EnableNr = false, EnableInterpolation = true,
+            InterpolationBackend = backend,
             HostDllPath = DemoPaths.HostDllPath, RuntimeDllPath = DemoPaths.RuntimeDllPath,
             LogPath = Path.Combine(root, "nr.log"), VsrLogPath = Path.Combine(root, "vsr.log"),
             MaxFrames = 6, EnablePreviewFrames = false,
@@ -84,7 +79,7 @@ internal static class InterpolationIntegration
                 Require(output.PixelFormat.Contains("10") && output.ColorTransfer == source.ColorTransfer && output.ColorPrimaries == source.ColorPrimaries,
                     name + ": HDR depth or color tags lost");
             if (options.EnableInterpolation)
-                Require(logs.Any(line => line.StartsWith("NVIDIA Vulkan 补帧已验证")), name + ": did not validate actual graph");
+                Require(logs.Any(line => line.StartsWith(backend == FrameInterpolationBackend.Rife ? "RIFE GPU 已验证" : "NVIDIA Vulkan 补帧已验证")), name + ": did not validate actual graph");
             Console.WriteLine($"PASS interpolation {name}: {output.Width}x{output.Height}, {output.FrameCount} frames @{output.FrameRate}, {output.DurationSeconds:F6}s, {output.PixelFormat}, {output.ColorTransfer}");
         }
         try

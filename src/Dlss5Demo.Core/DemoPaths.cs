@@ -30,7 +30,7 @@ public static class DemoPaths
             // so a packaged copy works without requiring a global PATH entry.
             var local = Path.Combine(AppContext.BaseDirectory, "ffmpeg.exe");
             if (File.Exists(local)) return local;
-            var interpolation = Path.Combine(RuntimeDir, "fruc-ffmpeg", "bin", "ffmpeg.exe");
+            var interpolation = Path.Combine(RuntimeDir, "ffmpeg.exe");
             return File.Exists(interpolation) ? interpolation : "ffmpeg";
         }
     }
@@ -61,7 +61,9 @@ public static class DemoPaths
         foreach (var candidate in candidates)
         {
             if (File.Exists(Path.Combine(candidate, "dlssnr_host_v2.dll"))
-                || File.Exists(Path.Combine(candidate, "vsr_host.dll")))
+                || File.Exists(Path.Combine(candidate, "vsr_host.dll"))
+                || File.Exists(Path.Combine(candidate, "rife_v4.25_lite_v2.onnx"))
+                || File.Exists(Path.Combine(candidate, "rife_v4.25_v2.onnx")))
                 return Path.GetFullPath(candidate);
         }
         // 未找到时返回首选候选，让调用方收到明确的 FileNotFoundException。

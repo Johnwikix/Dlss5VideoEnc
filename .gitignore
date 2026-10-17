@@ -12,11 +12,12 @@
 *.pdb
 
 # Local runtime, logs and user-provided NVIDIA binaries
+runtime/*.exe
+runtime/*.txt
 runtime/*.dll
 runtime/*/*.dll
 runtime/*.log
 runtime/*.pdb
-runtime/fruc-ffmpeg/
 mods/*.dll
 
 # Local SDK checkout (headers/libs are downloaded separately for native builds)
@@ -34,6 +35,11 @@ _ref/
 bin/
 obj/
 *.user
+
+# RIFE 权重与本地缓存
+runtime/*.onnx
+runtime/Cache/
+.qa/
 
 # 测试产物
 output_*.mp4

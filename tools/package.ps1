@@ -1,4 +1,4 @@
-﻿[CmdletBinding()]
+[CmdletBinding()]
 param(
     [ValidateSet('Debug', 'Release')]
     [string]$Configuration = 'Release',
@@ -24,6 +24,13 @@ function Assert-File([string]$Path) {
 
 Assert-File $project
 foreach ($name in $nativeNames) { Assert-File (Join-Path $runtimeSource $name) }
+$rifeNames = @('rife_v4.25_lite_v2.onnx', 'rife_v4.25_v2.onnx')
+$rifeHashes = @('610b5de57cdcfbcce9914c23e60a1cd357779a6f9582a1bcfcb035f8eb38509b', '65c57a5e4abb17ad67faf35054291ac53affab0506d509d2e66698f6ecd75584')
+for ($i = 0; $i -lt $rifeNames.Count; $i++) {
+    $model = Join-Path $runtimeSource $rifeNames[$i]
+    Assert-File $model
+    if ((Get-FileHash -LiteralPath $model -Algorithm SHA256).Hash.ToLowerInvariant() -ne $rifeHashes[$i]) { throw "RIFE 模型校验失败：$model" }
+}
 $nvidiaLicense = Join-Path $repoRoot 'docs\licenses\NVIDIA_RTX_Video_SDK_License.pdf'
 Assert-File $nvidiaLicense
 $opticalFlowLicense = Join-Path $repoRoot 'docs\licenses\NVIDIA-Optical-Flow-Headers-LICENSE.txt'
@@ -38,8 +45,6 @@ if ([string]::IsNullOrWhiteSpace($FfmpegDirectory)) {
         $FfmpegDirectory = Split-Path -Parent $command.Source
     } elseif (Test-Path -LiteralPath (Join-Path $runtimeSource 'ffmpeg.exe') -PathType Leaf) {
         $FfmpegDirectory = $runtimeSource
-    } elseif (Test-Path -LiteralPath (Join-Path $runtimeSource 'fruc-ffmpeg\bin\ffmpeg.exe') -PathType Leaf) {
-        $FfmpegDirectory = Join-Path $runtimeSource 'fruc-ffmpeg\bin'
     } else {
         $command = Get-Command ffmpeg.exe -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
         if ($null -ne $command) { $FfmpegDirectory = Split-Path -Parent $command.Source }
@@ -83,6 +88,8 @@ New-Item -ItemType Directory -Path $runtimeDestination, $licenseDestination -For
 foreach ($name in $nativeNames) {
     Copy-Item -LiteralPath (Join-Path $runtimeSource $name) -Destination $runtimeDestination
 }
+foreach ($name in $rifeNames) { Copy-Item -LiteralPath (Join-Path $runtimeSource $name) -Destination $runtimeDestination }
+Copy-Item -LiteralPath (Join-Path $repoRoot 'docs\licenses\RIFE-MIT-LICENSE.txt') -Destination $licenseDestination
 # 可选地携带按显卡代际放置的运行库。默认 DLL 仍放在 runtime 根目录，
 # 用户可通过 DLSS5_GPU_SERIES 在 30/40/50 子目录之间选择。
 foreach ($series in @('30', '40', '50')) {
@@ -95,16 +102,21 @@ foreach ($series in @('30', '40', '50')) {
     }
 }
 # Shared FFmpeg builds need their matching DLLs beside ffmpeg.exe/ffprobe.exe.
-Get-ChildItem -LiteralPath $FfmpegDirectory -Filter '*.dll' -File |
-    Copy-Item -Destination $packageDirectory -Force
+foreach ($pattern in @('avcodec-*.dll', 'avdevice-*.dll', 'avfilter-*.dll', 'avformat-*.dll', 'avutil-*.dll', 'swresample-*.dll', 'swscale-*.dll')) {
+    $libraries = @(Get-ChildItem -LiteralPath $FfmpegDirectory -Filter $pattern -File)
+    if ($libraries.Count -ne 1) { throw "FFmpeg 库不唯一或缺失：$pattern" }
+    $libraries | Copy-Item -Destination $packageDirectory -Force
+}
 foreach ($name in @('ffmpeg.exe', 'ffprobe.exe')) {
     Copy-Item -LiteralPath (Join-Path $FfmpegDirectory $name) -Destination $packageDirectory
 }
 Copy-Item -LiteralPath $nvidiaLicense -Destination $licenseDestination
 Copy-Item -LiteralPath $opticalFlowLicense -Destination $licenseDestination
-$ffmpegSource = Join-Path (Split-Path -Parent $FfmpegDirectory) 'SOURCE.txt'
-if (Test-Path -LiteralPath $ffmpegSource -PathType Leaf) {
-    Copy-Item -LiteralPath $ffmpegSource -Destination (Join-Path $packageDirectory 'FFmpeg_SOURCE.txt')
+foreach ($ffmpegSource in @((Join-Path $FfmpegDirectory 'SOURCE.txt'), (Join-Path (Split-Path -Parent $FfmpegDirectory) 'SOURCE.txt'))) {
+    if (Test-Path -LiteralPath $ffmpegSource -PathType Leaf) {
+        Copy-Item -LiteralPath $ffmpegSource -Destination (Join-Path $packageDirectory 'FFmpeg_SOURCE.txt')
+        break
+    }
 }
 foreach ($candidate in @(
     (Join-Path $FfmpegDirectory 'LICENSE.txt'),
@@ -129,8 +141,8 @@ Dlss5VideoEnc
 应用已包含 .NET、FFmpeg、DLSS NR 和 RTX Video VSR 运行文件。
 RTX Video 2x/4x 需要兼容的 NVIDIA GPU 与驱动。
 解码默认优先 NVDEC，首帧初始化失败时自动软件回退；也可选择强制 NVDEC 或 CPU。
-NVDEC 使用驱动中的 CUDA/解码组件，不额外打包 CUDA Toolkit；硬解后仍保留 CPU 色彩转换。
-NVIDIA 光流补帧独立开关，支持 2x/4x/6x 帧率，需要支持 VK_NV_optical_flow 的驱动。
+NVDEC 使用驱动中的 CUDA/解码组件，不额外打包 CUDA Toolkit；SDR RIFE + NVENC 可全程使用 GPU 像素，NR/RTX Video 组合仍有主机帧接口。
+补帧支持 NVIDIA Vulkan 光流和 RIFE 4.25 Lite/4.25，倍率 2x/4x/6x。RIFE 仅支持 SDR，需要 Windows 11 24H2+ 与 Windows ML NVIDIA GPU 提供程序；首次使用可能下载提供程序。
 补帧在 NR/RTX Video 之后运行，HDR 颜色使用 16-bit 路径；进度与预览计数源帧。
 DLSS NR 运行库必须匹配 RTX 代际；可设置 DLSS5_GPU_SERIES=30、40 或 50，或使用 mods\nvngx_dlssnr.dll 覆盖。
 AMD/Intel 的 OpenDLSS-NR 后端当前未接入，AMD/Intel 仅用于 FFmpeg AMF/QSV 编码。

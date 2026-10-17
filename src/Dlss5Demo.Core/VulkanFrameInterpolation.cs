@@ -40,9 +40,6 @@ internal static class VulkanFrameInterpolation
             return $"{checked(numerator * multiplier)}/{denominator}";
         return (video.Fps * multiplier).ToString("0.#########", System.Globalization.CultureInfo.InvariantCulture);
     }
-    internal static void AddDeviceArguments(List<string> arguments)
-        => arguments.AddRange(["-init_hw_device", "vulkan=fruc:,vendor_id=0x10de", "-filter_hw_device", "fruc"]);
-
     internal static string Filter(int multiplier, bool hdr, bool singleFrame)
     {
         if (multiplier is not (2 or 4 or 6))
@@ -57,8 +54,8 @@ internal static class VulkanFrameInterpolation
             $"fruc_vulkan=fps=source_fps*{multiplier}:perf=medium,hwdownload,format={format},setpts=PTS:strip_fps=1";
     }
 
-    internal static async Task ValidateAsync(TranscodeOptions options, VideoInfo video, bool hdr,
-        CancellationToken cancellationToken)
+    internal static async Task<bool> ValidateAsync(TranscodeOptions options, VideoInfo video, bool hdr,
+        CancellationToken cancellationToken, bool linear = true)
     {
         if (options.InterpolationMultiplier is not (2 or 4 or 6))
             throw new ArgumentOutOfRangeException(nameof(options.InterpolationMultiplier), "补帧倍率只能是 2、4 或 6。");
@@ -68,34 +65,30 @@ internal static class VulkanFrameInterpolation
             || options.Video.Container == VideoContainer.Gif))
             throw new NotSupportedException("保留 HDR 的 NVIDIA 补帧请使用 HEVC 或 AV1 10-bit 输出。");
 
-        // Execute a real graph on a matching NVIDIA adapter. A filter listing or
-        // vendor name alone cannot establish that the installed driver works.
-        var start = new ProcessStartInfo(options.FfmpegPath)
-        { UseShellExecute = false, CreateNoWindow = true, RedirectStandardOutput = true, RedirectStandardError = true };
-        var arguments = new List<string> { "-hide_banner", "-loglevel", "error", "-nostdin" };
-        AddDeviceArguments(arguments);
-        arguments.AddRange(["-f", "lavfi", "-i", "testsrc2=size=320x192:rate=24:duration=0.125",
-            "-vf", Filter(options.InterpolationMultiplier, hdr, false), "-an", "-fps_mode", "passthrough",
-            "-progress", "pipe:1", "-nostats", "-f", "null", "-"]);
-        foreach (var argument in arguments) start.ArgumentList.Add(argument);
-        using var process = Process.Start(start) ?? throw new InvalidOperationException("无法启动 NVIDIA 补帧探针。");
-        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-        timeout.CancelAfter(TimeSpan.FromSeconds(30));
-        using var stop = timeout.Token.Register(() =>
+        try
         {
-            try { if (!process.HasExited) process.Kill(entireProcessTree: true); } catch (InvalidOperationException) { }
-        });
-        var stdout = process.StandardOutput.ReadToEndAsync();
-        var stderr = process.StandardError.ReadToEndAsync();
-        await process.WaitForExitAsync(CancellationToken.None).ConfigureAwait(false);
-        var output = await stdout.ConfigureAwait(false);
-        var error = await stderr.ConfigureAwait(false);
-        cancellationToken.ThrowIfCancellationRequested();
-        if (timeout.IsCancellationRequested) throw new TimeoutException("NVIDIA Vulkan 补帧初始化超时。");
-        var frames = output.Split('\n').Where(line => line.StartsWith("frame="))
-            .Select(line => int.TryParse(line.AsSpan(6).Trim(), out var count) ? count : 0).LastOrDefault();
-        if (process.ExitCode != 0 || frames < 3 * options.InterpolationMultiplier)
-            throw new NotSupportedException("NVIDIA Vulkan 补帧不可用：需要包含 fruc_vulkan 的 FFmpeg 和支持 VK_NV_optical_flow 的驱动。\n" + error.Trim());
-        PipelineLog.Info($"NVIDIA Vulkan 补帧已验证：{options.InterpolationMultiplier}×，{(hdr ? "RGBA16 / HDR" : "RGBA8 / SDR")}；NR/SR → 补帧 → 编码。预览与处理计数采样源帧。");
+            await Task.Run(() => Probe(options.InterpolationMultiplier, hdr, linear, cancellationToken), cancellationToken).ConfigureAwait(false);
+        }
+        catch (Exception error) when (linear && error is not OperationCanceledException)
+        {
+            PipelineLog.Info("NVIDIA Vulkan 线性图像探测失败，重试最优平铺布局：" + error.Message);
+            return await ValidateAsync(options, video, hdr, cancellationToken, false).ConfigureAwait(false);
+        }
+        PipelineLog.Info($"NVIDIA Vulkan 补帧已验证：{options.InterpolationMultiplier}×，{(hdr ? "RGBA16 / HDR" : "RGBA8 / SDR")}；{(linear ? "线性图像" : "最优平铺")}；进程内 DLL；NR/SR → 补帧 → 编码。预览与处理计数采样源帧。");
+        return linear;
     }
+    private static void Probe(int multiplier, bool hdr, bool linear, CancellationToken ct)
+    {
+        var video = new VideoInfo { Width = 320, Height = 192, FrameRate = "24/1", Codec = "rawvideo", PixelFormat = hdr ? "rgba64le" : "rgba" };
+        using var session = new VulkanInterpolationSession(320, 192, hdr, video, multiplier, linear);
+        byte[] pixels = new byte[session.FrameBytes];
+        for (int i = 0; i < 4; i++)
+        {
+            pixels.AsSpan().Fill((byte)(i * 32));
+            session.Write(pixels, Stream.Null, ct);
+        }
+        session.Complete(Stream.Null, ct);
+        if (session.Outputs != 4 * multiplier) throw new NotSupportedException("Vulkan 未生成实际补帧。");
+    }
+
 }

@@ -59,6 +59,7 @@ public partial class MainWindow : Window
         {
             if (change.Property.Name == nameof(CheckBox.IsChecked)) FineMotionBox.IsEnabled = MotionGuidanceBox.IsChecked == true;
         };
+        InterpolationBackendBox.SelectionChanged += (_, _) => UpdateProcessingOrderHint();
         SuperResolutionBox.SelectionChanged += (_, _) => UpdateProcessingOrderHint();
         EnableInterpolationBox.PropertyChanged += (_, change) =>
         {
@@ -121,6 +122,7 @@ public partial class MainWindow : Window
         NrBeforeSuperResolution = NrBeforeSuperResolutionBox.IsChecked == true,
         EnableInterpolation = EnableInterpolationBox.IsChecked == true,
         InterpolationMultiplierIndex = InterpolationMultiplierBox.SelectedIndex,
+        InterpolationBackendIndex = InterpolationBackendBox.SelectedIndex,
         ContainerIndex = ContainerBox.SelectedIndex,
         CodecIndex = CodecBox.SelectedIndex,
         HardwareIndex = HardwareBox.SelectedIndex,
@@ -168,6 +170,7 @@ public partial class MainWindow : Window
         NrBeforeSuperResolutionBox.IsChecked = _settings.NrBeforeSuperResolution;
         EnableInterpolationBox.IsChecked = _settings.EnableInterpolation;
         Select(InterpolationMultiplierBox, _settings.InterpolationMultiplierIndex);
+        Select(InterpolationBackendBox, _settings.InterpolationBackendIndex);
         UpdateProcessingOrderHint();
         Select(ContainerBox, _settings.ContainerIndex);
         Select(CodecBox, _settings.CodecIndex);
@@ -434,6 +437,7 @@ public partial class MainWindow : Window
         NrSettings.IsEnabled = nrEnabled;
         var interpolate = EnableInterpolationBox.IsChecked == true;
         InterpolationMultiplierBox.IsEnabled = interpolate;
+        InterpolationBackendBox.IsEnabled = interpolate;
         FpsBox.IsEnabled = !interpolate;
         GifFpsBox.IsEnabled = !interpolate;
         NrBeforeSuperResolutionBox.IsEnabled = enabled && nrEnabled;
@@ -445,7 +449,7 @@ public partial class MainWindow : Window
             : NrBeforeSuperResolutionBox.IsChecked == true
                 ? "NR → 超分 → 编码。NR 在源分辨率处理，速度更快。"
                 : "超分 → NR → 编码。NR 在放大后的分辨率处理，可对照更细的视觉效果，耗时增加。";
-        if (interpolate) ProcessingOrderHint.Text += " 编码前启用 NVIDIA 光流补帧。";
+        if (interpolate) ProcessingOrderHint.Text += InterpolationBackendBox.SelectedIndex > 0 ? " 编码前启用 RIFE GPU 补帧（仅 SDR）。" : " 编码前启用 NVIDIA 光流补帧。";
     }
 
     private int CollectSuperResolutionScale()
@@ -516,6 +520,8 @@ public partial class MainWindow : Window
             DecodeMode = (VideoDecodeMode)Math.Clamp(DecodeModeBox.SelectedIndex, 0, 2),
             EnableInterpolation = EnableInterpolationBox.IsChecked == true,
             InterpolationMultiplier = InterpolationMultiplierBox.SelectedIndex switch { 1 => 4, 2 => 6, _ => 2 },
+            InterpolationBackend = InterpolationBackendBox.SelectedIndex > 0 ? FrameInterpolationBackend.Rife : FrameInterpolationBackend.NvidiaOpticalFlow,
+            InterpolationModel = InterpolationBackendBox.SelectedIndex == 2 ? RifeModel.Full : RifeModel.Lite,
             VsrHostDllPath = DemoPaths.VsrHostDllPath, VsrRuntimeDllPath = DemoPaths.VsrRuntimeDllPath, VsrLogPath = DemoPaths.VsrLogPath,
             SuperResolutionScale = CollectSuperResolutionScale(), SuperResolutionQuality = 4,
             NrBeforeSuperResolution = NrBeforeSuperResolutionBox.IsChecked == true,
@@ -531,7 +537,7 @@ public partial class MainWindow : Window
             : options.SuperResolutionScale <= 1 ? "DLSS NR"
             : options.NrBeforeSuperResolution ? $"DLSS NR → RTX Video {options.SuperResolutionScale}×"
             : $"RTX Video {options.SuperResolutionScale}× → DLSS NR";
-        if (options.EnableInterpolation) orderLabel += $" → NVIDIA 补帧 {options.InterpolationMultiplier}×";
+        if (options.EnableInterpolation) orderLabel += $" → {options.InterpolationBackend} 补帧 {options.InterpolationMultiplier}×";
         PipelineStatus.Text = $"{orderLabel} 正在处理帧…";
         Log($"开始转码: {Path.GetFileName(input)} → {Path.GetFileName(output)} · {options.VideoEncoder} · {orderLabel}");
         if (options.EnableNr)
