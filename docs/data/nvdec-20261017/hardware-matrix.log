@@ -1,0 +1,77 @@
+SOURCE hardware-3840x2160-arib-std-b67-input.log
+PASS actual NVDEC pixel parity: hevc 3840x2160 yuv420p10le, hdr=True, 3 frames, PSNR=∞ dB
+PASS actual NVDEC unavailable-device initialization falls back to software
+PASS NVDEC pipeline only-decode: 3840x2160, 3 frames, yuv420p10le, arib-std-b67
+PASS NVDEC pipeline interpolation: 3840x2160, 6 frames, yuv420p10le, arib-std-b67
+
+SOURCE hardware-3840x2160-sdr-input.log
+PASS actual NVDEC pixel parity: hevc 3840x2160 yuv420p, hdr=False, 3 frames, PSNR=∞ dB
+PASS actual NVDEC unavailable-device initialization falls back to software
+PASS NVDEC pipeline only-decode: 3840x2160, 3 frames, yuv420p, 
+PASS NVDEC pipeline interpolation: 3840x2160, 6 frames, yuv420p, 
+
+SOURCE hardware-3840x2160-smpte2084-input.log
+PASS actual NVDEC pixel parity: hevc 3840x2160 yuv420p10le, hdr=True, 3 frames, PSNR=∞ dB
+PASS actual NVDEC unavailable-device initialization falls back to software
+PASS NVDEC pipeline only-decode: 3840x2160, 3 frames, yuv420p10le, smpte2084
+PASS NVDEC pipeline interpolation: 3840x2160, 6 frames, yuv420p10le, smpte2084
+
+SOURCE hardware-7680x4320-arib-std-b67-input.log
+PASS actual NVDEC pixel parity: hevc 7680x4320 yuv420p10le, hdr=True, 3 frames, PSNR=∞ dB
+PASS actual NVDEC unavailable-device initialization falls back to software
+PASS NVDEC pipeline only-decode: 7680x4320, 3 frames, yuv420p10le, arib-std-b67
+PASS NVDEC pipeline interpolation: 7680x4320, 6 frames, yuv420p10le, arib-std-b67
+
+SOURCE hardware-7680x4320-sdr-input.log
+PASS actual NVDEC pixel parity: hevc 7680x4320 yuv420p, hdr=False, 3 frames, PSNR=∞ dB
+PASS actual NVDEC unavailable-device initialization falls back to software
+PASS NVDEC pipeline only-decode: 7680x4320, 3 frames, yuv420p, 
+PASS NVDEC pipeline interpolation: 7680x4320, 6 frames, yuv420p, 
+
+SOURCE hardware-7680x4320-smpte2084-input.log
+PASS actual NVDEC pixel parity: hevc 7680x4320 yuv420p10le, hdr=True, 3 frames, PSNR=∞ dB
+PASS actual NVDEC unavailable-device initialization falls back to software
+PASS NVDEC pipeline only-decode: 7680x4320, 3 frames, yuv420p10le, smpte2084
+PASS NVDEC pipeline interpolation: 7680x4320, 6 frames, yuv420p10le, smpte2084
+
+SOURCE hardware-av1-hlg.log
+PASS actual NVDEC pixel parity: av1 320x180 yuv420p10le, hdr=True, 3 frames, PSNR=∞ dB
+PASS actual NVDEC unavailable-device initialization falls back to software
+PASS NVDEC pipeline only-decode: 320x180, 3 frames, yuv420p10le, arib-std-b67
+PASS NVDEC pipeline interpolation: 320x180, 6 frames, yuv420p10le, arib-std-b67
+PASS NVDEC pipeline nr-sr-interpolation: 640x360, 6 frames, yuv420p10le, arib-std-b67
+PASS NVDEC pipeline sr-gpu-encode: 640x360, 3 frames, yuv420p10le, arib-std-b67
+
+SOURCE hardware-av1-pq.log
+PASS actual NVDEC pixel parity: av1 320x180 yuv420p10le, hdr=True, 3 frames, PSNR=∞ dB
+PASS actual NVDEC unavailable-device initialization falls back to software
+PASS NVDEC pipeline only-decode: 320x180, 3 frames, yuv420p10le, smpte2084
+PASS NVDEC pipeline interpolation: 320x180, 6 frames, yuv420p10le, smpte2084
+PASS NVDEC pipeline nr-sr-interpolation: 640x360, 6 frames, yuv420p10le, smpte2084
+PASS NVDEC pipeline sr-gpu-encode: 640x360, 3 frames, yuv420p10le, smpte2084
+
+SOURCE hardware-hlg.log
+PASS actual NVDEC pixel parity: hevc 320x180 yuv420p10le, hdr=True, 3 frames, PSNR=∞ dB
+PASS actual NVDEC unavailable-device initialization falls back to software
+PASS NVDEC pipeline only-decode: 320x180, 3 frames, yuv420p10le, arib-std-b67
+PASS NVDEC pipeline interpolation: 320x180, 6 frames, yuv420p10le, arib-std-b67
+PASS NVDEC pipeline nr-sr-interpolation: 640x360, 6 frames, yuv420p10le, arib-std-b67
+PASS NVDEC pipeline sr-gpu-encode: 640x360, 3 frames, yuv420p10le, arib-std-b67
+
+SOURCE hardware-pq.log
+PASS actual NVDEC pixel parity: hevc 320x180 yuv420p10le, hdr=True, 3 frames, PSNR=∞ dB
+PASS actual NVDEC unavailable-device initialization falls back to software
+PASS NVDEC pipeline only-decode: 320x180, 3 frames, yuv420p10le, smpte2084
+PASS NVDEC pipeline interpolation: 320x180, 6 frames, yuv420p10le, smpte2084
+PASS NVDEC pipeline nr-sr-interpolation: 640x360, 6 frames, yuv420p10le, smpte2084
+PASS NVDEC pipeline sr-gpu-encode: 640x360, 3 frames, yuv420p10le, smpte2084
+
+SOURCE hardware-sdr-fixed.log
+PASS actual NVDEC pixel parity: h264 640x360 yuv420p, hdr=False, 3 frames, PSNR=∞ dB
+PASS actual NVDEC unavailable-device initialization falls back to software
+PASS NVDEC pipeline only-decode: 640x360, 3 frames, yuv420p, 
+PASS NVDEC pipeline interpolation: 640x360, 6 frames, yuv420p, 
+PASS NVDEC pipeline nr-sr-interpolation: 1280x720, 6 frames, yuv420p, 
+PASS NVDEC pipeline sr-gpu-encode: 1280x720, 3 frames, yuv420p, 
+
+11 inputs; 54 device checks passed. Repeated CPU regressions omitted from this summary.

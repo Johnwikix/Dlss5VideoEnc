@@ -1,0 +1,32 @@
+PASS NR controls reject model-extrapolating and nonfinite strengths
+PASS Output names skip existing files and directories
+PASS Rejected motion cannot poison NR or correction history
+PASS Stable input suppresses alternating NR correction
+PASS Changing source details remain immediate
+PASS Local movement rejects mismatched history
+PASS Scene cut resets history before NR
+PASS Temporal duration follows source FPS
+PASS HDR retains signed correction and alpha
+PASS Nonfinite HDR history cannot contaminate valid pixels
+PASS Parallel row path matches sequential behavior
+PASS Translated correction follows matching input motion
+PASS Invalid motion and disocclusion reject history
+PASS Bounded stages preserve frame order and buffer ownership
+PASS Stage failures preserve the original error and stop peers
+PASS Cancellation joins all frame stages
+PASS Input preparation can run ahead without changing temporal output
+PASS Integer optical-flow luma retains exact ties-to-even rounding
+PASS Small HDR previews match full conversion then nearest resizing
+19 regression checks passed.
+PASS VSR transport gpu-no-preview: gpu=True, 12 frames @ 30000/1001
+PASS VSR transport gpu-preview: gpu=True, 12 frames @ 30000/1001
+PASS VSR transport gpu-one-frame: gpu=True, 1 frames @ 30000/1001
+PASS VSR transport raw-frames: gpu=False, 12 frames @ 30000/1001
+PASS VSR transport pixel/color regression: PSNR=45.85 dB, hdr=False
+PASS VSR transport cpu-filter: gpu=False, 12 frames @ 30000/1001
+PASS VSR transport missing-encoder: gpu=False, 12 frames @ 30000/1001
+PASS VSR transport h264: gpu=True, 12 frames @ 30000/1001
+PASS VSR transport av1: gpu=True, 12 frames @ 30000/1001
+PASS VSR transport audio: gpu=True, 12 frames @ 30000/1001
+PASS VSR transport restart: gpu=True, 12 frames @ 30000/1001
+PASS GPU encoding cancellation, resource cleanup and restart

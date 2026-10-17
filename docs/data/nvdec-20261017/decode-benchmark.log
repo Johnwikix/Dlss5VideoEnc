@@ -1,0 +1,27 @@
+PASS NR controls reject model-extrapolating and nonfinite strengths
+PASS Output names skip existing files and directories
+PASS Rejected motion cannot poison NR or correction history
+PASS Stable input suppresses alternating NR correction
+PASS Changing source details remain immediate
+PASS Local movement rejects mismatched history
+PASS Scene cut resets history before NR
+PASS Temporal duration follows source FPS
+PASS HDR retains signed correction and alpha
+PASS Nonfinite HDR history cannot contaminate valid pixels
+PASS Parallel row path matches sequential behavior
+PASS Translated correction follows matching input motion
+PASS Invalid motion and disocclusion reject history
+PASS Bounded stages preserve frame order and buffer ownership
+PASS Stage failures preserve the original error and stop peers
+PASS Cancellation joins all frame stages
+PASS Input preparation can run ahead without changing temporal output
+PASS Integer optical-flow luma retains exact ties-to-even rounding
+PASS Small HDR previews match full conversion then nearest resizing
+19 regression checks passed.
+BENCH {"mode":"Software","frames":600,"seconds":1.7345523,"decoderCpuSeconds":6.8125,"fps":345.9105845352717}
+BENCH {"mode":"Nvdec","frames":600,"seconds":2.0697376,"decoderCpuSeconds":4.5,"fps":289.89182010318603}
+BENCH {"mode":"Nvdec","frames":600,"seconds":2.0836563,"decoderCpuSeconds":3.046875,"fps":287.9553600082701}
+BENCH {"mode":"Software","frames":600,"seconds":2.1091731,"decoderCpuSeconds":6.140625,"fps":284.47167280864716}
+BENCH {"mode":"Software","frames":600,"seconds":2.0504896,"decoderCpuSeconds":5.671875,"fps":292.6130422704899}
+BENCH {"mode":"Nvdec","frames":600,"seconds":2.0351728,"decoderCpuSeconds":4.1875,"fps":294.81526089578244}
+BENCH_RESULTS [{"mode":"Software","frames":600,"seconds":1.7345523,"decoderCpuSeconds":6.8125,"fps":345.9105845352717},{"mode":"Nvdec","frames":600,"seconds":2.0697376,"decoderCpuSeconds":4.5,"fps":289.89182010318603},{"mode":"Nvdec","frames":600,"seconds":2.0836563,"decoderCpuSeconds":3.046875,"fps":287.9553600082701},{"mode":"Software","frames":600,"seconds":2.1091731,"decoderCpuSeconds":6.140625,"fps":284.47167280864716},{"mode":"Software","frames":600,"seconds":2.0504896,"decoderCpuSeconds":5.671875,"fps":292.6130422704899},{"mode":"Nvdec","frames":600,"seconds":2.0351728,"decoderCpuSeconds":4.1875,"fps":294.81526089578244}]

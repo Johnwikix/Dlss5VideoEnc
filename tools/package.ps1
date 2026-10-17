@@ -38,6 +38,8 @@ if ([string]::IsNullOrWhiteSpace($FfmpegDirectory)) {
         $FfmpegDirectory = Split-Path -Parent $command.Source
     } elseif (Test-Path -LiteralPath (Join-Path $runtimeSource 'ffmpeg.exe') -PathType Leaf) {
         $FfmpegDirectory = $runtimeSource
+    } elseif (Test-Path -LiteralPath (Join-Path $runtimeSource 'fruc-ffmpeg\bin\ffmpeg.exe') -PathType Leaf) {
+        $FfmpegDirectory = Join-Path $runtimeSource 'fruc-ffmpeg\bin'
     } else {
         $command = Get-Command ffmpeg.exe -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
         if ($null -ne $command) { $FfmpegDirectory = Split-Path -Parent $command.Source }
@@ -48,6 +50,10 @@ if ([string]::IsNullOrWhiteSpace($FfmpegDirectory)) {
 }
 $FfmpegDirectory = (Resolve-Path -LiteralPath $FfmpegDirectory).Path
 foreach ($name in @('ffmpeg.exe', 'ffprobe.exe')) { Assert-File (Join-Path $FfmpegDirectory $name) }
+$filters = & (Join-Path $FfmpegDirectory 'ffmpeg.exe') -hide_banner -filters 2>&1 | Out-String
+if ($LASTEXITCODE -ne 0 -or $filters -notmatch '\bfruc_vulkan\b') {
+    throw '打包的 FFmpeg 必须包含 fruc_vulkan，请使用支持 NVIDIA Vulkan 光流的 master shared 构建。'
+}
 
 if ([string]::IsNullOrWhiteSpace($OutputRoot)) { $OutputRoot = Join-Path $repoRoot 'dist' }
 $OutputRoot = [IO.Path]::GetFullPath($OutputRoot)
@@ -96,6 +102,10 @@ foreach ($name in @('ffmpeg.exe', 'ffprobe.exe')) {
 }
 Copy-Item -LiteralPath $nvidiaLicense -Destination $licenseDestination
 Copy-Item -LiteralPath $opticalFlowLicense -Destination $licenseDestination
+$ffmpegSource = Join-Path (Split-Path -Parent $FfmpegDirectory) 'SOURCE.txt'
+if (Test-Path -LiteralPath $ffmpegSource -PathType Leaf) {
+    Copy-Item -LiteralPath $ffmpegSource -Destination (Join-Path $packageDirectory 'FFmpeg_SOURCE.txt')
+}
 foreach ($candidate in @(
     (Join-Path $FfmpegDirectory 'LICENSE.txt'),
     (Join-Path (Split-Path -Parent $FfmpegDirectory) 'LICENSE.txt')
@@ -118,6 +128,10 @@ Dlss5VideoEnc
 解压后启动 Dlss5VideoEnc.exe。请保留整个目录结构。
 应用已包含 .NET、FFmpeg、DLSS NR 和 RTX Video VSR 运行文件。
 RTX Video 2x/4x 需要兼容的 NVIDIA GPU 与驱动。
+解码默认优先 NVDEC，首帧初始化失败时自动软件回退；也可选择强制 NVDEC 或 CPU。
+NVDEC 使用驱动中的 CUDA/解码组件，不额外打包 CUDA Toolkit；硬解后仍保留 CPU 色彩转换。
+NVIDIA 光流补帧独立开关，支持 2x/4x/6x 帧率，需要支持 VK_NV_optical_flow 的驱动。
+补帧在 NR/RTX Video 之后运行，HDR 颜色使用 16-bit 路径；进度与预览计数源帧。
 DLSS NR 运行库必须匹配 RTX 代际；可设置 DLSS5_GPU_SERIES=30、40 或 50，或使用 mods\nvngx_dlssnr.dll 覆盖。
 AMD/Intel 的 OpenDLSS-NR 后端当前未接入，AMD/Intel 仅用于 FFmpeg AMF/QSV 编码。
 NVIDIA 组件仍遵循 licenses\NVIDIA_RTX_Video_SDK_License.pdf 中的许可。

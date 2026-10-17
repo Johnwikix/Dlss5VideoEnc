@@ -60,6 +60,14 @@ public partial class MainWindow : Window
             if (change.Property.Name == nameof(CheckBox.IsChecked)) FineMotionBox.IsEnabled = MotionGuidanceBox.IsChecked == true;
         };
         SuperResolutionBox.SelectionChanged += (_, _) => UpdateProcessingOrderHint();
+        EnableInterpolationBox.PropertyChanged += (_, change) =>
+        {
+            if (change.Property.Name == nameof(CheckBox.IsChecked)) UpdateProcessingOrderHint();
+        };
+        EnableNrBox.PropertyChanged += (_, change) =>
+        {
+            if (change.Property.Name == nameof(CheckBox.IsChecked)) UpdateProcessingOrderHint();
+        };
         NrBeforeSuperResolutionBox.PropertyChanged += (_, change) =>
         {
             if (change.Property.Name == nameof(CheckBox.IsChecked)) UpdateProcessingOrderHint();
@@ -76,7 +84,6 @@ public partial class MainWindow : Window
         // 环境变量优先于持久化设置（自动化覆盖手工配置）。
         var inputOverride = Environment.GetEnvironmentVariable("DLSS5_INPUT");
         if (!string.IsNullOrWhiteSpace(inputOverride)) InputBox.Text = inputOverride;
-        RuntimeBadge.Text = File.Exists(DemoPaths.RuntimeDllPath) ? "DLSS Runtime · ready" : "DLSS Runtime · missing";
         Log("就绪。DLSS 宿主: " + DemoPaths.HostDllPath);
         Log($"DLSS 运行库: {DemoPaths.RuntimeDllPath}" +
             (DemoPaths.RuntimeProfile is { } profile ? $" · GPU profile {profile}" : ""));
@@ -100,6 +107,7 @@ public partial class MainWindow : Window
     /// <summary>把控件状态写回设置模型（保存于开始转码与窗口关闭时）。</summary>
     private AppSettings CaptureSettings() => new()
     {
+        EnableNr = EnableNrBox.IsChecked == true,
         DlssStyle = StyleBox.SelectedIndex,
         DlssIntensity = IntensitySlider.Value,
         DlssLocalTone = LocalToneSlider.Value,
@@ -111,9 +119,12 @@ public partial class MainWindow : Window
         DlssContinuousHistory = ContinuousHistoryBox.IsChecked == true,
         SuperResolutionIndex = SuperResolutionBox.SelectedIndex,
         NrBeforeSuperResolution = NrBeforeSuperResolutionBox.IsChecked == true,
+        EnableInterpolation = EnableInterpolationBox.IsChecked == true,
+        InterpolationMultiplierIndex = InterpolationMultiplierBox.SelectedIndex,
         ContainerIndex = ContainerBox.SelectedIndex,
         CodecIndex = CodecBox.SelectedIndex,
         HardwareIndex = HardwareBox.SelectedIndex,
+        DecodeModeIndex = DecodeModeBox.SelectedIndex,
         EncoderPresetIndex = EncoderPresetBox.SelectedIndex,
         AudioIndex = AudioBox.SelectedIndex,
         Quality = (int)QualitySlider.Value,
@@ -142,6 +153,7 @@ public partial class MainWindow : Window
     /// <summary>恢复控件状态；索引夹到合法范围、Slider 由控件自身夹取，坏配置不致崩溃。</summary>
     private void ApplySettings()
     {
+        EnableNrBox.IsChecked = _settings.EnableNr;
         Select(StyleBox, _settings.DlssStyle);
         IntensitySlider.Value = _settings.DlssIntensity;
         LocalToneSlider.Value = _settings.DlssLocalTone;
@@ -154,10 +166,13 @@ public partial class MainWindow : Window
         ContinuousHistoryBox.IsChecked = _settings.DlssContinuousHistory;
         Select(SuperResolutionBox, _settings.SuperResolutionIndex);
         NrBeforeSuperResolutionBox.IsChecked = _settings.NrBeforeSuperResolution;
+        EnableInterpolationBox.IsChecked = _settings.EnableInterpolation;
+        Select(InterpolationMultiplierBox, _settings.InterpolationMultiplierIndex);
         UpdateProcessingOrderHint();
         Select(ContainerBox, _settings.ContainerIndex);
         Select(CodecBox, _settings.CodecIndex);
         Select(HardwareBox, _settings.HardwareIndex);
+        Select(DecodeModeBox, _settings.DecodeModeIndex);
         Select(EncoderPresetBox, _settings.EncoderPresetIndex);
         Select(AudioBox, _settings.AudioIndex);
         QualitySlider.Value = _settings.Quality;
@@ -389,7 +404,7 @@ public partial class MainWindow : Window
         var hardware = (HardwareBackend)Math.Clamp(HardwareBox.SelectedIndex, 0, 3);
         var audio = container == VideoContainer.Gif ? AudioCodec.None : (AudioCodec)Math.Clamp(AudioBox.SelectedIndex, 0, 7);
         var preset = EncoderPresetBox.SelectedIndex switch { 0 => "p1", 1 => "p3", 3 => "p7", _ => "p5" };
-        var fpsMode = FpsBox.SelectedIndex == 0 ? FpsMode.SameAsSource : FpsMode.Fixed;
+        var fpsMode = EnableInterpolationBox.IsChecked == true || FpsBox.SelectedIndex == 0 ? FpsMode.SameAsSource : FpsMode.Fixed;
         var fps = FpsBox.SelectedIndex switch { 1 => 24, 2 => 30, 3 => 60, _ => 30 };
         var scale = ScaleBox.SelectedIndex switch { 1 => (ScaleMode.FitWithin, 1920, 1080), 2 => (ScaleMode.FitWithin, 2560, 1440), 3 => (ScaleMode.FitWithin, 3840, 2160), _ => (ScaleMode.None, 0, 0) };
         var denoise = (DenoiseMode)Math.Clamp(DenoiseBox.SelectedIndex, 0, 3);
@@ -415,11 +430,22 @@ public partial class MainWindow : Window
     private void UpdateProcessingOrderHint()
     {
         var enabled = CollectSuperResolutionScale() > 1;
-        NrBeforeSuperResolutionBox.IsEnabled = enabled;
-        ProcessingOrderHint.Text = !enabled ? "超分已关闭：仅处理 DLSS NR。"
+        var nrEnabled = EnableNrBox.IsChecked == true;
+        NrSettings.IsEnabled = nrEnabled;
+        var interpolate = EnableInterpolationBox.IsChecked == true;
+        InterpolationMultiplierBox.IsEnabled = interpolate;
+        FpsBox.IsEnabled = !interpolate;
+        GifFpsBox.IsEnabled = !interpolate;
+        NrBeforeSuperResolutionBox.IsEnabled = enabled && nrEnabled;
+        RuntimeBadge.Text = !nrEnabled ? "DLSS NR · 已关闭"
+            : File.Exists(DemoPaths.RuntimeDllPath) ? "DLSS Runtime · ready" : "DLSS Runtime · missing";
+        ProcessingOrderHint.Text = !nrEnabled ? enabled ? "仅 RTX Video 超分 → 编码。NR、光流和历史累积已跳过。"
+                : "NR 与超分均已关闭：直接转码，可使用下方输出滤镜。"
+            : !enabled ? "超分已关闭：仅处理 DLSS NR。"
             : NrBeforeSuperResolutionBox.IsChecked == true
                 ? "NR → 超分 → 编码。NR 在源分辨率处理，速度更快。"
                 : "超分 → NR → 编码。NR 在放大后的分辨率处理，可对照更细的视觉效果，耗时增加。";
+        if (interpolate) ProcessingOrderHint.Text += " 编码前启用 NVIDIA 光流补帧。";
     }
 
     private int CollectSuperResolutionScale()
@@ -486,6 +512,10 @@ public partial class MainWindow : Window
         var options = new TranscodeOptions
         {
             FfmpegPath = DemoPaths.FfmpegPath, HostDllPath = DemoPaths.HostDllPath, RuntimeDllPath = DemoPaths.RuntimeDllPath, LogPath = DemoPaths.LogPath,
+            EnableNr = EnableNrBox.IsChecked == true,
+            DecodeMode = (VideoDecodeMode)Math.Clamp(DecodeModeBox.SelectedIndex, 0, 2),
+            EnableInterpolation = EnableInterpolationBox.IsChecked == true,
+            InterpolationMultiplier = InterpolationMultiplierBox.SelectedIndex switch { 1 => 4, 2 => 6, _ => 2 },
             VsrHostDllPath = DemoPaths.VsrHostDllPath, VsrRuntimeDllPath = DemoPaths.VsrRuntimeDllPath, VsrLogPath = DemoPaths.VsrLogPath,
             SuperResolutionScale = CollectSuperResolutionScale(), SuperResolutionQuality = 4,
             NrBeforeSuperResolution = NrBeforeSuperResolutionBox.IsChecked == true,
@@ -497,12 +527,15 @@ public partial class MainWindow : Window
         _lastOutputPath = output; OutputBox.Text = output;
         // 转码定参即落盘：之后即使闪退，配置也不丢（窗口关闭时还会再存一次）。
         AppSettingsStore.Save(CaptureSettings());
-        var orderLabel = options.SuperResolutionScale <= 1 ? "DLSS NR"
+        var orderLabel = !options.EnableNr ? options.SuperResolutionScale <= 1 ? "直接转码" : $"RTX Video {options.SuperResolutionScale}×"
+            : options.SuperResolutionScale <= 1 ? "DLSS NR"
             : options.NrBeforeSuperResolution ? $"DLSS NR → RTX Video {options.SuperResolutionScale}×"
             : $"RTX Video {options.SuperResolutionScale}× → DLSS NR";
+        if (options.EnableInterpolation) orderLabel += $" → NVIDIA 补帧 {options.InterpolationMultiplier}×";
         PipelineStatus.Text = $"{orderLabel} 正在处理帧…";
         Log($"开始转码: {Path.GetFileName(input)} → {Path.GetFileName(output)} · {options.VideoEncoder} · {orderLabel}");
-        Log($"光流运动矢量: {(options.Dlss.MotionGuidance ? "开启" : "关闭")} · NR 连续历史: {(options.Dlss.ContinuousHistory ? "开启" : "关闭")}");
+        if (options.EnableNr)
+            Log($"光流运动矢量: {(options.Dlss.MotionGuidance ? "开启" : "关闭")} · NR 连续历史: {(options.Dlss.ContinuousHistory ? "开启" : "关闭")}");
         try
         {
             var progress = new Progress<TranscodeProgress>(update =>
@@ -519,7 +552,10 @@ public partial class MainWindow : Window
                 if (automaticOutput) _suggestedOutputPath = result.OutputPath;
             }
             Progress.Value = 100; CompareButton.IsEnabled = File.Exists(result.OutputPath); OutputText.Text = $"{result.OutputBytes / 1048576.0:0.0} MiB";
-            StatusText.Text = $"完成 · {result.FramesProcessed} 帧 · {result.AverageFps:0.0} fps"; PipelineStatus.Text = "转码完成 · 输出可实时播放";
+            var frameLabel = options.EnableInterpolation
+                ? $"{result.FramesProcessed} 源帧 → {result.FramesProcessed * options.InterpolationMultiplier} 输出帧"
+                : $"{result.FramesProcessed} 帧";
+            StatusText.Text = $"完成 · {frameLabel} · {result.AverageFps:0.0} fps"; PipelineStatus.Text = "转码完成 · 输出可实时播放";
             Log($"完成: {result.FramesProcessed} 帧，输出 {result.OutputBytes / 1048576.0:0.0} MiB");
             LivePreviewText.Text = "完成 · 停留在最后一帧";
         }

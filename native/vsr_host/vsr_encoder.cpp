@@ -240,6 +240,10 @@ extern "C" __declspec(dllexport) int vsr_nvenc_open(ID3D12Device *source_device,
     codec_context->hw_frames_ctx = av_buffer_ref(hw_frames);
     const auto path = Utf8(output_path);
     if (!CheckAv(avformat_alloc_output_context2(&muxer, nullptr, "nut", path.c_str()), "NUT muxer")) return 0;
+    // NUT carries presentation timestamps and reconstructs decoding order. Its
+    // automatic negative-DTS adjustment otherwise shifts PTS beyond a short
+    // export's audio/duration limit, dropping even the only video packet.
+    muxer->avoid_negative_ts = AVFMT_AVOID_NEG_TS_DISABLED;
     if (muxer->oformat->flags & AVFMT_GLOBALHEADER) codec_context->flags |= AV_CODEC_FLAG_GLOBAL_HEADER;
     AVDictionary *settings = nullptr;
     av_dict_parse_string(&settings, options, "=", ":", 0);

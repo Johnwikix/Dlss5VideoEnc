@@ -1,8 +1,52 @@
 # Dlss5VideoEnc
 
-Avalonia 视频转码工作台：DLSS NR → 可选 RTX Video Super Resolution（关闭 / 2× / 4×）→ FFmpeg 编码。HDR 视频通过 RGBA16F / 10-bit 路径处理并保留 HDR 元数据。
+Avalonia 视频转码工作台：可选 DLSS NR → 可选 RTX Video Super Resolution（关闭 / 2× / 4×）→ 可选 NVIDIA Vulkan 光流补帧（2× / 4× / 6× 帧率）→ FFmpeg 编码。HDR 视频通过 RGBA16F / 16-bit 补帧 / 10-bit 编码路径处理。
+
+## NVDEC 解码
+
+新增自动（优先 NVDEC）、强制 NVDEC、CPU 软件解码三档，GUI、CLI 与批处理入口共用同一实现。
+默认自动；CLI 使用 `--decoder auto|nvdec|cpu`，可用 `--decode-device 0` 指定 CUDA 设备编号。
+实际收到经过 CUDA 硬件表面回读的首帧后，日志才报告 NVDEC 已确认。
+自动模式在首帧初始化失败时重新从头软件解码；已经交付帧后遇到错误则停止，不混用两种后端的时序历史。
+
+参考 `little-fancy-tool-ava` 的 NVDEC 混合处理方式，保留现有 NR/VSR 的 CPU 帧接口与 HDR 色彩转换。
+当前版本仍有硬件帧回读、CPU 色彩转换和后续上传，并非全程显存管线。
+**RTX 5070 Ti / 617.14 已实测 4K/8K 的 SDR、PQ、HLG，以及 AV1 HDR；NVDEC 与软件解码的 RGBA 像素一致。**
+已验证独立开关组合、取消重启、软件双遍，以及发布包的 NVDEC → NR → RTX Video 4K→8K → PQ 补帧。
+实现边界、短片验证矩阵与解码阶段 CPU 耗时对比见 [NVDEC 接入记录](docs/NVDEC_DECODING.md)。
+
+## NVIDIA 光流补帧
+
+沿用 `little-fancy-tool-ava` 的 `fruc_vulkan` / `VK_NV_optical_flow` 后端，补帧默认关闭，
+可以与 NR、RTX Video 任意开关组合。需要带有 `fruc_vulkan` 的 FFmpeg master，独立的 NvOFFRUC SDK 不参与此路径。
+
+```powershell
+# 下载并校验固定版本；也可以用 -ArchivePath 指定已经下载的 ZIP。
+.\tools\prepare-fruc-ffmpeg.ps1
+# 独立补帧；增加 --nr 1、--sr 2 可组合 NR、超分。
+dotnet run --project src/Dlss5Demo.Cli -c Release -- input.mp4 output.mp4 --nr 0 --interpolate 1 --interpolation-multiplier 2
+```
+
+依赖放在 `runtime/fruc-ffmpeg`，开发运行自动发现；`DLSS5_FFMPEG` 仍优先。
+打包脚本会检查补帧滤镜并携带匹配的 FFmpeg。
+
+界面提供独立补帧开关与 2×/4×/6× 选择，启用后普通帧率设置暂停生效；关闭后恢复原设置。
+补帧在 NR/SR 和输出空间滤镜之后、编码之前运行。启用补帧时使用 VSR 回读路径，避免先编码再补帧造成二次压缩。
+进度、速度和实时对照预览统计源帧；完成状态同时显示补帧后的帧数，预览不播放生成帧。
+
+RTX 5070 Ti / 617.14 已实测原生 3840×2160、7680×4320 的 SDR、PQ 和 HLG，
+以及 NR + RTX Video 4K→8K + PQ 补帧。HDR 补帧使用完整 16 位颜色，输出 HEVC/AV1 10-bit；
+保留 HDR 时不接受 H.264/GIF。短片功能验证、像素精度证据与限制见 [补帧验证记录](docs/NVIDIA_VULKAN_INTERPOLATION.md)。
 
 ## RTX Video Super Resolution
+
+DLSS NR 可以独立关闭：取消「启用 DLSS NR」后，跳过 NR、光流和历史累积，也不加载 NR 宿主或运行库。
+此时仍可选择 RTX Video 2×/4×；两者均关闭时直接转码。NR 开关会保存到设置；旧设置默认保持开启。
+CLI 和发布程序的批处理入口均支持 `--nr 0 --sr 2`（`--nr 1` 恢复 NR）。
+
+驱动 D3D11 接口与 SDK 路径未通过等价性验证，因此当前保留 SDK 后端。
+本机 617.14 驱动的 1800p/4K 输入会通过驱动接口静默退回普通缩放，SDK 可以正常处理；
+这与输出是否超过屏幕尺寸不同。实验、像素对照结果和复现步骤见 [驱动接口调查](docs/RTX_VIDEO_DRIVER_INVESTIGATION.md)。
 
 VSR 宿主是可选运行组件。要启用界面中的 2× 或 4×，需要安装 RTX Video SDK 1.1（或兼容版本），并把 SDK 根目录设置到 `NV_RTX_VIDEO_SDK`，然后在仓库根目录执行：
 
@@ -113,6 +157,8 @@ dotnet run --project src/Dlss5Demo.Cli -c Release -- "输入.mp4" "输出.mp4" -
 dotnet run --project tests/Dlss5Demo.Tests -c Release -- --pipeline "小素材.mp4"
 # VSR 真实 GPU 编码、颜色、预览、音频与取消重启（输入至少 12 帧）
 dotnet run --project tests/Dlss5Demo.Tests -c Release -- --vsr-transport "小素材.mp4"
+# NR 独立开关：故意缺失 NR DLL，验证仅超分、直接转码、整段/单帧、HDR、预览、音频和取消重启
+dotnet run --project tests/Dlss5Demo.Tests -c Release -- --nr-switch "小素材.mp4"
 ```
 
 将 Core 嵌入其他程序时，在入口先调用 `RtxVideoWorker.TryServe(args)`；返回 `true`

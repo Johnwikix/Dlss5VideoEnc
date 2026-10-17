@@ -1,0 +1,69 @@
+Archive: Dlss5VideoEnc-win-x64-20261017-164503-891.zip
+SHA256: 50d40533ff013f9e994ba8af49f98f6d7f2c85b62c9487db46600a0536d35e7d
+Extracted manifest: 248 files, all matched before running. DLSS5_FFMPEG unset.
+package-4k-pq-all.ffprobe.json {"audio":"aac","transfer":"smpte2084","width":7680,"primaries":"bt2020","fps":"48000/1001","frames":"6","format":"yuv420p10le","height":4320}
+package-auto-fallback.ffprobe.json {"audio":"aac","transfer":null,"width":640,"primaries":null,"fps":"30000/1001","frames":"3","format":"yuv420p","height":360}
+package-cpu-two-pass.ffprobe.json {"audio":"aac","transfer":null,"width":640,"primaries":null,"fps":"60000/1001","frames":"12","format":"yuv420p","height":360}
+2026-10-17 16:48:57.870 [INF] 进程启动: 0.1.0.0
+2026-10-17 16:48:58.553 [INF] NVIDIA Vulkan 补帧已验证：2×，RGBA16 / HDR；NR/SR → 补帧 → 编码。预览与处理计数采样源帧。
+2026-10-17 16:48:58.555 [INF] 管线开始: 3840x2160-smpte2084-input.mp4 → package-4k-pq-all.mp4 · hevc_nvenc
+2026-10-17 16:49:07.353 [INF] RTX VSR 独立进程已就绪: 3840×2160 → 7680×4320; 共享内存 3 帧
+2026-10-17 16:49:09.414 [INF] NGX NR 会话已创建: 3840×2160 hdr=True
+2026-10-17 16:49:09.415 [INF] NR 连续历史: True; 光流运动矢量: True; 修正量累积: True
+2026-10-17 16:49:09.425 [INF] 解码请求: NVDEC / CUDA 0，hevc / yuv420p10le → p010le → RGBA16；等待实际首帧确认。
+2026-10-17 16:49:09.569 [INF] NVIDIA 光流已启用: 3840×2160, current→previous, grid=4, SLOW; 置信度过滤=True
+2026-10-17 16:49:09.573 [INF] 有界帧管线: 3 槽; 解码 → 光流/输入验证 → NR → 历史 → SR → 编码/预览
+2026-10-17 16:49:09.573 [INF] NR 提交队列: 2 帧（单线程按序提交/回读）
+2026-10-17 16:49:09.573 [INF] VSR 逐帧处理；GPU 编码=False
+2026-10-17 16:49:09.799 [INF] NVDEC 已确认: 首帧经过 CUDA 硬件表面回读；色彩转换继续沿用现有路径。
+2026-10-17 16:49:28.339 [INF] NGX NR 会话已释放。
+2026-10-17 16:49:28.640 [INF] 管线完成: 3 帧 · 0.2 fps → G:\SoftwareProject\Avalonia\Dlss5TestDemo\build\nvdec\package-4k-pq-all.mp4
+2026-10-17 16:49:28.648 [INF] 进程退出。
+2026-10-17 16:49:28.887 [INF] 进程启动: 0.1.0.0
+2026-10-17 16:49:29.405 [INF] NVIDIA Vulkan 补帧已验证：2×，RGBA8 / SDR；NR/SR → 补帧 → 编码。预览与处理计数采样源帧。
+2026-10-17 16:49:29.407 [INF] 管线开始: source-sdr.mp4 → package-cpu-two-pass.mp4 · libx264
+2026-10-17 16:49:29.423 [INF] 解码方式: 软件解码（显式指定）。
+2026-10-17 16:49:29.429 [INF] 有界帧管线: 5 槽; 解码 → 直通 → 编码/预览
+2026-10-17 16:49:29.429 [INF] DLSS NR 已关闭：跳过 NR、光流和历史累积，不加载 NR 运行库。
+2026-10-17 16:49:29.460 [INF] 软件解码已确认: 已收到完整首帧。
+2026-10-17 16:49:30.448 [INF] 管线完成: 6 帧 · 5.8 fps → G:\SoftwareProject\Avalonia\Dlss5TestDemo\build\nvdec\package-cpu-two-pass.mp4
+2026-10-17 16:49:30.451 [INF] 进程退出。
+2026-10-17 16:49:30.575 [INF] 进程启动: 0.1.0.0
+2026-10-17 16:49:30.679 [INF] 管线开始: source-sdr.mp4 → package-auto-fallback.mp4 · hevc_nvenc
+2026-10-17 16:49:30.690 [INF] 解码请求: NVDEC / CUDA 9999，h264 / yuv420p → nv12 → RGBA8；等待实际首帧确认。
+2026-10-17 16:49:30.711 [INF] 有界帧管线: 5 槽; 解码 → 直通 → 编码/预览
+2026-10-17 16:49:30.711 [INF] DLSS NR 已关闭：跳过 NR、光流和历史累积，不加载 NR 运行库。
+2026-10-17 16:49:30.742 [INF] NVDEC 首帧初始化失败，重新从头软件解码；原因: [CUDA @ 000002edcc27eac0] cu->cuDeviceGet(&hwctx->internal->cuda_device, device_idx) failed -> CUDA_ERROR_INVALID_DEVICE: invalid device ordinal
+Device creation failed: -542398533.
+[vist#0:0/h264 @ 000002edce2f1b00] [dec:h264 @ 000002edcc251e00] No device available for decoder: device type cuda needed for codec h264.
+[vist#0:0/h264 @ 000002edce2f1b00] [dec:h264 @ 000002edcc251e00] Hardware device setup failed for decoder: Generic error in an external library
+Error opening output file pipe:1.
+Error opening output files: Generic error in an external library
+2026-10-17 16:49:30.780 [INF] 软件解码已确认: 已收到完整首帧。
+2026-10-17 16:49:30.929 [INF] 管线完成: 3 帧 · 13.6 fps → G:\SoftwareProject\Avalonia\Dlss5TestDemo\build\nvdec\package-auto-fallback.mp4
+2026-10-17 16:49:30.931 [INF] 进程退出。
+2026-10-17 16:49:31.053 [INF] 进程启动: 0.1.0.0
+2026-10-17 16:49:31.157 [INF] 管线开始: source-sdr.mp4 → package-forced-failure.mp4 · hevc_nvenc
+2026-10-17 16:49:31.170 [INF] 解码请求: NVDEC / CUDA 9999，h264 / yuv420p → nv12 → RGBA8；等待实际首帧确认。
+2026-10-17 16:49:31.190 [INF] 有界帧管线: 5 槽; 解码 → 直通 → 编码/预览
+2026-10-17 16:49:31.190 [INF] DLSS NR 已关闭：跳过 NR、光流和历史累积，不加载 NR 运行库。
+2026-10-17 16:49:31.242 [INF] 管线失败: InvalidOperationException: NVDEC 解码失败（已输出 0 帧）：
+2026-10-17 16:49:31.253 [INF] 进程退出。
+2026-10-17 16:50:46.020 [INF] 进程启动: 0.1.0.0
+2026-10-17 16:50:46.126 [INF] 管线开始: unsupported-ffv1.mkv → unsupported-auto.mp4 · hevc_nvenc
+2026-10-17 16:50:46.139 [INF] 解码方式: 软件解码（未接入 ffv1/yuv420p 的 NVDEC 表面）。
+2026-10-17 16:50:46.160 [INF] 有界帧管线: 5 槽; 解码 → 直通 → 编码/预览
+2026-10-17 16:50:46.160 [INF] DLSS NR 已关闭：跳过 NR、光流和历史累积，不加载 NR 运行库。
+2026-10-17 16:50:46.171 [INF] 软件解码已确认: 已收到完整首帧。
+2026-10-17 16:50:46.316 [INF] 管线完成: 3 帧 · 19.0 fps → G:\SoftwareProject\Avalonia\Dlss5TestDemo\build\nvdec\unsupported-auto.mp4
+2026-10-17 16:50:46.319 [INF] 进程退出。
+2026-10-17 16:50:46.461 [INF] 进程启动: 0.1.0.0
+2026-10-17 16:50:46.571 [INF] 管线失败: NotSupportedException: NVDEC 尚未接入 ffv1 / yuv420p，可选择自动或软件解码。
+2026-10-17 16:50:46.583 [INF] 进程退出。
+Forced unsupported-codec stderr (expected exit 1, no output reservation):
+System.NotSupportedException: NVDEC 尚未接入 ffv1 / yuv420p，可选择自动或软件解码。
+   at Dlss5Demo.Core.DlssVideoPipeline.ValidateDecodeOptions(TranscodeOptions options, VideoInfo video)
+   at Dlss5Demo.Core.DlssVideoPipeline.RunCoreAsync(String inputPath, String outputPath, TranscodeOptions options, IProgress`1 progress, CancellationToken cancellationToken)
+   at Dlss5Demo.Core.DlssVideoPipeline.RunAsync(String inputPath, String outputPath, TranscodeOptions options, IProgress`1 progress, CancellationToken cancellationToken)
+   at Dlss5Demo.App.Autorun.RunAsync(String[] args)
+GUI: default auto; forced NVDEC restored on restart (gui-restored.json); CPU selected via popup HWND; isolated app settings DecodeModeIndex=2.

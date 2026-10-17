@@ -1,0 +1,62 @@
+[
+  {
+    "case": "3840x2160-sdr",
+    "width": 3840,
+    "height": 2160,
+    "frames": "12",
+    "rate": "48000/1001",
+    "seconds": "0.250250",
+    "pixelFormat": "yuv420p",
+    "output": "G:\\SoftwareProject\\Avalonia\\Dlss5TestDemo\\build\\fruc\\capabilities-20261017-012245\\3840x2160-sdr-2x.mp4"
+  },
+  {
+    "case": "3840x2160-smpte2084",
+    "width": 3840,
+    "height": 2160,
+    "frames": "12",
+    "rate": "48000/1001",
+    "seconds": "0.250250",
+    "pixelFormat": "yuv420p10le",
+    "output": "G:\\SoftwareProject\\Avalonia\\Dlss5TestDemo\\build\\fruc\\capabilities-20261017-012245\\3840x2160-smpte2084-2x.mp4"
+  },
+  {
+    "case": "3840x2160-arib-std-b67",
+    "width": 3840,
+    "height": 2160,
+    "frames": "12",
+    "rate": "48000/1001",
+    "seconds": "0.250250",
+    "pixelFormat": "yuv420p10le",
+    "output": "G:\\SoftwareProject\\Avalonia\\Dlss5TestDemo\\build\\fruc\\capabilities-20261017-012245\\3840x2160-arib-std-b67-2x.mp4"
+  },
+  {
+    "case": "7680x4320-sdr",
+    "width": 7680,
+    "height": 4320,
+    "frames": "12",
+    "rate": "48000/1001",
+    "seconds": "0.250250",
+    "pixelFormat": "yuv420p",
+    "output": "G:\\SoftwareProject\\Avalonia\\Dlss5TestDemo\\build\\fruc\\capabilities-20261017-012245\\7680x4320-sdr-2x.mp4"
+  },
+  {
+    "case": "7680x4320-smpte2084",
+    "width": 7680,
+    "height": 4320,
+    "frames": "12",
+    "rate": "48000/1001",
+    "seconds": "0.250250",
+    "pixelFormat": "yuv420p10le",
+    "output": "G:\\SoftwareProject\\Avalonia\\Dlss5TestDemo\\build\\fruc\\capabilities-20261017-012245\\7680x4320-smpte2084-2x.mp4"
+  },
+  {
+    "case": "7680x4320-arib-std-b67",
+    "width": 7680,
+    "height": 4320,
+    "frames": "12",
+    "rate": "48000/1001",
+    "seconds": "0.250250",
+    "pixelFormat": "yuv420p10le",
+    "output": "G:\\SoftwareProject\\Avalonia\\Dlss5TestDemo\\build\\fruc\\capabilities-20261017-012245\\7680x4320-arib-std-b67-2x.mp4"
+  }
+]

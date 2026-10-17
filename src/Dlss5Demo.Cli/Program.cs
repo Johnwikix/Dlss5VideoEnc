@@ -12,8 +12,13 @@ var superResolutionScale = 1;
 var superResolutionQuality = 4;
 var previewEnabled = true;
 var nrFirst = true;
+var enableNr = true;
+var enableInterpolation = false;
+var interpolationMultiplier = 2;
 var nrQueue = true;
 var gpuVsrEncoding = true;
+var decodeMode = VideoDecodeMode.Auto;
+var decodeDevice = 0;
 
 for (var index = 2; index < args.Length - 1; index++)
 {
@@ -36,8 +41,13 @@ for (var index = 2; index < args.Length - 1; index++)
         case "--sr-quality": superResolutionQuality = Math.Clamp(int.Parse(args[++index]), 1, 4); break;
         case "--preview": previewEnabled = args[++index] != "0"; break;
         case "--nr-before-sr": nrFirst = args[++index] != "0"; break;
+        case "--nr": enableNr = args[++index] != "0"; break;
+        case "--interpolate": enableInterpolation = args[++index] != "0"; break;
+        case "--interpolation-multiplier": interpolationMultiplier = int.Parse(args[++index]); break;
         case "--nr-queue": nrQueue = args[++index] != "0"; break;
         case "--sr-gpu-encode": gpuVsrEncoding = args[++index] != "0"; break;
+        case "--decoder": decodeMode = VideoDecodeModes.Parse(args[++index]); break;
+        case "--decode-device": decodeDevice = int.Parse(args[++index]); break;
     }
 }
 
@@ -49,11 +59,14 @@ Console.WriteLine($"宿主: {DemoPaths.HostDllPath}");
 Console.WriteLine($"运行库: {DemoPaths.RuntimeDllPath}");
 Console.WriteLine($"运行库配置: {DemoPaths.RuntimeProfile ?? "default"}");
 
-var adapters = DlssNrHost.EnumerateAdapters(DemoPaths.HostDllPath);
-foreach (var adapter in adapters)
-    Console.WriteLine($"适配器: {adapter.Description} ({adapter.DedicatedVideoMemory / (1024 * 1024)} MiB)");
-if (adapters.Count == 0)
-    throw new InvalidOperationException("未检测到可用于 DLSS 的 NVIDIA D3D12 GPU。");
+if (enableNr)
+{
+    var adapters = DlssNrHost.EnumerateAdapters(DemoPaths.HostDllPath);
+    foreach (var adapter in adapters)
+        Console.WriteLine($"适配器: {adapter.Description} ({adapter.DedicatedVideoMemory / (1024 * 1024)} MiB)");
+    if (adapters.Count == 0)
+        throw new InvalidOperationException("未检测到可用于 DLSS 的 NVIDIA D3D12 GPU。");
+}
 
 var video = MediaProbe.Probe(input);
 Console.WriteLine(
@@ -71,10 +84,16 @@ var progress = new Progress<TranscodeProgress>(update =>
 
 var result = await DlssVideoPipeline.RunAsync(input, output, new TranscodeOptions
 {
+    FfmpegPath = DemoPaths.FfmpegPath,
     HostDllPath = DemoPaths.HostDllPath,
     RuntimeDllPath = DemoPaths.RuntimeDllPath,
     LogPath = DemoPaths.LogPath,
     Dlss = options,
+    EnableNr = enableNr,
+    DecodeMode = decodeMode,
+    DecodeDeviceIndex = decodeDevice,
+    EnableInterpolation = enableInterpolation,
+    InterpolationMultiplier = interpolationMultiplier,
     VideoEncoder = encoder,
     Quality = quality,
     MaxFrames = maxFrames,
@@ -90,6 +109,7 @@ var result = await DlssVideoPipeline.RunAsync(input, output, new TranscodeOption
 Console.WriteLine(
     $"完成: {result.FramesProcessed} 帧，平均 {result.AverageFps:F1} fps，" +
     $"耗时 {result.Elapsed.TotalSeconds:F1}s，输出 {result.OutputBytes / (1024.0 * 1024.0):F1} MiB → {result.OutputPath}");
+if (enableInterpolation) Console.WriteLine($"补帧输出: {result.FramesProcessed * interpolationMultiplier} 帧（{interpolationMultiplier}×；处理速度按源帧统计）");
 Console.WriteLine($"同步预览: {previewSink.Pairs} 对帧，尺寸不一致 {previewSink.MismatchedSizes} 次");
 
 sealed class CountingPreviewSink : ITranscodePreviewSink

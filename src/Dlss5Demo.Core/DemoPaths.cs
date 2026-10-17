@@ -29,7 +29,9 @@ public static class DemoPaths
             // Packaged builds place ffmpeg.exe beside the application. Prefer it
             // so a packaged copy works without requiring a global PATH entry.
             var local = Path.Combine(AppContext.BaseDirectory, "ffmpeg.exe");
-            return File.Exists(local) ? local : "ffmpeg";
+            if (File.Exists(local)) return local;
+            var interpolation = Path.Combine(RuntimeDir, "fruc-ffmpeg", "bin", "ffmpeg.exe");
+            return File.Exists(interpolation) ? interpolation : "ffmpeg";
         }
     }
     public static string FfprobePath
@@ -50,7 +52,7 @@ public static class DemoPaths
         if (!string.IsNullOrWhiteSpace(environment))
             candidates.Add(environment);
 
-        // 从应用目录逐级向上找 runtime\dlssnr_host_v2.dll（bin\Debug\net10.0 → ... → 仓库根）。
+        // Either host identifies a runtime directory; VSR-only installs need no NR binaries.
         var directory = new DirectoryInfo(AppContext.BaseDirectory);
         for (var current = directory; current != null; current = current.Parent)
             candidates.Add(Path.Combine(current.FullName, "runtime"));
@@ -58,7 +60,8 @@ public static class DemoPaths
 
         foreach (var candidate in candidates)
         {
-            if (File.Exists(Path.Combine(candidate, "dlssnr_host_v2.dll")))
+            if (File.Exists(Path.Combine(candidate, "dlssnr_host_v2.dll"))
+                || File.Exists(Path.Combine(candidate, "vsr_host.dll")))
                 return Path.GetFullPath(candidate);
         }
         // 未找到时返回首选候选，让调用方收到明确的 FileNotFoundException。

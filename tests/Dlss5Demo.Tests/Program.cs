@@ -3,6 +3,7 @@ using System.Numerics;
 using System.Diagnostics;
 
 if (RtxVideoWorker.TryServe(args)) return;
+if (DecoderControlTests.TryServe(args)) return;
 
 var tests = new (string Name, Action Run)[]
 {
@@ -54,10 +55,115 @@ if (pipelineArgument >= 0)
     PipelineIntegration(args[pipelineArgument + 1]).GetAwaiter().GetResult();
 var transportArgument = Array.IndexOf(args, "--vsr-transport");
 if (transportArgument >= 0) VsrTransportIntegration(args[transportArgument + 1]).GetAwaiter().GetResult();
+var nrSwitchArgument = Array.IndexOf(args, "--nr-switch");
+if (nrSwitchArgument >= 0) NrSwitchIntegration(args[nrSwitchArgument + 1]).GetAwaiter().GetResult();
+var interpolationArgument = Array.IndexOf(args, "--interpolation");
+if (interpolationArgument >= 0) InterpolationIntegration.RunAsync(args[interpolationArgument + 1]).GetAwaiter().GetResult();
+if (args.Contains("--interpolation-pixels")) InterpolationIntegration.PixelsAsync().GetAwaiter().GetResult();
+if (args.Contains("--decoder-control")) DecoderControlTests.RunAsync().GetAwaiter().GetResult();
+var nvdecArgument = Array.IndexOf(args, "--nvdec");
+if (nvdecArgument >= 0) NvdecIntegration.RunAsync(args[nvdecArgument + 1]).GetAwaiter().GetResult();
+var nvdecBenchmarkArgument = Array.IndexOf(args, "--nvdec-benchmark");
+if (nvdecBenchmarkArgument >= 0) NvdecIntegration.BenchmarkAsync(args[nvdecBenchmarkArgument + 1]).GetAwaiter().GetResult();
 
 static void Check(bool condition, string message)
 {
     if (!condition) throw new Exception(message);
+}
+
+static async Task NrSwitchIntegration(string input)
+{
+    var root = Path.Combine(Environment.CurrentDirectory, "build", "nr-switch", "integration-" + Guid.NewGuid().ToString("N"));
+    Directory.CreateDirectory(root);
+    var source = MediaProbe.Probe(input);
+    var sourceFrames = source.FrameCount;
+    if (sourceFrames == 0)
+    {
+        var count = new ProcessStartInfo(DemoPaths.FfprobePath)
+        { UseShellExecute = false, CreateNoWindow = true, RedirectStandardOutput = true };
+        foreach (var argument in new[] { "-v", "error", "-select_streams", "v:0", "-count_frames", "-show_entries", "stream=nb_read_frames", "-of", "csv=p=0", input })
+            count.ArgumentList.Add(argument);
+        using var counter = Process.Start(count)!;
+        var value = counter.StandardOutput.ReadToEnd().Trim();
+        counter.WaitForExit();
+        Check(counter.ExitCode == 0 && long.TryParse(value, out sourceFrames), "Cannot count source fixture frames.");
+    }
+    var logs = new System.Collections.Concurrent.ConcurrentQueue<string>();
+    var previous = PipelineLog.Sink;
+    PipelineLog.Sink = logs.Enqueue;
+    TranscodeOptions Options(string name, int scale = 2) => new()
+    {
+        EnableNr = false,
+        // Deliberately absent: disabling NR must remove its native dependencies.
+        HostDllPath = Path.Combine(root, "missing-nr-host.dll"),
+        RuntimeDllPath = Path.Combine(root, "missing-nr-runtime.dll"),
+        LogPath = Path.Combine(root, name + "-nr.log"), VsrLogPath = Path.Combine(root, name + "-sr.log"),
+        SuperResolutionScale = scale, MaxFrames = 12,
+        Video = new VideoTranscodeOptions { AudioCodec = AudioCodec.Copy },
+    };
+    async Task Run(string name, TranscodeOptions options, bool gpu)
+    {
+        logs.Clear();
+        using var preview = new TranscodePreviewBuffer(160, 90);
+        var result = await DlssVideoPipeline.RunAsync(input, Path.Combine(root, name + ".mp4"), options with
+            { PreviewSink = preview, PreviewFramesPerSecond = 1 }).WaitAsync(TimeSpan.FromSeconds(60));
+        var encoded = MediaProbe.Probe(result.OutputPath);
+        var expectedFrames = options.MaxFrames ?? sourceFrames;
+        Check(encoded.Width == source.Width * options.SuperResolutionScale && encoded.Height == source.Height * options.SuperResolutionScale,
+            name + ": wrong dimensions with NR disabled.");
+        Check(encoded.FrameCount == expectedFrames && result.FramesProcessed == expectedFrames, name + ": lost tail frames.");
+        Check(encoded.IsHdr == source.IsHdr && Math.Abs(encoded.Fps - source.Fps) < .0001, name + ": HDR/FPS changed.");
+        Check(encoded.HasAudio == source.HasAudio, name + ": audio was lost.");
+        Check(!File.Exists(options.LogPath), name + ": NR still initialized.");
+        Check(logs.Any(line => line.StartsWith("DLSS NR 已关闭")) && !logs.Any(line => line.StartsWith("NGX NR 会话已创建")),
+            name + ": NR bypass was not honored.");
+        Check(logs.Any(line => line.StartsWith("VSR GPU 编码已启用")) == gpu, name + ": wrong GPU encoding path.");
+        using var last = preview.TakeLatest();
+        Check(last?.FramesDone == expectedFrames, name + ": final preview was lost.");
+        var pixels = last!.Processed.ToArray();
+        Check(pixels.Where((_, i) => i % 4 != 3).Any(value => value > 16), name + ": black/uninitialized output.");
+        if (options.SuperResolutionScale == 1)
+            Check(last.Source.SequenceEqual(last.Processed), "NR and SR off must preserve the decoded preview pixels.");
+        Check(!Process.GetCurrentProcess().Modules.Cast<ProcessModule>().Any(module =>
+            module.ModuleName is "dlssnr_host_v2.dll" or "nvngx_dlssnr.dll"), name + ": NR DLL was loaded despite missing NR paths.");
+        Console.WriteLine($"PASS NR off {name}: {encoded.Width}×{encoded.Height}, {encoded.FrameCount} frames, hdr={encoded.IsHdr}, GPU encode={gpu}");
+    }
+    try
+    {
+        await Run("both-off", Options("both-off", 1), false);
+        await Run("sr2-gpu", Options("sr2-gpu"), !source.IsHdr);
+        await Run("sr2-cpu", Options("sr2-cpu") with { UseGpuVsrEncoding = false }, false);
+        await Run("sr4", Options("sr4", 4), !source.IsHdr);
+        await Run("nr-order-ignored", Options("nr-order-ignored") with { NrBeforeSuperResolution = false }, !source.IsHdr);
+        await Run("one-frame", Options("one-frame") with { MaxFrames = 1 }, !source.IsHdr);
+        await Run("full-length", Options("full-length") with { MaxFrames = null }, !source.IsHdr);
+        if (!source.IsHdr)
+            await Run("two-pass", Options("two-pass") with
+            {
+                VideoEncoder = "libx264",
+                Video = new VideoTranscodeOptions { VideoCodec = VideoCodec.H264, HardwareBackend = HardwareBackend.Software,
+                    RateControl = RateControlMode.Bitrate, TwoPassEnabled = true, VideoBitrateKbps = 1800 },
+            }, false);
+        using (var stop = new CancellationTokenSource())
+        {
+            try
+            {
+                await DlssVideoPipeline.RunAsync(input, Path.Combine(root, "cancel.mp4"), Options("cancel"),
+                    new InlineProgress(_ => stop.Cancel()), stop.Token).WaitAsync(TimeSpan.FromSeconds(30));
+                throw new Exception("NR-off pipeline ignored cancellation.");
+            }
+            catch (OperationCanceledException) { }
+        }
+        await Run("restart", Options("restart"), !source.IsHdr);
+        try
+        {
+            await DlssVideoPipeline.RunAsync(input, Path.Combine(root, "nr-on-missing.mp4"), Options("nr-on-missing", 1) with { EnableNr = true });
+            throw new Exception("NR enabled ignored its absent runtime.");
+        }
+        catch (FileNotFoundException) { }
+        Console.WriteLine("PASS NR switch: absent NR dependencies, cancellation/restart, enabled dependency check");
+    }
+    finally { PipelineLog.Sink = previous; }
 }
 
 static void StrengthBoundaries()

@@ -55,7 +55,7 @@
     <Grid Grid.Row="0" ColumnDefinitions="*,Auto" VerticalAlignment="Center">
       <StackPanel Spacing="4">
         <StackPanel Orientation="Horizontal" Spacing="10"><TextBlock Text="DLSS5" FontSize="26" FontWeight="Bold" Foreground="#5CE1E6" /><TextBlock Text="VIDEO ENC" FontSize="26" FontWeight="Bold" Foreground="#F3F7FA" /></StackPanel>
-        <TextBlock Text="NVIDIA DLSS NR 视频转码工作台 · 实时预览 · HDR 保真输出" Foreground="#8C9AA7" FontSize="13" />
+        <TextBlock Text="DLSS NR / RTX Video 视频转码工作台 · 实时预览 · HDR 保真输出" Foreground="#8C9AA7" FontSize="13" />
       </StackPanel>
       <Border Grid.Column="1" Background="#14242A" BorderBrush="#27535A" BorderThickness="1" CornerRadius="18" Padding="16,10" MinWidth="190" VerticalAlignment="Center"><StackPanel Orientation="Horizontal" Spacing="9" VerticalAlignment="Center"><Ellipse Width="8" Height="8" Fill="#5CE1E6" VerticalAlignment="Center"/><TextBlock x:Name="RuntimeBadge" Text="DLSS Runtime · ready" Foreground="#B8F4F0" FontSize="12" VerticalAlignment="Center" /></StackPanel></Border>
     </Grid>
@@ -81,6 +81,10 @@
             <Border Classes="settingsSection">
               <StackPanel Spacing="12">
                 <TextBlock Classes="sectionTitle" Text="DLSS NR"/>
+                <CheckBox x:Name="EnableNrBox" Content="启用 DLSS NR" IsChecked="True"
+                          AutomationProperties.AutomationId="EnableNr"
+                          ToolTip.Tip="关闭后跳过 NR 及其运动矢量和历史累积，仍可使用 RTX Video 超分与独立补帧。"/>
+                <StackPanel x:Name="NrSettings" Spacing="12">
                 <StackPanel Spacing="4">
                   <TextBlock Classes="fieldLabel" Text="风格"/>
                   <ComboBox x:Name="StyleBox" SelectedIndex="0">
@@ -129,6 +133,7 @@
                   <Slider x:Name="SkinSlider" Minimum="0" Maximum="{x:Static core:DlssNrOptions.MaximumStrength}" Value="0.5" TickFrequency="0.1" IsSnapToTickEnabled="True"/>
                 </StackPanel>
                 <CheckBox x:Name="AutoMaskBox" Content="自动掩码（保护人脸与皮肤）"/>
+                </StackPanel>
               </StackPanel>
             </Border>
 
@@ -152,11 +157,20 @@
                   </StackPanel>
                 </Grid>
                 <StackPanel Spacing="4">
-                  <TextBlock Classes="fieldLabel" Text="硬件后端"/>
+                  <TextBlock Classes="fieldLabel" Text="编码硬件"/>
                   <ComboBox x:Name="HardwareBox" SelectedIndex="1">
                     <ComboBoxItem Content="CPU 软件编码"/><ComboBoxItem Content="NVIDIA NVENC"/>
                     <ComboBoxItem Content="Intel QSV"/><ComboBoxItem Content="AMD AMF"/>
                   </ComboBox>
+                </StackPanel>
+                <StackPanel Spacing="4">
+                  <TextBlock Classes="fieldLabel" Text="视频解码"/>
+                  <ComboBox x:Name="DecodeModeBox" SelectedIndex="0" AutomationProperties.AutomationId="DecodeMode">
+                    <ComboBoxItem Content="自动 · 优先 NVIDIA NVDEC"/>
+                    <ComboBoxItem Content="强制 NVIDIA NVDEC"/>
+                    <ComboBoxItem Content="CPU 软件解码"/>
+                  </ComboBox>
+                  <TextBlock Classes="hint" Text="自动模式在首帧初始化失败时改用软件解码；强制 NVDEC 则报告错误。"/>
                 </StackPanel>
                 <Grid ColumnDefinitions="*,*" ColumnSpacing="12">
                   <StackPanel Spacing="4">
@@ -235,6 +249,15 @@
                             ToolTip.Tip="勾选：先 NR，再超分。取消勾选：先超分，再 NR，可对照后置 NR 的视觉效果。"/>
                   <TextBlock x:Name="ProcessingOrderHint" Classes="hint" Text="超分已关闭：仅处理 DLSS NR。"/>
                 </StackPanel>
+                <StackPanel Spacing="4">
+                  <CheckBox x:Name="EnableInterpolationBox" Content="启用 NVIDIA 光流补帧"
+                            AutomationProperties.AutomationId="EnableInterpolation"/>
+                  <ComboBox x:Name="InterpolationMultiplierBox" SelectedIndex="0" IsEnabled="False"
+                            AutomationProperties.AutomationId="InterpolationMultiplier">
+                    <ComboBoxItem Content="2× 帧率"/><ComboBoxItem Content="4× 帧率"/><ComboBoxItem Content="6× 帧率"/>
+                  </ComboBox>
+                  <TextBlock Classes="hint" Text="独立于 NR 与超分，在编码前生成中间帧。保留 HDR 时使用 16 位颜色；预览显示处理后的源帧。"/>
+                </StackPanel>
                 <Expander x:Name="FiltersExpander" Header="缩放、降噪与裁剪" HorizontalAlignment="Stretch">
                   <StackPanel Spacing="12" Margin="0,12,0,0">
                     <StackPanel Spacing="4">
@@ -311,7 +334,7 @@
             <Grid Grid.Row="0" ColumnDefinitions="*,Auto">
               <StackPanel Spacing="2">
                 <TextBlock Text="LIVE PREVIEW" Foreground="#5CE1E6" FontSize="12" FontWeight="SemiBold"/>
-                <TextBlock Text="双路实时帧 · 源视频与 DLSS NR 输出" Foreground="#A4B3BF" FontSize="11" TextWrapping="Wrap"/>
+                <TextBlock Text="双路实时帧 · 源视频与处理结果" Foreground="#A4B3BF" FontSize="11" TextWrapping="Wrap"/>
               </StackPanel>
               <TextBlock x:Name="LivePreviewText" Grid.Column="1" Text="等待源视频" Foreground="#91A2AF" FontSize="12" VerticalAlignment="Center"/>
             </Grid>
@@ -334,10 +357,10 @@
                     <Grid Width="640" Height="360" Background="#05080B">
                       <Image x:Name="ProcessedImage" Stretch="Uniform"/>
                       <TextBlock x:Name="OutputPlaceholder" Text="等待处理结果" Foreground="#A4B3BF" FontSize="16" HorizontalAlignment="Center" VerticalAlignment="Center"/>
-                      <TextBlock Text="DLSS NR / OUTPUT" Foreground="#5CE1E6" FontSize="11" HorizontalAlignment="Left" VerticalAlignment="Bottom" Margin="10,0,0,10"/>
+                      <TextBlock Text="OUTPUT" Foreground="#5CE1E6" FontSize="11" HorizontalAlignment="Left" VerticalAlignment="Bottom" Margin="10,0,0,10"/>
                     </Grid>
                   </Viewbox>
-                  <TextBlock Grid.Row="1" Text="DLSS NR / OUTPUT · 处理结果" Foreground="#91A2AF" FontSize="11" Margin="2,8,2,0"/>
+                  <TextBlock Grid.Row="1" Text="OUTPUT · 处理结果" Foreground="#91A2AF" FontSize="11" Margin="2,8,2,0"/>
                 </Grid>
               </Border>
             </Grid>

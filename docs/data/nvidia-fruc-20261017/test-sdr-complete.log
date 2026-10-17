@@ -1,0 +1,41 @@
+PASS NR controls reject model-extrapolating and nonfinite strengths
+PASS Output names skip existing files and directories
+PASS Rejected motion cannot poison NR or correction history
+PASS Stable input suppresses alternating NR correction
+PASS Changing source details remain immediate
+PASS Local movement rejects mismatched history
+PASS Scene cut resets history before NR
+PASS Temporal duration follows source FPS
+PASS HDR retains signed correction and alpha
+PASS Nonfinite HDR history cannot contaminate valid pixels
+PASS Parallel row path matches sequential behavior
+PASS Translated correction follows matching input motion
+PASS Invalid motion and disocclusion reject history
+PASS Bounded stages preserve frame order and buffer ownership
+PASS Stage failures preserve the original error and stop peers
+PASS Cancellation joins all frame stages
+PASS Input preparation can run ahead without changing temporal output
+PASS Integer optical-flow luma retains exact ties-to-even rounding
+PASS Small HDR previews match full conversion then nearest resizing
+19 regression checks passed.
+PASS interpolation only-2x: 640x360, 12 frames @60000/1001, 0.200200s, yuv420p, 
+PASS interpolation only-4x: 640x360, 24 frames @120000/1001, 0.200200s, yuv420p, 
+PASS interpolation only-6x: 640x360, 36 frames @180000/1001, 0.200200s, yuv420p, 
+PASS interpolation one-frame: 640x360, 2 frames @60000/1001, 0.033367s, yuv420p, 
+PASS interpolation disabled: 640x360, 6 frames @30000/1001, 0.200200s, yuv420p, 
+PASS interpolation saved-fps-ignored: 640x360, 12 frames @60000/1001, 0.200200s, yuv420p, 
+PASS interpolation disabled-nr: 640x360, 6 frames @30000/1001, 0.200200s, yuv420p, 
+PASS interpolation disabled-sr2: 1280x720, 6 frames @30000/1001, 0.200200s, yuv420p, 
+PASS interpolation disabled-nr-sr2: 1280x720, 6 frames @30000/1001, 0.200200s, yuv420p, 
+PASS interpolation sr2: 1280x720, 12 frames @60000/1001, 0.200200s, yuv420p, 
+PASS interpolation nr: 640x360, 12 frames @60000/1001, 0.200200s, yuv420p, 
+PASS interpolation nr-sr2: 1280x720, 12 frames @60000/1001, 0.200200s, yuv420p, 
+PASS interpolation sr2-nr: 1280x720, 12 frames @60000/1001, 0.200200s, yuv420p, 
+PASS interpolation two-pass: 640x360, 12 frames @60000/1001, 0.200200s, yuv420p, 
+PASS interpolation Matroska without nb_frames: 1 source → 2 output
+PASS interpolation Matroska without nb_frames: 6 source → 12 output
+PASS interpolation full-length: 640x360, 48 frames @60000/1001, 0.800800s, yuv420p, 
+PASS interpolation cancellation joins pipeline
+PASS interpolation restart: 640x360, 12 frames @60000/1001, 0.200200s, yuv420p, 
+PASS interpolation invalid multiplier rejected before output reservation
+Interpolation artifacts: G:\SoftwareProject\Avalonia\Dlss5TestDemo\build\fruc\integration-2701c47f31534addab206e7176345006

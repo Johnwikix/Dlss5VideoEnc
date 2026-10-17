@@ -11,12 +11,30 @@ internal static class Autorun
         var output = args[2];
         int? maxFrames = null;
         var twoPass = false;
+        var enableNr = true;
+        var enableInterpolation = false;
+        var interpolationMultiplier = 2;
+        var scale = 1;
+        var decodeMode = VideoDecodeMode.Auto;
+        var decodeDevice = 0;
         for (var index = 3; index < args.Length; index++)
         {
             if (args[index] == "--frames" && index + 1 < args.Length)
                 maxFrames = int.Parse(args[++index]);
             else if (args[index] == "--two-pass")
                 twoPass = true;
+            else if (args[index] == "--nr" && index + 1 < args.Length)
+                enableNr = args[++index] != "0";
+            else if (args[index] == "--sr" && index + 1 < args.Length)
+                scale = RtxVideoSuperResolutionHost.NormalizeScale(int.Parse(args[++index]));
+            else if (args[index] == "--interpolate" && index + 1 < args.Length)
+                enableInterpolation = args[++index] != "0";
+            else if (args[index] == "--interpolation-multiplier" && index + 1 < args.Length)
+                interpolationMultiplier = int.Parse(args[++index]);
+            else if (args[index] == "--decoder" && index + 1 < args.Length)
+                decodeMode = VideoDecodeModes.Parse(args[++index]);
+            else if (args[index] == "--decode-device" && index + 1 < args.Length)
+                decodeDevice = int.Parse(args[++index]);
         }
 
         Console.OutputEncoding = System.Text.Encoding.UTF8;
@@ -42,12 +60,19 @@ internal static class Autorun
                 RuntimeDllPath = DemoPaths.RuntimeDllPath,
                 LogPath = DemoPaths.LogPath,
                 MaxFrames = maxFrames,
+                EnableNr = enableNr,
+                DecodeMode = decodeMode,
+                DecodeDeviceIndex = decodeDevice,
+                EnableInterpolation = enableInterpolation,
+                InterpolationMultiplier = interpolationMultiplier,
+                SuperResolutionScale = scale,
                 Video = profile,
                 VideoEncoder = VideoCodecNames.Encoder(profile),
             }, progress);
             Console.WriteLine(
                 $"完成: {result.FramesProcessed} 帧，平均 {result.AverageFps:F1} fps，" +
                 $"输出 {result.OutputBytes / (1024.0 * 1024.0):F1} MiB → {result.OutputPath}");
+            if (enableInterpolation) Console.WriteLine($"补帧输出: {result.FramesProcessed * interpolationMultiplier} 帧（{interpolationMultiplier}×）");
             return 0;
         }
         catch (Exception error)

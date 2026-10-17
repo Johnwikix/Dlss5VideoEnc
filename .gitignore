@@ -16,6 +16,7 @@ runtime/*.dll
 runtime/*/*.dll
 runtime/*.log
 runtime/*.pdb
+runtime/fruc-ffmpeg/
 mods/*.dll
 
 # Local SDK checkout (headers/libs are downloaded separately for native builds)

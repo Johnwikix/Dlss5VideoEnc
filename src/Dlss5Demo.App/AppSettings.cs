@@ -6,6 +6,7 @@ namespace Dlss5Demo.App;
 public sealed class AppSettings
 {
     // DLSS NR
+    public bool EnableNr { get; set; } = true;
     public int DlssStyle { get; set; }
     public double DlssIntensity { get; set; } = 1;
     public double DlssLocalTone { get; set; } = 1;
@@ -19,9 +20,12 @@ public sealed class AppSettings
     // 输出与滤镜
     public int SuperResolutionIndex { get; set; }
     public bool NrBeforeSuperResolution { get; set; } = true;
+    public bool EnableInterpolation { get; set; }
+    public int InterpolationMultiplierIndex { get; set; }
     public int ContainerIndex { get; set; }
     public int CodecIndex { get; set; } = 1;
     public int HardwareIndex { get; set; } = 1;
+    public int DecodeModeIndex { get; set; }
     public int EncoderPresetIndex { get; set; } = 2;
     public int AudioIndex { get; set; }
     public int Quality { get; set; } = 19;

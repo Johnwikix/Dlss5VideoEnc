@@ -1,0 +1,22 @@
+PASS NR controls reject model-extrapolating and nonfinite strengths
+PASS Output names skip existing files and directories
+PASS Rejected motion cannot poison NR or correction history
+PASS Stable input suppresses alternating NR correction
+PASS Changing source details remain immediate
+PASS Local movement rejects mismatched history
+PASS Scene cut resets history before NR
+PASS Temporal duration follows source FPS
+PASS HDR retains signed correction and alpha
+PASS Nonfinite HDR history cannot contaminate valid pixels
+PASS Parallel row path matches sequential behavior
+PASS Translated correction follows matching input motion
+PASS Invalid motion and disocclusion reject history
+PASS Bounded stages preserve frame order and buffer ownership
+PASS Stage failures preserve the original error and stop peers
+PASS Cancellation joins all frame stages
+PASS Input preparation can run ahead without changing temporal output
+PASS Integer optical-flow luma retains exact ties-to-even rounding
+PASS Small HDR previews match full conversion then nearest resizing
+19 regression checks passed.
+PASS Vulkan HDR pixels: original exact; generated frame differs from both inputs; 11978 distinct 16-bit gray values
+Pixel artifacts: G:\SoftwareProject\Avalonia\Dlss5TestDemo\build\fruc\pixels-4dafa1058160469aa26183d7c7985c22
