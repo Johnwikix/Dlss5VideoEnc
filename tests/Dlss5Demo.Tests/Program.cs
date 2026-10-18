@@ -7,6 +7,7 @@ if (DecoderControlTests.TryServe(args)) return;
 
 var tests = new (string Name, Action Run)[]
 {
+    ("Driver HDR maps SDR only; native HDR and RIFE bypass mapping", DriverHdrIntegration.Policy),
     ("NR controls reject model-extrapolating and nonfinite strengths", StrengthBoundaries),
     ("Output names skip existing files and directories", OutputNames),
     ("Rejected motion cannot poison NR or correction history", ReliableMotion),
@@ -33,6 +34,7 @@ foreach (var test in tests)
     Console.WriteLine($"PASS {test.Name}");
 }
 Console.WriteLine($"{tests.Length} regression checks passed.");
+if (args.Contains("--driver-hdr")) DriverHdrIntegration.RunAsync().GetAwaiter().GetResult();
 if (args.Contains("--gpu"))
 {
     NativeOpticalFlow();

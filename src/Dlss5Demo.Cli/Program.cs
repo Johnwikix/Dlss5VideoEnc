@@ -22,6 +22,7 @@ var nrQueue = true;
 var gpuVsrEncoding = true;
 var decodeMode = VideoDecodeMode.Auto;
 var decodeDevice = 0;
+var hdrMode = "auto";
 
 for (var index = 2; index < args.Length - 1; index++)
 {
@@ -54,8 +55,12 @@ for (var index = 2; index < args.Length - 1; index++)
         case "--sr-gpu-encode": gpuVsrEncoding = args[++index] != "0"; break;
         case "--decoder": decodeMode = VideoDecodeModes.Parse(args[++index]); break;
         case "--decode-device": decodeDevice = int.Parse(args[++index]); break;
+        case "--hdr": hdrMode = args[++index].ToLowerInvariant(); break;
     }
 }
+
+if (hdrMode is not ("auto" or "force" or "sdr"))
+    throw new ArgumentException("--hdr 只能是 auto、force 或 sdr。");
 
 Console.OutputEncoding = System.Text.Encoding.UTF8;
 PipelineLog.Sink = message => Console.WriteLine($"[pipeline] {message}");
@@ -113,6 +118,7 @@ var result = await DlssVideoPipeline.RunAsync(input, output, new TranscodeOption
     UseGpuVsrEncoding = gpuVsrEncoding,
     EnablePreviewFrames = previewEnabled,
     PreviewSink = previewSink,
+    Video = new VideoTranscodeOptions { ForceHdr = hdrMode == "force", PreserveHdr = hdrMode != "sdr" },
 }, progress);
 
 Console.WriteLine(

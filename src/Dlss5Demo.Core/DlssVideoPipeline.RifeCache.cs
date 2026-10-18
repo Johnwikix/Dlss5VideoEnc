@@ -9,7 +9,7 @@ public static partial class DlssVideoPipeline
     private static async Task<RifeGpuSession> AcquireRifeSessionAsync(TranscodeOptions options, VideoInfo video,
         int width, int height, CancellationToken ct)
     {
-        bool hdr = video.IsHdr || options.Video.ForceHdr && options.Video.PreserveHdr;
+        bool hdr = video.IsHdr;
         var artifact = RifeGpuSession.ValidateRequest(options, width, height, hdr);
         var file = new FileInfo(artifact.Path);
         var key = (artifact.Path, file.Length, file.LastWriteTimeUtc.Ticks, width, height, CanEncodeRifeOnGpu(options));

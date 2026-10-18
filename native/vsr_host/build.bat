@@ -65,4 +65,5 @@ if defined FFMPEG_SDK (
   for %%N in ("%FFMPEG_SDK%\bin\avcodec-*.dll" "%FFMPEG_SDK%\bin\avformat-*.dll" "%FFMPEG_SDK%\bin\avutil-*.dll" "%FFMPEG_SDK%\bin\swresample-*.dll") do copy /y "%%~fN" "%OUTPUT%\" >nul
   echo [ok] Built optional GPU NVENC transport.
 )
-exit /b 0
+call "%~dp0build-hdr.bat"
+exit /b %errorlevel%

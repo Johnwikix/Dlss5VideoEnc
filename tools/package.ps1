@@ -12,7 +12,7 @@ $ErrorActionPreference = 'Stop'
 $repoRoot = Split-Path -Parent $PSScriptRoot
 $project = Join-Path $repoRoot 'src\Dlss5Demo.App\Dlss5Demo.App.csproj'
 $runtimeSource = Join-Path $repoRoot 'runtime'
-$nativeNames = @('dlssnr_host_v2.dll', 'nvngx_dlssnr.dll', 'vsr_host.dll', 'nvngx_vsr.dll')
+$nativeNames = @('dlssnr_host_v2.dll', 'nvngx_dlssnr.dll', 'vsr_host.dll', 'nvngx_vsr.dll', 'driver_hdr_host.dll')
 $gpuEncoder = Join-Path $runtimeSource 'vsr_encoder.dll'
 if (Test-Path -LiteralPath $gpuEncoder -PathType Leaf) { $nativeNames += 'vsr_encoder.dll' }
 
@@ -144,6 +144,7 @@ RTX Video 2x/4x 需要兼容的 NVIDIA GPU 与驱动。
 NVDEC 使用驱动中的 CUDA/解码组件，不额外打包 CUDA Toolkit；SDR RIFE + NVENC 可全程使用 GPU 像素，NR/RTX Video 组合仍有主机帧接口。
 补帧支持 NVIDIA Vulkan 光流和 RIFE 4.25 Lite/4.25，倍率 2x/4x/6x。RIFE 仅支持 SDR，需要 Windows 11 24H2+ 与 Windows ML NVIDIA GPU 提供程序；首次使用可能下载提供程序。
 补帧在 NR/RTX Video 之后运行，HDR 颜色使用 16-bit 路径；进度与预览计数源帧。
+SDR 强制 HDR10 使用驱动 RTX Video HDR 在 Vulkan 补帧后映射为 BT.2020/PQ 并进行 10-bit 编码；RIFE 保持 SDR，跳过该映射。HDR 源保留原路径。
 DLSS NR 运行库必须匹配 RTX 代际；可设置 DLSS5_GPU_SERIES=30、40 或 50，或使用 mods\nvngx_dlssnr.dll 覆盖。
 AMD/Intel 的 OpenDLSS-NR 后端当前未接入，AMD/Intel 仅用于 FFmpeg AMF/QSV 编码。
 NVIDIA 组件仍遵循 licenses\NVIDIA_RTX_Video_SDK_License.pdf 中的许可。

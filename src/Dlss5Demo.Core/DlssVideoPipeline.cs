@@ -125,8 +125,10 @@ public static partial class DlssVideoPipeline
             throw new FileNotFoundException("输入视频不存在。", inputPath);
 
         if (options.MaxFrames is <= 0) throw new ArgumentOutOfRangeException(nameof(options.MaxFrames));
+        options = NormalizeHdrOptions(options);
         var video = MediaProbe.Probe(inputPath, DemoPaths.FfprobePath);
         ValidateDecodeOptions(options, video);
+        ValidateDriverHdrOutput(options, video);
         if (options.EnableInterpolation && video.FrameCount == 0
             && await VulkanFrameInterpolation.IsSingleFrameAsync(inputPath, cancellationToken).ConfigureAwait(false))
             video = video with { FrameCount = 1 };
@@ -141,6 +143,8 @@ public static partial class DlssVideoPipeline
             if (options.InterpolationMultiplier is not (2 or 4 or 6)) throw new ArgumentOutOfRangeException(nameof(options.InterpolationMultiplier));
             if (!double.IsFinite(video.Fps) || video.Fps <= 0) throw new NotSupportedException("补帧需要有效的源视频帧率。");
         }
+        using var hdrMapper = NeedsDriverHdr(options, video)
+            ? new DriverHdrMapper(plan.ProcessWidth, plan.ProcessHeight) : null;
         var rife = options.EnableInterpolation && options.InterpolationBackend == FrameInterpolationBackend.Rife
             ? await AcquireRifeSessionAsync(options, video, plan.ProcessWidth, plan.ProcessHeight, cancellationToken).ConfigureAwait(false) : null;
         if (rife == null) ResetRifeSession();
@@ -161,7 +165,7 @@ public static partial class DlssVideoPipeline
             : video.FrameCount;
 
         if (options.Video.TwoPassEnabled && IsTwoPassSupported(options.Video))
-            return await RunTwoPassAsync(inputPath, outputPath, options, video, totalFrames, progress, cancellationToken, rife, vulkan).ConfigureAwait(false);
+            return await RunTwoPassAsync(inputPath, outputPath, options, video, totalFrames, progress, cancellationToken, rife, vulkan, hdrMapper).ConfigureAwait(false);
 
         if (rife != null && CanUseCudaRife(options, video) && rife.Cuda.DeviceId == options.DecodeDeviceIndex)
         {
@@ -227,7 +231,7 @@ public static partial class DlssVideoPipeline
             outcome = await Task.Run(() => RunFrameLoop(
                 decoder, encoder, host, vsr, plan, totalFrames, options.LogPath, progress,
                 options.EnablePreviewFrames ? options.PreviewSink : null,
-                options.PreviewFramesPerSecond, video.Fps, options.UseAsyncNrQueue, cancellationToken, rife, vulkan, options.InterpolationMultiplier)).ConfigureAwait(false);
+                options.PreviewFramesPerSecond, video.Fps, options.UseAsyncNrQueue, cancellationToken, rife, vulkan, options.InterpolationMultiplier, hdrMapper)).ConfigureAwait(false);
         }
 
         var outputInfo = new FileInfo(outputPath);
@@ -318,7 +322,7 @@ public static partial class DlssVideoPipeline
 
     private static async Task<TranscodeResult> RunTwoPassAsync(
         string inputPath, string outputPath, TranscodeOptions options, VideoInfo video,
-        long totalFrames, IProgress<TranscodeProgress>? progress, CancellationToken cancellationToken, RifeGpuSession? rife, VulkanInterpolationSession? vulkan)
+        long totalFrames, IProgress<TranscodeProgress>? progress, CancellationToken cancellationToken, RifeGpuSession? rife, VulkanInterpolationSession? vulkan, DriverHdrMapper? hdrMapper)
     {
         var plan = CreateProcessingPlan(video,
             RtxVideoSuperResolutionHost.NormalizeScale(options.SuperResolutionScale),
@@ -338,13 +342,16 @@ public static partial class DlssVideoPipeline
                 await using (var raw = new FileStream(rawPath, FileMode.CreateNew, FileAccess.Write, FileShare.Read))
                 {
                     using var cancellation = cancellationToken.Register(decoder.Abort);
-                    using InterpolationFrameStream? interpolation = rife != null ? new RifeFrameStream(raw, rife, options.InterpolationMultiplier, cancellationToken)
-                        : vulkan != null ? new VulkanFrameStream(raw, vulkan, cancellationToken) : null;
+                    using var hdr = hdrMapper == null ? null : new DriverHdrFrameStream(hdrMapper, raw, cancellationToken);
+                    Stream destination = hdr ?? (Stream)raw;
+                    using InterpolationFrameStream? interpolation = rife != null ? new RifeFrameStream(destination, rife, options.InterpolationMultiplier, cancellationToken)
+                        : vulkan != null ? new VulkanFrameStream(destination, vulkan, cancellationToken) : null;
                     outcome = await Task.Run(() => RunFrameStream(
-                        decoder, interpolation ?? (Stream)raw, host, vsr, plan, totalFrames, options.LogPath,
+                        decoder, interpolation ?? destination, host, vsr, plan, totalFrames, options.LogPath,
                         progress, options.EnablePreviewFrames ? options.PreviewSink : null,
                         options.PreviewFramesPerSecond, video.Fps, options.UseAsyncNrQueue, cancellationToken)).ConfigureAwait(false);
                     interpolation?.Complete();
+                    hdr?.Complete();
                     decoder.Process.WaitForExit(30_000);
                     if (decoder.Process.ExitCode != 0)
                         throw new InvalidOperationException("ffmpeg 解码失败：\n" + decoder.ErrorTail);
@@ -375,6 +382,9 @@ public static partial class DlssVideoPipeline
             try { File.Delete(passLog); } catch { }
             try { File.Delete(passLog + "-0.log"); } catch { }
             try { File.Delete(passLog + "-0.log.mbtree"); } catch { }
+            try { File.Delete(passLog + ".cutree"); } catch { }
+            try { File.Delete(passLog + ".temp"); } catch { }
+            try { File.Delete(passLog + ".cutree.temp"); } catch { }
         }
     }
 
@@ -399,15 +409,18 @@ public static partial class DlssVideoPipeline
         FrameDecoder decoder, CommandDrain encoder, DlssNrHost? host, RtxVideoWorker? vsr,
         ProcessingPlan plan, long totalFrames, string logPath, IProgress<TranscodeProgress>? progress,
         ITranscodePreviewSink? preview, int previewFramesPerSecond, double sourceFps, bool useAsyncNrQueue,
-        CancellationToken cancellationToken, RifeGpuSession? rife, VulkanInterpolationSession? vulkan, int multiplier)
+        CancellationToken cancellationToken, RifeGpuSession? rife, VulkanInterpolationSession? vulkan, int multiplier, DriverHdrMapper? hdrMapper)
     {
         var stopwatch = Stopwatch.StartNew();
-        using InterpolationFrameStream? interpolation = rife != null ? new RifeFrameStream(encoder.Process.StandardInput.BaseStream, rife, multiplier, cancellationToken)
-            : vulkan != null ? new VulkanFrameStream(encoder.Process.StandardInput.BaseStream, vulkan, cancellationToken) : null;
-        var result = RunFrameCore(decoder, interpolation ?? encoder.Process.StandardInput.BaseStream, host, vsr, plan,
+        using var hdr = hdrMapper == null ? null : new DriverHdrFrameStream(hdrMapper, encoder.Process.StandardInput.BaseStream, cancellationToken);
+        Stream destination = hdr ?? encoder.Process.StandardInput.BaseStream;
+        using InterpolationFrameStream? interpolation = rife != null ? new RifeFrameStream(destination, rife, multiplier, cancellationToken)
+            : vulkan != null ? new VulkanFrameStream(destination, vulkan, cancellationToken) : null;
+        var result = RunFrameCore(decoder, interpolation ?? destination, host, vsr, plan,
             totalFrames, logPath, progress, preview, previewFramesPerSecond, sourceFps, useAsyncNrQueue,
             () => { decoder.Abort(); TryKill(encoder.Process); }, cancellationToken);
         interpolation?.Complete();
+        hdr?.Complete();
         encoder.Process.StandardInput.Close();
         if (!encoder.Process.WaitForExit(120_000))
             throw new TimeoutException("ffmpeg 编码排空超时。\n" + encoder.ErrorTail);
@@ -750,14 +763,17 @@ public static partial class DlssVideoPipeline
         // The path is a newly created file owned by this session; its live
         // reservation prevents replacement. Existing user files are never passed here.
         var arguments = new List<string> { "-hide_banner", "-loglevel", "error", "-y" };
+        var mappedHdr = NeedsDriverHdr(options, video);
+        var outputVideo = mappedHdr ? DriverHdrOutputVideo(video) : video;
+        var rawFormat = mappedHdr ? "x2bgr10le" : hdr ? "rgba64le" : "rgba";
         if (encodedInput)
             arguments.AddRange(["-i", rawInputPath ?? throw new ArgumentNullException(nameof(rawInputPath))]);
         else if (rawInputPath is null)
             arguments.AddRange(["-f", "rawvideo", "-framerate", options.EnableInterpolation ? VulkanFrameInterpolation.OutputRate(video, options.InterpolationMultiplier) : video.FrameRate,
-                "-pix_fmt", hdr ? "rgba64le" : "rgba", "-s", $"{rawWidth}x{rawHeight}", "-i", "pipe:0"]);
+                "-pix_fmt", rawFormat, "-s", $"{rawWidth}x{rawHeight}", "-i", "pipe:0"]);
         else
             arguments.AddRange(["-f", "rawvideo", "-framerate", options.EnableInterpolation ? VulkanFrameInterpolation.OutputRate(video, options.InterpolationMultiplier) : video.FrameRate,
-                "-pix_fmt", hdr ? "rgba64le" : "rgba", "-s", $"{rawWidth}x{rawHeight}", "-i", rawInputPath]);
+                "-pix_fmt", rawFormat, "-s", $"{rawWidth}x{rawHeight}", "-i", rawInputPath]);
 
         var profile = options.Video;
         var includeAudio = options.CopyAudio && video.HasAudio && profile.AudioCodec != AudioCodec.None
@@ -776,17 +792,18 @@ public static partial class DlssVideoPipeline
             arguments.Add("1:a:0?");
         }
 
-        var filters = encodedInput ? "" : BuildFilterChain(profile, video, options.VideoEncoder,
-            options.EnableInterpolation);
+        var filters = encodedInput ? "" : BuildFilterChain(profile, outputVideo, options.VideoEncoder,
+            options.EnableInterpolation, mappedHdr);
         if (!string.IsNullOrWhiteSpace(filters))
         {
             arguments.Add("-vf");
             arguments.Add(filters);
         }
-        arguments.AddRange(encodedInput ? ["-c:v", "copy"] : VideoEncoderArguments(options, video, hdr));
+        arguments.AddRange(encodedInput ? ["-c:v", "copy"] : VideoEncoderArguments(options, outputVideo, hdr || mappedHdr, mappedHdr));
         if (pass is 1 or 2)
             arguments.AddRange(["-pass", pass.ToString(System.Globalization.CultureInfo.InvariantCulture),
-                "-passlogfile", passLog ?? Path.Combine(Path.GetTempPath(), "dlss5-pass")]);
+                options.VideoEncoder == "libx265" ? "-x265-stats" : "-passlogfile",
+                passLog ?? Path.Combine(Path.GetTempPath(), "dlss5-pass")]);
         if (copyAudio)
         {
             arguments.Add("-c:a");
@@ -809,12 +826,15 @@ public static partial class DlssVideoPipeline
         }
         if (profile.PreserveHdr && (video.IsHdr || profile.ForceHdr))
         {
-            arguments.Add("-color_primaries"); arguments.Add(string.IsNullOrWhiteSpace(video.ColorPrimaries) ? "bt2020" : video.ColorPrimaries);
-            arguments.Add("-color_trc"); arguments.Add(string.IsNullOrWhiteSpace(video.ColorTransfer) ? "smpte2084" : video.ColorTransfer);
-            arguments.Add("-colorspace"); arguments.Add(string.IsNullOrWhiteSpace(video.ColorSpace) ? "bt2020nc" : video.ColorSpace);
-            if (!string.IsNullOrWhiteSpace(video.ColorRange)) { arguments.Add("-color_range"); arguments.Add(video.ColorRange); }
-            arguments.Add("-metadata:s:v:0"); arguments.Add("master-display=G(13250,34500)B(7500,3000)R(34000,16000)WP(15635,16450)L(10000000,1)");
-            arguments.Add("-metadata:s:v:0"); arguments.Add("max-cll=1000,400");
+            arguments.Add("-color_primaries"); arguments.Add(string.IsNullOrWhiteSpace(outputVideo.ColorPrimaries) ? "bt2020" : outputVideo.ColorPrimaries);
+            arguments.Add("-color_trc"); arguments.Add(string.IsNullOrWhiteSpace(outputVideo.ColorTransfer) ? "smpte2084" : outputVideo.ColorTransfer);
+            arguments.Add("-colorspace"); arguments.Add(string.IsNullOrWhiteSpace(outputVideo.ColorSpace) ? "bt2020nc" : outputVideo.ColorSpace);
+            if (!string.IsNullOrWhiteSpace(outputVideo.ColorRange)) { arguments.Add("-color_range"); arguments.Add(outputVideo.ColorRange); }
+            if (!mappedHdr)
+            {
+                arguments.Add("-metadata:s:v:0"); arguments.Add("master-display=G(13250,34500)B(7500,3000)R(34000,16000)WP(15635,16450)L(10000000,1)");
+                arguments.Add("-metadata:s:v:0"); arguments.Add("max-cll=1000,400");
+            }
         }
         if (profile.Container == VideoContainer.Gif)
             arguments.AddRange(["-loop", Math.Max(0, profile.GifLoop).ToString(System.Globalization.CultureInfo.InvariantCulture)]);
@@ -858,7 +878,7 @@ public static partial class DlssVideoPipeline
         return arguments;
     }
 
-    private static IReadOnlyList<string> VideoEncoderArguments(TranscodeOptions options, VideoInfo video, bool hdr)
+    private static IReadOnlyList<string> VideoEncoderArguments(TranscodeOptions options, VideoInfo video, bool hdr, bool mappedHdr)
     {
         var profile = options.Video;
         var encoder = string.IsNullOrWhiteSpace(options.VideoEncoder) ? VideoCodecNames.Encoder(profile) : options.VideoEncoder;
@@ -892,7 +912,9 @@ public static partial class DlssVideoPipeline
             list.AddRange(["-pix_fmt", "pal8"]);
         else
         {
-            list.AddRange(["-pix_fmt", hdr && profile.VideoCodec != VideoCodec.H264 ? "p010le" : "yuv420p"]);
+            var hdrFormat = !mappedHdr || encoder.EndsWith("_nvenc", StringComparison.Ordinal) || encoder.EndsWith("_qsv", StringComparison.Ordinal)
+                || encoder.EndsWith("_amf", StringComparison.Ordinal) ? "p010le" : "yuv420p10le";
+            list.AddRange(["-pix_fmt", hdr && profile.VideoCodec != VideoCodec.H264 ? hdrFormat : "yuv420p"]);
         }
         return list;
     }
@@ -913,9 +935,11 @@ public static partial class DlssVideoPipeline
     };
 
     private static string BuildFilterChain(VideoTranscodeOptions o, VideoInfo source, string encoder,
-        bool interpolate = false)
+        bool interpolate = false, bool mappedHdr = false)
     {
         var filters = new List<string>();
+        if (mappedHdr)
+            filters.Add("format=gbrp16le,zscale=matrixin=gbr:matrix=bt2020nc:transferin=smpte2084:transfer=smpte2084:primariesin=bt2020:primaries=bt2020:rangein=full:range=limited,format=yuv420p10le");
         if (o.CropEnabled)
             filters.Add($"crop=iw-{o.CropLeft + o.CropRight}:ih-{o.CropTop + o.CropBottom}:{o.CropLeft}:{o.CropTop}");
         if (o.Deinterlace != DeinterlaceMode.None)
@@ -942,7 +966,7 @@ public static partial class DlssVideoPipeline
             var stats = o.GifStatsMode is "single" ? "single" : "diff";
             filters.Add($"split[s0][s1];[s0]palettegen=max_colors={Math.Clamp(o.GifMaxColors, 32, 256)}:stats_mode={stats}[p];[s1][p]paletteuse=dither={dither}");
         }
-        if (o.Container != VideoContainer.Gif && o.PreserveHdr && (source.IsHdr || o.ForceHdr) && !encoder.EndsWith("_nvenc", StringComparison.Ordinal))
+        if (!mappedHdr && o.Container != VideoContainer.Gif && o.PreserveHdr && (source.IsHdr || o.ForceHdr) && !encoder.EndsWith("_nvenc", StringComparison.Ordinal))
             filters.Add("format=p010le");
         if (o.Container != VideoContainer.Gif && o.PreserveHdr && (source.IsHdr || o.ForceHdr))
         {

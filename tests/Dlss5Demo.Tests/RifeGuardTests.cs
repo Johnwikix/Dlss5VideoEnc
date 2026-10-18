@@ -13,7 +13,8 @@ internal static class RifeGuardTests
         await Reject<ArgumentOutOfRangeException>("invalid-multiplier", input, Options() with { InterpolationMultiplier = 3 });
         await Reject<NotSupportedException>("hdr", hdrInput, Options());
         await Reject<NotSupportedException>("hdr-no-bypass", hdrInput, Options() with { Video = new VideoTranscodeOptions { PreserveHdr = false } });
-        await Reject<NotSupportedException>("forced-hdr", input, Options() with { Video = new VideoTranscodeOptions { ForceHdr = true, PreserveHdr = true } });
+        var normalized = DlssVideoPipeline.NormalizeHdrOptions(Options() with { Video = new VideoTranscodeOptions { ForceHdr = true } });
+        if (normalized.Video.ForceHdr) throw new Exception("RIFE must bypass forced HDR and retain SDR output.");
         var options = Options();
         using var model = await RifeGpuSession.CreateAsync(options, 1920, 1080, false, default);
         byte[] first = new byte[1920 * 1080 * 4], second = new byte[first.Length];

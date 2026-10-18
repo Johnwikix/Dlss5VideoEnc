@@ -60,6 +60,7 @@ public partial class MainWindow : Window
             if (change.Property.Name == nameof(CheckBox.IsChecked)) FineMotionBox.IsEnabled = MotionGuidanceBox.IsChecked == true;
         };
         InterpolationBackendBox.SelectionChanged += (_, _) => UpdateProcessingOrderHint();
+        HdrBox.SelectionChanged += (_, _) => UpdateProcessingOrderHint();
         SuperResolutionBox.SelectionChanged += (_, _) => UpdateProcessingOrderHint();
         EnableInterpolationBox.PropertyChanged += (_, change) =>
         {
@@ -450,6 +451,10 @@ public partial class MainWindow : Window
                 ? "NR → 超分 → 编码。NR 在源分辨率处理，速度更快。"
                 : "超分 → NR → 编码。NR 在放大后的分辨率处理，可对照更细的视觉效果，耗时增加。";
         if (interpolate) ProcessingOrderHint.Text += InterpolationBackendBox.SelectedIndex > 0 ? " 编码前启用 RIFE GPU 补帧（仅 SDR）。" : " 编码前启用 NVIDIA 光流补帧。";
+        if (HdrBox.SelectedIndex == 1)
+            ProcessingOrderHint.Text += interpolate && InterpolationBackendBox.SelectedIndex > 0
+                ? " RIFE 保持 SDR 输出，跳过强制 HDR 映射。"
+                : " SDR 源在补帧后通过驱动 RTX Video HDR 映射为 HDR10；HDR 源沿用原路径。";
     }
 
     private int CollectSuperResolutionScale()

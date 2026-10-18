@@ -20,6 +20,7 @@ internal static class Autorun
         var scale = 1;
         var decodeMode = VideoDecodeMode.Auto;
         var decodeDevice = 0;
+        var hdrMode = "auto";
         for (var index = 3; index < args.Length; index++)
         {
             if (args[index] == "--frames" && index + 1 < args.Length)
@@ -44,6 +45,8 @@ internal static class Autorun
                 decodeMode = VideoDecodeModes.Parse(args[++index]);
             else if (args[index] == "--decode-device" && index + 1 < args.Length)
                 decodeDevice = int.Parse(args[++index]);
+            else if (args[index] == "--hdr" && index + 1 < args.Length)
+                hdrMode = args[++index].ToLowerInvariant();
         }
 
         Console.OutputEncoding = System.Text.Encoding.UTF8;
@@ -54,13 +57,15 @@ internal static class Autorun
 
         try
         {
+            if (hdrMode is not ("auto" or "force" or "sdr")) throw new ArgumentException("--hdr 只能是 auto、force 或 sdr。");
             var profile = new VideoTranscodeOptions
             {
-                VideoCodec = twoPass ? VideoCodec.H264 : VideoCodec.H265,
+                VideoCodec = twoPass && hdrMode != "force" ? VideoCodec.H264 : VideoCodec.H265,
                 HardwareBackend = twoPass ? HardwareBackend.Software : HardwareBackend.Nvidia,
                 RateControl = twoPass ? RateControlMode.Bitrate : RateControlMode.Quality,
                 VideoBitrateKbps = 2500,
                 TwoPassEnabled = twoPass,
+                ForceHdr = hdrMode == "force", PreserveHdr = hdrMode != "sdr",
             };
             var result = await DlssVideoPipeline.RunAsync(input, output, new TranscodeOptions
             {

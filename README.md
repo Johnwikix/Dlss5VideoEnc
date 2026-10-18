@@ -55,6 +55,25 @@ dotnet run --project src/Dlss5Demo.Cli -c Release -- input.mp4 output.mp4 --nr 0
 
 源帧计数与输出帧计数不同，4× 输出 fps 应除以 4 才是源帧处理速度。实测、画质差异、原始证据位置与限制见 [2026-10-18 GPU 管线报告](docs/INTERPOLATION_GPU_2026-10-18.md)，模型来源和 SHA256 见 [RIFE 模型说明](docs/RIFE_MODELS.md)。
 
+## 强制 HDR10 输出
+
+SDR 源选择「强制 HDR10 / PQ」后，使用 NVIDIA 驱动 RTX Video HDR 执行真实映射：
+`SDR 解码 → NR/超分 → 可选 Vulkan 补帧 → 驱动 TrueHDR → BT.2020/PQ RGB→YUV → 10-bit 编码`。
+补帧生成帧及尾帧均执行映射；支持 HEVC、AV1、VP9 10-bit，拒绝 H.264/GIF。
+HDR 源继续沿用现有 PQ/HLG 路径；RIFE 保持 SDR 输出，选择 RIFE 时跳过强制 HDR 并记录日志。
+
+驱动接口无需 RTX Video SDK，但需要支持 TrueHDR 的 NVIDIA RTX GPU/驱动和本项目原生宿主：
+
+```powershell
+native\vsr_host\build-hdr.bat
+dotnet run --project src/Dlss5Demo.Cli -c Release -- input.mp4 output-hdr.mp4 --nr 0 --hdr force --interpolate 1
+# --hdr auto 跟随源；--hdr sdr 沿用原有 SDR 输出模式。应用 --autorun 入口也接受该参数。
+```
+
+宿主输出 `runtime\driver_hdr_host.dll`；`native\vsr_host\build.bat` 也会构建它，发布脚本随包携带。
+初始化不支持或帧处理失败时明确报错。预览继续显示源帧阶段的 SDR 画面。
+实现、色彩约定与验证见 [驱动 HDR 接入记录](docs/SMOOTH_MOTION_RTX_HDR.md)。
+
 ## RTX Video Super Resolution
 
 DLSS NR 可以独立关闭：取消「启用 DLSS NR」后，跳过 NR、光流和历史累积，也不加载 NR 宿主或运行库。

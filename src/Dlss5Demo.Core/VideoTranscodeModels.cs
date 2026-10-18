@@ -44,6 +44,7 @@ public sealed record VideoTranscodeOptions
     public int GifLoop { get; init; }
     public string GifStatsMode { get; init; } = "diff";
     public bool PreserveHdr { get; init; } = true;
+    /// <summary>SDR 源在补帧后通过驱动 TrueHDR 映射为 HDR10；RIFE 保持 SDR，HDR 源沿用保留路径。</summary>
     public bool ForceHdr { get; init; }
 }
 

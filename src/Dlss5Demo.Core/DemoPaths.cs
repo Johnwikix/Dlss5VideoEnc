@@ -62,6 +62,7 @@ public static class DemoPaths
         {
             if (File.Exists(Path.Combine(candidate, "dlssnr_host_v2.dll"))
                 || File.Exists(Path.Combine(candidate, "vsr_host.dll"))
+                || File.Exists(Path.Combine(candidate, "driver_hdr_host.dll"))
                 || File.Exists(Path.Combine(candidate, "rife_v4.25_lite_v2.onnx"))
                 || File.Exists(Path.Combine(candidate, "rife_v4.25_v2.onnx")))
                 return Path.GetFullPath(candidate);
