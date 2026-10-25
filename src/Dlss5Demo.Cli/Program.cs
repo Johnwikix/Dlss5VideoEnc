@@ -23,6 +23,7 @@ var gpuVsrEncoding = true;
 var decodeMode = VideoDecodeMode.Auto;
 var decodeDevice = 0;
 var hdrMode = "auto";
+string? nrRuntime = null;
 
 for (var index = 2; index < args.Length - 1; index++)
 {
@@ -36,6 +37,7 @@ for (var index = 2; index < args.Length - 1; index++)
         case "--skin": options = options with { SkinStructure = float.Parse(args[++index]) }; break;
         case "--auto-mask": options = options with { UseAutoMask = args[++index] == "1" }; break;
         case "--temporal": options = options with { TemporalStabilization = args[++index] != "0" }; break;
+        case "--gpu-temporal": options = options with { UseGpuTemporalProcessing = args[++index] != "0" }; break;
         case "--continuous-history": options = options with { ContinuousHistory = args[++index] != "0" }; break;
         case "--motion-guidance": options = options with { MotionGuidance = args[++index] != "0" }; break;
         case "--fine-motion": options = options with { FineMotion = args[++index] != "0" }; break;
@@ -46,6 +48,7 @@ for (var index = 2; index < args.Length - 1; index++)
         case "--preview": previewEnabled = args[++index] != "0"; break;
         case "--nr-before-sr": nrFirst = args[++index] != "0"; break;
         case "--nr": enableNr = args[++index] != "0"; break;
+        case "--nr-runtime": nrRuntime = args[++index]; break;
         case "--interpolation-backend": interpolationBackend = FrameInterpolationBackends.Parse(args[++index]); break;
         case "--rife-model": rifeModel = Enum.Parse<RifeModel>(args[++index], true); break;
         case "--gpu-frames": gpuFrames = args[++index] != "0"; break;
@@ -67,7 +70,8 @@ PipelineLog.Sink = message => Console.WriteLine($"[pipeline] {message}");
 Console.WriteLine($"输入: {input}");
 Console.WriteLine($"输出: {output}");
 Console.WriteLine($"宿主: {DemoPaths.HostDllPath}");
-Console.WriteLine($"运行库: {DemoPaths.RuntimeDllPath}");
+var runtimeDllPath = enableNr ? NrRuntimeCatalog.ResolveArgument(nrRuntime) : "";
+Console.WriteLine($"运行库: {runtimeDllPath}");
 Console.WriteLine($"运行库配置: {DemoPaths.RuntimeProfile ?? "default"}");
 
 if (enableNr)
@@ -97,7 +101,7 @@ var result = await DlssVideoPipeline.RunAsync(input, output, new TranscodeOption
 {
     FfmpegPath = DemoPaths.FfmpegPath,
     HostDllPath = DemoPaths.HostDllPath,
-    RuntimeDllPath = DemoPaths.RuntimeDllPath,
+    RuntimeDllPath = runtimeDllPath,
     LogPath = DemoPaths.LogPath,
     Dlss = options,
     EnableNr = enableNr,

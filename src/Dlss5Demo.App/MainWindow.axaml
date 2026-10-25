@@ -86,6 +86,22 @@
                           ToolTip.Tip="关闭后跳过 NR 及其运动矢量和历史累积，仍可使用 RTX Video 超分与独立补帧。"/>
                 <StackPanel x:Name="NrSettings" Spacing="12">
                 <StackPanel Spacing="4">
+                  <TextBlock Classes="fieldLabel" Text="NR 版本"/>
+                  <Grid ColumnDefinitions="*,Auto" ColumnSpacing="8">
+                    <ComboBox x:Name="NrRuntimeBox" HorizontalAlignment="Stretch" MinWidth="0"
+                              AutomationProperties.AutomationId="NrRuntime" AutomationProperties.Name="NR 版本">
+                      <ComboBox.ItemTemplate>
+                        <DataTemplate x:DataType="core:NrRuntimeInfo">
+                          <TextBlock Text="{CompiledBinding DisplayName}" MaxWidth="260" TextWrapping="Wrap" ToolTip.Tip="{CompiledBinding DllPath}"/>
+                        </DataTemplate>
+                      </ComboBox.ItemTemplate>
+                    </ComboBox>
+                    <Button Grid.Column="1" Content="刷新" Click="RefreshNrRuntimes_Click"
+                            AutomationProperties.AutomationId="RefreshNrRuntimes" AutomationProperties.Name="刷新 NR 版本列表"/>
+                  </Grid>
+                  <TextBlock x:Name="NrRuntimeHint" Classes="hint" Text="将 DLL 放入 runtime 下独立的版本文件夹，点击刷新即可选择。请选择匹配显卡的版本。"/>
+                </StackPanel>
+                <StackPanel Spacing="4">
                   <TextBlock Classes="fieldLabel" Text="风格"/>
                   <ComboBox x:Name="StyleBox" SelectedIndex="0">
                     <ComboBoxItem Content="Default · 默认"/>

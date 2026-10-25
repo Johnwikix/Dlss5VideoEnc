@@ -16,9 +16,11 @@ runtime/*.exe
 runtime/*.txt
 runtime/*.dll
 runtime/*/*.dll
+runtime/**/*.dll
 runtime/*.log
 runtime/*.pdb
 mods/*.dll
+mods/**/*.dll
 
 # Local SDK checkout (headers/libs are downloaded separately for native builds)
 third_party/

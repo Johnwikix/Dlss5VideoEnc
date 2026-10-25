@@ -167,13 +167,28 @@ internal sealed unsafe partial class CudaVideoContext : IDisposable
         Launch(_rifePrepare, width, height, args);
     }
 
-    internal void PackRife(nint input, int inputWidth, int inputHeight, CudaVideoFrame output)
+    internal void SetRifeAmount(nint input, uint plane, float amount)
+    {
+        using var scope = Enter();
+        Check(cuMemsetD32Async(checked((ulong)input + plane * 24UL), BitConverter.SingleToUInt32Bits(amount), plane, _stream));
+        Check(cuStreamSynchronize(_stream));
+    }
+
+    internal void PackRife(nint input, int inputWidth, int inputHeight, CudaVideoFrame output, bool rgba = false)
     {
         using var scope = Enter();
         nint dst = output.Data;
-        int dp = output.Pitch / 4, w = output.Width, h = output.Height;
-        void** args = stackalloc void*[7] { &input, &inputWidth, &inputHeight, &dst, &dp, &w, &h };
+        int dp = output.Pitch / 4, w = output.Width, h = output.Height, rgbaOrder = rgba ? 1 : 0;
+        void** args = stackalloc void*[8] { &input, &inputWidth, &inputHeight, &dst, &dp, &w, &h, &rgbaOrder };
         Launch(_rifePack, w, h, args);
+    }
+
+    internal void Download(CudaVideoFrame input, Span<byte> pixels)
+    {
+        if (input.Pitch != input.Width * 4 || pixels.Length != checked(input.Width * input.Height * 4))
+            throw new ArgumentException("CUDA 回读缓冲尺寸不符。");
+        using var scope = Enter();
+        fixed (byte* cpu = pixels) Check(cuMemcpyDtoH(cpu, (ulong)input.Data, (nuint)pixels.Length));
     }
 
     internal void Preview(nint input, nint uv, int pitch, int uvPitch, int width, int height, CudaVideoFrame output,
@@ -226,6 +241,7 @@ internal sealed unsafe partial class CudaVideoContext : IDisposable
                 if (_uploadHost != 0) Release(cuMemFreeHost(_uploadHost));
                 if (_comparison != 0) Release(cuMemFree(_comparison));
                 if (_comparisonHost != 0) Release(cuMemFreeHost(_comparisonHost));
+                if (_temporalModule != 0) Release(cuModuleUnload(_temporalModule));
                 if (_module != 0) Release(cuModuleUnload(_module));
                 if (_stream != 0) Release(cuStreamDestroy(_stream));
             }

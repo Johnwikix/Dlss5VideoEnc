@@ -14,6 +14,7 @@ internal static class Autorun
         var enableNr = true;
         var enableInterpolation = false;
         var gpuFrames = true;
+        var gpuTemporal = true;
         var interpolationMultiplier = 2;
         var interpolationBackend = FrameInterpolationBackend.NvidiaOpticalFlow;
         var rifeModel = RifeModel.Lite;
@@ -21,6 +22,7 @@ internal static class Autorun
         var decodeMode = VideoDecodeMode.Auto;
         var decodeDevice = 0;
         var hdrMode = "auto";
+        string? nrRuntime = null;
         for (var index = 3; index < args.Length; index++)
         {
             if (args[index] == "--frames" && index + 1 < args.Length)
@@ -29,6 +31,8 @@ internal static class Autorun
                 twoPass = true;
             else if (args[index] == "--nr" && index + 1 < args.Length)
                 enableNr = args[++index] != "0";
+            else if (args[index] == "--nr-runtime" && index + 1 < args.Length)
+                nrRuntime = args[++index];
             else if (args[index] == "--sr" && index + 1 < args.Length)
                 scale = RtxVideoSuperResolutionHost.NormalizeScale(int.Parse(args[++index]));
             else if (args[index] == "--interpolation-backend" && index + 1 < args.Length)
@@ -37,6 +41,8 @@ internal static class Autorun
                 rifeModel = Enum.Parse<RifeModel>(args[++index], true);
             else if (args[index] == "--gpu-frames" && index + 1 < args.Length)
                 gpuFrames = args[++index] != "0";
+            else if (args[index] == "--gpu-temporal" && index + 1 < args.Length)
+                gpuTemporal = args[++index] != "0";
             else if (args[index] == "--interpolate" && index + 1 < args.Length)
                 enableInterpolation = args[++index] != "0";
             else if (args[index] == "--interpolation-multiplier" && index + 1 < args.Length)
@@ -71,7 +77,7 @@ internal static class Autorun
             {
                 FfmpegPath = DemoPaths.FfmpegPath,
                 HostDllPath = DemoPaths.HostDllPath,
-                RuntimeDllPath = DemoPaths.RuntimeDllPath,
+                RuntimeDllPath = enableNr ? NrRuntimeCatalog.ResolveArgument(nrRuntime) : "",
                 LogPath = DemoPaths.LogPath,
                 MaxFrames = maxFrames,
                 EnableNr = enableNr,
@@ -79,6 +85,7 @@ internal static class Autorun
                 DecodeDeviceIndex = decodeDevice,
                 EnableInterpolation = enableInterpolation,
                 UseGpuFramePipeline = gpuFrames,
+                Dlss = new DlssNrOptions { UseGpuTemporalProcessing = gpuTemporal },
                 InterpolationMultiplier = interpolationMultiplier,
                 InterpolationBackend = interpolationBackend,
                 InterpolationModel = rifeModel,

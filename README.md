@@ -51,7 +51,9 @@ dotnet run --project src/Dlss5Demo.Cli -c Release -- input.mp4 output.mp4 --nr 0
 
 默认开启显存帧管线：SDR、8 位 YUV420/NV12、NVDEC、NVENC，且没有 NR/SR/CPU 滤镜时，像素沿 NVDEC → CUDA RIFE → NVENC 传递，预览仅回读缩小画面。NR/RTX Video 组合保持原处理顺序和历史累积，在主机输出后只上传一次，再由 RIFE → NVENC 全程处理生成帧。CPU 滤镜、软件编码、软件双遍等条件沿用兼容路径。
 
-单一任务门控制完整资源生命周期；保留一套同模型、同尺寸、同像素策略的 RIFE 会话，连续任务复用初始化，不共享视频时序历史。换模式、模型、尺寸、失败、取消或关闭应用时释放。嵌入 Core 的程序应在关闭时调用 `DlssVideoPipeline.ReleaseGpuResources()`。
+单一任务门控制完整资源生命周期；保留一套同模型、同尺寸的 RIFE 会话，连续任务复用初始化，不共享视频时序历史。切换 GPU 直编与带输出滤镜的兼容路径也可复用网络。换模型、推理尺寸、关闭 RIFE、失败、取消或关闭应用时释放。嵌入 Core 的程序应在关闭时调用 `DlssVideoPipeline.ReleaseGpuResources()`。
+
+RIFE 每对输入帧只准备一次图像张量，4×/6× 补帧仅更新各生成帧的时间参数。兼容路径复用上传后的帧对，省去重复上传与两个像素转换 ONNX 会话；静帧、切镜和尾帧复用不可变 NV12 数据。输出分辨率与处理结果相同时省略多余缩放，保留 GPU 直编。真实缩放仍在补帧后执行，保留 Lanczos 与既有处理顺序。[组合性能与验证记录](docs/PERFORMANCE_NR_VERSIONS_2026-10-25.md)。
 
 源帧计数与输出帧计数不同，4× 输出 fps 应除以 4 才是源帧处理速度。实测、画质差异、原始证据位置与限制见 [2026-10-18 GPU 管线报告](docs/INTERPOLATION_GPU_2026-10-18.md)，模型来源和 SHA256 见 [RIFE 模型说明](docs/RIFE_MODELS.md)。
 
@@ -113,6 +115,13 @@ NR 会在放大后的分辨率处理，用于优先对照视觉质量；界面�
 及光流历史。历史衰减按源视频帧率计算，预览与编码使用同一处理结果。
 HDR 使用浮点修正量，保留原有 RGBA16F 输出路径。
 
+SDR 开启光流时，默认由 CUDA 执行灰度转换、运动矢量展开、置信度过滤和修正量累积，
+光流估计由 NVOFA 专用引擎执行。NR 与 CUDA 共享 D3D12 显存缓冲，不回读运动场或历史平面。
+当前兼容解码/SR/编码接口仍传递主机帧，GPU 阶段只回读 4 字节切镜标志和最终输出帧。
+HDR、关闭光流、旧宿主或显存互操作不可用时沿用原路径；Core API 可用
+`DlssNrOptions.UseGpuTemporalProcessing = false` 做同配置对照。详见 [实测与边界](docs/GPU_TEMPORAL_2026-10-25.md)。
+CLI/autorun 对应 `--gpu-temporal 0`，默认启用。
+
 光流接口不可用或不支持输入尺寸时自动使用静态区域累积。可在日志中确认实际路径。
 此处理增加转码耗时；它能降低 NR 修正的闪烁，但错误光流和无真实深度的场景仍可能
 存在残余伪影。处理思路参考 [Magpie 的时序稳定实现](https://github.com/SAOG0721/Magpie/blob/experimental/src/Magpie.Core/DLSSNRTemporal.cpp)。
@@ -164,9 +173,11 @@ SR 使用独立工作进程，通过共享内存直接读写帧，控制管道�
 资源在生成帧缓存后释放。光流使用独立 CUDA 流与锁页上传缓冲，避免全上下文同步。
 HDR 界面预览仅转换显示需要的像素，并复用池化缓冲。
 
-NR 使用宿主已有的双帧提交队列，上传下一帧与上一帧 GPU 工作重叠；所有 NGX 调用
+兼容路径的 NR 使用宿主已有的双帧提交队列，上传下一帧与上一帧 GPU 工作重叠；所有 NGX 调用
 由同一个阶段线程按序执行。旧宿主没有队列接口时退回同步调用。Release 程序关闭初始
 分层编译，使逐像素热路径从第一次调用起使用优化机器码。
+GPU 光流/历史路径由一个阶段按序维护 NVOFA、NR 和修正量历史，跨 API 交接时只等待相关流/栅栏，
+再交还共享缓冲。其他帧的解码、SR 和编码仍由有界管线重叠处理。
 
 VSR 按帧同步处理，复用一组上传缓冲、纹理和命令分配器。此前的多帧队列在本机
 对照中未提高整条管线吞吐，现已移除；UI、CLI 和 Core 均没有 VSR 异步队列选项。
@@ -203,7 +214,19 @@ dotnet run --project tests/Dlss5Demo.Tests -c Release -- --nr-switch "小素材.
 
 ## DLSS NR 运行库选择
 
-DLSS NR 运行库必须与 NVIDIA RTX 显卡代际匹配。项目默认读取 `runtime\nvngx_dlssnr.dll`；也支持把对应 DLL 放到应用目录的 `mods\nvngx_dlssnr.dll`，这样无需覆盖默认文件。
+界面的「NR 版本」从实际安装目录递归发现 `nvngx_dlssnr*.dll`，显示 DLL 文件版本及目录标签，版本列表没有写死。明确选择的 DLL 用于下一次转码，并按相对路径保存；刷新、重启、移动整个发布目录不会因选项排序变化而选错版本。文件缺失时提示重新选择，不静默替换。
+
+用户自行添加版本：把 DLL 放入 `runtime\任意版本名称\nvngx_dlssnr.dll`，在界面点击「刷新」。可以多层嵌套，也支持 `nvngx_dlssnr_自定义名称.dll`。用文件夹名标注适用显卡和来源；版本号相同的原版/社区版可区分。发布脚本自动携带 runtime 中发现的全部 NR DLL。
+
+导入版本包（保留原默认 DLL）：
+
+```powershell
+.\tools\import-nr-runtimes.ps1 -ArchivePath 'H:\download\DLSSNR-DLL-Options.zip'
+# CLI 与应用 --autorun 都接受绝对路径、相对路径或列表中的 runtime/... 路径。
+dotnet run --project src/Dlss5Demo.Cli -c Release -- input.mp4 output.mp4 --nr-runtime 'runtime/nr/NVIDIA-Original-310.9.16-RTX50-Series-Only/nvngx_dlssnr.dll'
+```
+
+DLSS NR 运行库必须与 NVIDIA RTX 显卡代际匹配。「自动」保留原有策略：`DLSS5_NR_RUNTIME_DLL` → `mods` 覆盖 → `DLSS5_GPU_SERIES` → `runtime\nvngx_dlssnr.dll`。明确的界面/CLI 选择优先于自动策略；关闭 NR 时不解析或加载所选 DLL。
 
 需要并存多个版本时，可使用以下布局，并设置 `DLSS5_GPU_SERIES` 为 `30`、`40` 或 `50`：
 
@@ -213,7 +236,7 @@ runtime\40\nvngx_dlssnr.dll
 runtime\50\nvngx_dlssnr.dll
 ```
 
-也可以直接设置 `DLSS5_NR_RUNTIME_DLL` 指向匹配的 DLL。RTX 30 系运行库属于社区适配，兼容性取决于具体显卡和驱动。AMD/Intel 的 OpenDLSS-NR 后端当前未接入；本项目的 AMD/Intel 支持仅限 FFmpeg AMF/QSV 编码，DLSS NR 与 RTX Video VSR 仍要求 NVIDIA。
+也可以直接设置 `DLSS5_NR_RUNTIME_DLL` 指向匹配的 DLL。本次提供的 310.9.16 包含 RTX 50 原版及 RTX 20/30/40 社区适配版；本机只验证了 RTX 50 原版，社区版兼容性取决于具体显卡和驱动。AMD/Intel 的 OpenDLSS-NR 后端当前未接入；本项目的 AMD/Intel 支持仅限 FFmpeg AMF/QSV 编码，DLSS NR 与 RTX Video VSR 仍要求 NVIDIA。
 
 ## 发布打包
 

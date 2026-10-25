@@ -30,7 +30,7 @@ internal sealed class RifeFrameStream(Stream destination, RifeGpuSession model, 
             }
         }
         destination.Write(frame);
-        model.Second.CopyTo(model.First);
+        model.AdvanceFrame();
     }
     private bool IsSceneCut()
     {

@@ -1,10 +1,10 @@
 @echo off
-rem Builds dlssnr_host_v2.dll from the upstream DLSS5Tool host source.
+rem Builds the maintained DLSS5Tool-derived host, including CUDA frame interop.
 rem Source: https://github.com/banbanzhige/DLSS5Tool (MIT) - native/host_v2
 setlocal EnableExtensions EnableDelayedExpansion
 
 set "ROOT=%~dp0.."
-set "SRC=%ROOT%\_ref\DLSS5Tool\native\host_v2\dlssnr_host_v2.cpp"
+set "SRC=%ROOT%\native\nr_host\dlssnr_host_v2.cpp"
 set "OUTPUT=%ROOT%\runtime"
 set "INTERMEDIATE=%ROOT%\build\native\host_v2"
 set "NGX_INCLUDE=%ROOT%\third_party\NVIDIA-DLSS\include"

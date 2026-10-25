@@ -15,6 +15,7 @@ internal sealed unsafe class NvidiaOpticalFlow : IDisposable
     private int _gridSize = 4, _gridWidth, _gridHeight;
     private readonly bool _hdr;
     private readonly bool _confidence;
+    private readonly bool _deviceOnly;
     private IntPtr _grayHost;
     private short[] _packed = [];
     private byte[] _cost = [];
@@ -87,9 +88,9 @@ internal sealed unsafe class NvidiaOpticalFlow : IDisposable
         public nuint DestinationPitch, Width, Height;
     }
 
-    internal static NvidiaOpticalFlow? TryCreate(int width, int height, bool hdr, int preferredGrid = 1, bool confidence = true)
+    internal static NvidiaOpticalFlow? TryCreate(int width, int height, bool hdr, int preferredGrid = 1, bool confidence = true, bool deviceOnly = false)
     {
-        var flow = new NvidiaOpticalFlow(width, height, hdr, preferredGrid, confidence);
+        var flow = new NvidiaOpticalFlow(width, height, hdr, preferredGrid, confidence, deviceOnly);
         try
         {
             flow.Initialize();
@@ -102,20 +103,21 @@ internal sealed unsafe class NvidiaOpticalFlow : IDisposable
             if (error is InvalidOperationException && (preferredGrid != 4 || confidence))
             {
                 PipelineLog.Info($"精细光流不可用，回退 grid=4: {error.Message}");
-                return TryCreate(width, height, hdr, 4, false);
+                return TryCreate(width, height, hdr, 4, false, deviceOnly);
             }
             PipelineLog.Info($"NVIDIA 光流不可用，使用静态区域时序累积: {error.Message}");
             return null;
         }
     }
 
-    private NvidiaOpticalFlow(int width, int height, bool hdr, int preferredGrid, bool confidence)
+    private NvidiaOpticalFlow(int width, int height, bool hdr, int preferredGrid, bool confidence, bool deviceOnly)
     {
         _width = width; _height = height; _hdr = hdr; _preferredGrid = preferredGrid; _confidence = confidence;
+        _deviceOnly = deviceOnly;
         _alignedWidth = checked((width + 15) / 16 * 16);
         _alignedHeight = checked((height + 15) / 16 * 16);
-        Motion = new float[checked(width * height * 2)];
-        RejectedMotion = new bool[checked(width * height)];
+        Motion = deviceOnly ? [] : new float[checked(width * height * 2)];
+        RejectedMotion = deviceOnly ? [] : new bool[checked(width * height)];
         _motionOutput = Motion;
         _rejectedOutput = RejectedMotion;
         _sampleX0 = new int[width]; _sampleX1 = new int[width]; _sampleAx = new float[width];
@@ -134,6 +136,7 @@ internal sealed unsafe class NvidiaOpticalFlow : IDisposable
             if (grids[index] is 1 or 2 or 4 && grids[index] >= _preferredGrid)
                 _gridSize = Math.Min(_gridSize, (int)grids[index]);
         _gridWidth = _alignedWidth / _gridSize; _gridHeight = _alignedHeight / _gridSize;
+        if (_deviceOnly) return;
         _packed = new short[checked(_gridWidth * _gridHeight * 2)];
         _cost = _confidence ? new byte[checked(_gridWidth * _gridHeight)] : [];
         _costMax = _confidence && _gridSize > 1 ? new byte[_cost.Length] : [];
@@ -182,10 +185,13 @@ internal sealed unsafe class NvidiaOpticalFlow : IDisposable
             Check(((delegate* unmanaged[Stdcall]<IntPtr, IntPtr*, int>)_api[0])(_context, &handle), "nvCreateOpticalFlowCuda");
             _handle = handle;
             ConfigureGrid();
-            IntPtr grayHost;
-            Check(((delegate* unmanaged[Stdcall]<IntPtr*, nuint, uint, int>)Cuda("cuMemHostAlloc"))(
-                &grayHost, checked((nuint)(_alignedWidth * _alignedHeight)), 0), "allocate pinned optical flow input");
-            _grayHost = grayHost;
+            if (!_deviceOnly)
+            {
+                IntPtr grayHost;
+                Check(((delegate* unmanaged[Stdcall]<IntPtr*, nuint, uint, int>)Cuda("cuMemHostAlloc"))(
+                    &grayHost, checked((nuint)(_alignedWidth * _alignedHeight)), 0), "allocate pinned optical flow input");
+                _grayHost = grayHost;
+            }
             IntPtr inputStream, outputStream;
             var createStream = (delegate* unmanaged[Stdcall]<IntPtr*, uint, int>)Cuda("cuStreamCreate");
             Check(createStream(&inputStream, 1), "create nonblocking optical flow input stream");
@@ -227,6 +233,7 @@ internal sealed unsafe class NvidiaOpticalFlow : IDisposable
     internal void Calculate(byte* rgba, bool reset, float[]? destination = null, bool[]? rejected = null)
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
+        if (_deviceOnly) throw new InvalidOperationException("Device optical flow requires CalculateDevice.");
         _motionOutput = destination ?? Motion;
         _rejectedOutput = rejected ?? RejectedMotion;
         if (_motionOutput.Length != Motion.Length) throw new ArgumentException("Invalid motion buffer.", nameof(destination));
@@ -327,6 +334,33 @@ internal sealed unsafe class NvidiaOpticalFlow : IDisposable
         _resetHints = true;
         Array.Clear(_motionOutput);
         Array.Clear(_rejectedOutput);
+    }
+
+    internal readonly record struct DeviceFlow(nint Packed, int Pitch, nint Cost, int CostPitch,
+        int GridWidth, int GridHeight, int Grid, bool Confidence, bool Clear);
+
+    internal DeviceFlow CalculateDevice(CudaVideoContext cuda, nint rgba, int pitch, bool reset)
+    {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+        if (!_deviceOnly || _hdr || cuda.DeviceId != 0) throw new InvalidOperationException("Unsupported device optical flow input.");
+        cuda.TemporalGray(rgba, pitch, (nint)_pointers[_nextInput], (int)_pitches[_nextInput], _width, _height, _alignedWidth, _alignedHeight);
+        bool clear = !_hasPrevious || reset;
+        Check(_push(_context), "cuCtxPushCurrent");
+        try
+        {
+            if (!clear)
+            {
+                var input = new ExecuteInput { Input = _buffers[_nextInput], Reference = _buffers[_nextInput ^ 1], DisableTemporal = _resetHints ? 1 : 0 };
+                var output = new ExecuteOutput { Output = _buffers[2], Cost = _confidence ? _buffers[3] : IntPtr.Zero };
+                Check(((delegate* unmanaged[Stdcall]<IntPtr, ExecuteInput*, ExecuteOutput*, int>)_api[7])(_handle, &input, &output), "nvOFExecute device");
+                Check(_streamSynchronize(_outputStream), "finish device optical flow");
+                _resetHints = false;
+            }
+            else _resetHints = true;
+            _hasPrevious = true; _nextInput ^= 1;
+            return new((nint)_pointers[2], (int)_pitches[2], (nint)_pointers[3], (int)_pitches[3], _gridWidth, _gridHeight, _gridSize, _confidence, clear);
+        }
+        finally { Pop(); }
     }
 
     internal static byte ToGray(int weightedSum)

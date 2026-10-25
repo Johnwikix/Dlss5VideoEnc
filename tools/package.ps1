@@ -12,7 +12,7 @@ $ErrorActionPreference = 'Stop'
 $repoRoot = Split-Path -Parent $PSScriptRoot
 $project = Join-Path $repoRoot 'src\Dlss5Demo.App\Dlss5Demo.App.csproj'
 $runtimeSource = Join-Path $repoRoot 'runtime'
-$nativeNames = @('dlssnr_host_v2.dll', 'nvngx_dlssnr.dll', 'vsr_host.dll', 'nvngx_vsr.dll', 'driver_hdr_host.dll')
+$nativeNames = @('dlssnr_host_v2.dll', 'vsr_host.dll', 'nvngx_vsr.dll', 'driver_hdr_host.dll')
 $gpuEncoder = Join-Path $runtimeSource 'vsr_encoder.dll'
 if (Test-Path -LiteralPath $gpuEncoder -PathType Leaf) { $nativeNames += 'vsr_encoder.dll' }
 
@@ -24,6 +24,8 @@ function Assert-File([string]$Path) {
 
 Assert-File $project
 foreach ($name in $nativeNames) { Assert-File (Join-Path $runtimeSource $name) }
+$nrVariants = @(Get-ChildItem -LiteralPath $runtimeSource -Filter 'nvngx_dlssnr*.dll' -File -Recurse)
+if ($nrVariants.Count -eq 0) { throw 'runtime 下至少需要一个 nvngx_dlssnr*.dll。' }
 $rifeNames = @('rife_v4.25_lite_v2.onnx', 'rife_v4.25_v2.onnx')
 $rifeHashes = @('610b5de57cdcfbcce9914c23e60a1cd357779a6f9582a1bcfcb035f8eb38509b', '65c57a5e4abb17ad67faf35054291ac53affab0506d509d2e66698f6ecd75584')
 for ($i = 0; $i -lt $rifeNames.Count; $i++) {
@@ -90,16 +92,16 @@ foreach ($name in $nativeNames) {
 }
 foreach ($name in $rifeNames) { Copy-Item -LiteralPath (Join-Path $runtimeSource $name) -Destination $runtimeDestination }
 Copy-Item -LiteralPath (Join-Path $repoRoot 'docs\licenses\RIFE-MIT-LICENSE.txt') -Destination $licenseDestination
-# 可选地携带按显卡代际放置的运行库。默认 DLL 仍放在 runtime 根目录，
-# 用户可通过 DLSS5_GPU_SERIES 在 30/40/50 子目录之间选择。
-foreach ($series in @('30', '40', '50')) {
-    $profileSource = Join-Path $runtimeSource $series
-    $profileDll = Join-Path $profileSource 'nvngx_dlssnr.dll'
-    if (Test-Path -LiteralPath $profileDll -PathType Leaf) {
-        $profileDestination = Join-Path $runtimeDestination $series
-        New-Item -ItemType Directory -Path $profileDestination -Force | Out-Null
-        Copy-Item -LiteralPath $profileDll -Destination $profileDestination
-    }
+# Mirror every installed NR variant; no version/GPU-series list is compiled into the package.
+foreach ($dll in $nrVariants) {
+    $relative = [IO.Path]::GetRelativePath($runtimeSource, $dll.FullName)
+    $destination = Join-Path $runtimeDestination $relative
+    New-Item -ItemType Directory -Path (Split-Path -Parent $destination) -Force | Out-Null
+    Copy-Item -LiteralPath $dll.FullName -Destination $destination -Force
+}
+$nrReadme = Join-Path $runtimeSource 'NR_OPTIONS_README.txt'
+if (Test-Path -LiteralPath $nrReadme) {
+    Copy-Item -LiteralPath $nrReadme -Destination $runtimeDestination
 }
 # Shared FFmpeg builds need their matching DLLs beside ffmpeg.exe/ffprobe.exe.
 foreach ($pattern in @('avcodec-*.dll', 'avdevice-*.dll', 'avfilter-*.dll', 'avformat-*.dll', 'avutil-*.dll', 'swresample-*.dll', 'swscale-*.dll')) {
@@ -112,6 +114,7 @@ foreach ($name in @('ffmpeg.exe', 'ffprobe.exe')) {
 }
 Copy-Item -LiteralPath $nvidiaLicense -Destination $licenseDestination
 Copy-Item -LiteralPath $opticalFlowLicense -Destination $licenseDestination
+Copy-Item -LiteralPath (Join-Path $repoRoot 'native\nr_host\LICENSE') -Destination (Join-Path $licenseDestination 'DLSS5Tool-MIT-LICENSE.txt')
 foreach ($ffmpegSource in @((Join-Path $FfmpegDirectory 'SOURCE.txt'), (Join-Path (Split-Path -Parent $FfmpegDirectory) 'SOURCE.txt'))) {
     if (Test-Path -LiteralPath $ffmpegSource -PathType Leaf) {
         Copy-Item -LiteralPath $ffmpegSource -Destination (Join-Path $packageDirectory 'FFmpeg_SOURCE.txt')
@@ -142,10 +145,12 @@ Dlss5VideoEnc
 RTX Video 2x/4x 需要兼容的 NVIDIA GPU 与驱动。
 解码默认优先 NVDEC，首帧初始化失败时自动软件回退；也可选择强制 NVDEC 或 CPU。
 NVDEC 使用驱动中的 CUDA/解码组件，不额外打包 CUDA Toolkit；SDR RIFE + NVENC 可全程使用 GPU 像素，NR/RTX Video 组合仍有主机帧接口。
+SDR NR 的光流前后处理和历史累积优先留在显存，使用 NVOFA 专用光流引擎并与 NR 共享 GPU 缓冲；不支持时自动使用兼容路径。
 补帧支持 NVIDIA Vulkan 光流和 RIFE 4.25 Lite/4.25，倍率 2x/4x/6x。RIFE 仅支持 SDR，需要 Windows 11 24H2+ 与 Windows ML NVIDIA GPU 提供程序；首次使用可能下载提供程序。
 补帧在 NR/RTX Video 之后运行，HDR 颜色使用 16-bit 路径；进度与预览计数源帧。
 SDR 强制 HDR10 使用驱动 RTX Video HDR 在 Vulkan 补帧后映射为 BT.2020/PQ 并进行 10-bit 编码；RIFE 保持 SDR，跳过该映射。HDR 源保留原路径。
-DLSS NR 运行库必须匹配 RTX 代际；可设置 DLSS5_GPU_SERIES=30、40 或 50，或使用 mods\nvngx_dlssnr.dll 覆盖。
+在「NR 版本」中选择发布包包含的 DLL。后续可将 nvngx_dlssnr.dll 放入 runtime\任意版本名称\，点击刷新即可选择，无需更新程序。目录名可标注适用显卡；DLL 必须匹配 RTX 代际。
+「自动」保留 DLSS5_NR_RUNTIME_DLL、mods\nvngx_dlssnr.dll、DLSS5_GPU_SERIES 与默认 DLL 的原有优先级。明确选择的版本优先于自动策略。
 AMD/Intel 的 OpenDLSS-NR 后端当前未接入，AMD/Intel 仅用于 FFmpeg AMF/QSV 编码。
 NVIDIA 组件仍遵循 licenses\NVIDIA_RTX_Video_SDK_License.pdf 中的许可。
 本应用使用 NVIDIA RTX Video SDK。第三方文件不受本项目源码许可覆盖。

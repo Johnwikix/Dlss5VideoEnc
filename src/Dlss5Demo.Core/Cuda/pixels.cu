@@ -149,11 +149,12 @@ __device__ unsigned rife_quant(float value) {
     float low=floorf(scaled);
     return (unsigned)low+(scaled-low>=__uint_as_float(0x3effffffu));
 }
-extern "C" __global__ void rife_pack(const float* src,int sw,int sh,unsigned* dst,int dp,int w,int h) {
+extern "C" __global__ void rife_pack(const float* src,int sw,int sh,unsigned* dst,int dp,int w,int h,int rgba) {
     int x=blockIdx.x*blockDim.x+threadIdx.x,y=blockIdx.y*blockDim.y+threadIdx.y;
     if(x>=w || y>=h) return;
     int i=y*sw+x,plane=sw*sh;
-    dst[y*dp+x]=0xff000000u|(rife_quant(src[i])<<16)|(rife_quant(src[i+plane])<<8)|rife_quant(src[i+plane*2]);
+    unsigned r=rife_quant(src[i]),g=rife_quant(src[i+plane]),b=rife_quant(src[i+plane*2]);
+    dst[y*dp+x]=rgba ? 0xff000000u|(b<<16)|(g<<8)|r : 0xff000000u|(r<<16)|(g<<8)|b;
 }
 
 // CPU NR/VSR 的 RGBA 输出只上传一次，整数交换通道后进入显存补帧/编码。

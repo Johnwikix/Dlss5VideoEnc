@@ -21,7 +21,7 @@ def check(code):
     if code:
         raise RuntimeError(f'NVRTC error {code}')
 
-for source in (assets / 'pixels.cu',):
+for source in (assets / 'pixels.cu', assets / 'temporal.cu'):
     program = c.c_void_p()
     check(nvrtc.nvrtcCreateProgram(c.byref(program), source.read_bytes(), source.name.encode(), 0, None, None))
     try:

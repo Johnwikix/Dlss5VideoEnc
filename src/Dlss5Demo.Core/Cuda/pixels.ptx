@@ -1246,12 +1246,13 @@ $L__BB6_2:
 	.param .u64 rife_pack_param_3,
 	.param .u32 rife_pack_param_4,
 	.param .u32 rife_pack_param_5,
-	.param .u32 rife_pack_param_6
+	.param .u32 rife_pack_param_6,
+	.param .u32 rife_pack_param_7
 )
 {
-	.reg .pred 	%p<10>;
+	.reg .pred 	%p<11>;
 	.reg .f32 	%f<28>;
-	.reg .b32 	%r<42>;
+	.reg .b32 	%r<47>;
 	.reg .b64 	%rd<13>;
 
 
@@ -1260,19 +1261,20 @@ $L__BB6_2:
 	ld.param.u32 	%r12, [rife_pack_param_2];
 	ld.param.u64 	%rd3, [rife_pack_param_3];
 	ld.param.u32 	%r13, [rife_pack_param_4];
-	ld.param.u32 	%r14, [rife_pack_param_5];
-	ld.param.u32 	%r15, [rife_pack_param_6];
+	ld.param.u32 	%r15, [rife_pack_param_5];
+	ld.param.u32 	%r16, [rife_pack_param_6];
+	ld.param.u32 	%r14, [rife_pack_param_7];
 	cvta.to.global.u64 	%rd1, %rd4;
-	mov.u32 	%r16, %ntid.x;
-	mov.u32 	%r17, %ctaid.x;
-	mov.u32 	%r18, %tid.x;
-	mad.lo.s32 	%r1, %r17, %r16, %r18;
-	mov.u32 	%r19, %ntid.y;
-	mov.u32 	%r20, %ctaid.y;
-	mov.u32 	%r21, %tid.y;
-	mad.lo.s32 	%r2, %r20, %r19, %r21;
-	setp.ge.s32 	%p1, %r1, %r14;
-	setp.ge.s32 	%p2, %r2, %r15;
+	mov.u32 	%r17, %ntid.x;
+	mov.u32 	%r18, %ctaid.x;
+	mov.u32 	%r19, %tid.x;
+	mad.lo.s32 	%r1, %r18, %r17, %r19;
+	mov.u32 	%r20, %ntid.y;
+	mov.u32 	%r21, %ctaid.y;
+	mov.u32 	%r22, %tid.y;
+	mad.lo.s32 	%r2, %r21, %r20, %r22;
+	setp.ge.s32 	%p1, %r1, %r15;
+	setp.ge.s32 	%p2, %r2, %r16;
 	or.pred  	%p3, %p1, %p2;
 	@%p3 bra 	$L__BB7_8;
 
@@ -1283,7 +1285,8 @@ $L__BB6_2:
 	ld.global.f32 	%f1, [%rd2];
 	abs.f32 	%f4, %f1;
 	setp.geu.f32 	%p4, %f4, 0f7F800000;
-	mov.u32 	%r39, -16777216;
+	mov.u32 	%r45, 0;
+	mov.u32 	%r44, %r45;
 	@%p4 bra 	$L__BB7_3;
 
 	mov.f32 	%f5, 0f437F0000;
@@ -1292,13 +1295,11 @@ $L__BB6_2:
 	max.f32 	%f8, %f7, %f6;
 	min.f32 	%f9, %f5, %f8;
 	cvt.rmi.f32.f32 	%f10, %f9;
-	cvt.rzi.u32.f32 	%r23, %f10;
+	cvt.rzi.u32.f32 	%r24, %f10;
 	sub.rn.f32 	%f11, %f9, %f10;
 	setp.ge.f32 	%p5, %f11, 0f3EFFFFFF;
-	selp.u32 	%r24, 1, 0, %p5;
-	add.s32 	%r25, %r23, %r24;
-	shl.b32 	%r26, %r25, 16;
-	or.b32  	%r39, %r26, -16777216;
+	selp.u32 	%r25, 1, 0, %p5;
+	add.s32 	%r44, %r24, %r25;
 
 $L__BB7_3:
 	mul.wide.s32 	%rd6, %r4, 4;
@@ -1306,8 +1307,6 @@ $L__BB7_3:
 	ld.global.f32 	%f2, [%rd7];
 	abs.f32 	%f12, %f2;
 	setp.geu.f32 	%p6, %f12, 0f7F800000;
-	mov.u32 	%r41, 0;
-	mov.u32 	%r40, %r41;
 	@%p6 bra 	$L__BB7_5;
 
 	mov.f32 	%f13, 0f437F0000;
@@ -1316,21 +1315,22 @@ $L__BB7_3:
 	max.f32 	%f16, %f15, %f14;
 	min.f32 	%f17, %f13, %f16;
 	cvt.rmi.f32.f32 	%f18, %f17;
-	cvt.rzi.u32.f32 	%r28, %f18;
+	cvt.rzi.u32.f32 	%r27, %f18;
 	sub.rn.f32 	%f19, %f17, %f18;
 	setp.ge.f32 	%p7, %f19, 0f3EFFFFFF;
-	selp.u32 	%r29, 1, 0, %p7;
-	add.s32 	%r30, %r28, %r29;
-	shl.b32 	%r40, %r30, 8;
+	selp.u32 	%r28, 1, 0, %p7;
+	add.s32 	%r29, %r27, %r28;
+	shl.b32 	%r45, %r29, 8;
 
 $L__BB7_5:
-	add.s32 	%r32, %r3, %r4;
-	add.s32 	%r33, %r32, %r4;
-	mul.wide.s32 	%rd8, %r33, 4;
+	add.s32 	%r31, %r3, %r4;
+	add.s32 	%r32, %r31, %r4;
+	mul.wide.s32 	%rd8, %r32, 4;
 	add.s64 	%rd9, %rd1, %rd8;
 	ld.global.f32 	%f3, [%rd9];
 	abs.f32 	%f20, %f3;
 	setp.geu.f32 	%p8, %f20, 0f7F800000;
+	mov.u32 	%r46, 0;
 	@%p8 bra 	$L__BB7_7;
 
 	mov.f32 	%f21, 0f437F0000;
@@ -1339,20 +1339,27 @@ $L__BB7_5:
 	max.f32 	%f24, %f23, %f22;
 	min.f32 	%f25, %f21, %f24;
 	cvt.rmi.f32.f32 	%f26, %f25;
-	cvt.rzi.u32.f32 	%r34, %f26;
+	cvt.rzi.u32.f32 	%r33, %f26;
 	sub.rn.f32 	%f27, %f25, %f26;
 	setp.ge.f32 	%p9, %f27, 0f3EFFFFFF;
-	selp.u32 	%r35, 1, 0, %p9;
-	add.s32 	%r41, %r34, %r35;
+	selp.u32 	%r34, 1, 0, %p9;
+	add.s32 	%r46, %r33, %r34;
 
 $L__BB7_7:
-	or.b32  	%r36, %r39, %r40;
-	or.b32  	%r37, %r36, %r41;
-	mad.lo.s32 	%r38, %r2, %r13, %r1;
+	or.b32  	%r35, %r45, %r44;
+	shl.b32 	%r36, %r46, 16;
+	or.b32  	%r37, %r35, %r36;
+	shl.b32 	%r38, %r44, 16;
+	or.b32  	%r39, %r45, %r38;
+	or.b32  	%r40, %r39, %r46;
+	setp.eq.s32 	%p10, %r14, 0;
+	selp.b32 	%r41, %r40, %r37, %p10;
+	or.b32  	%r42, %r41, -16777216;
+	mad.lo.s32 	%r43, %r2, %r13, %r1;
 	cvta.to.global.u64 	%rd10, %rd3;
-	mul.wide.s32 	%rd11, %r38, 4;
+	mul.wide.s32 	%rd11, %r43, 4;
 	add.s64 	%rd12, %rd10, %rd11;
-	st.global.u32 	[%rd12], %r37;
+	st.global.u32 	[%rd12], %r42;
 
 $L__BB7_8:
 	ret;

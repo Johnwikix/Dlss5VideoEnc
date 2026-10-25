@@ -4,7 +4,7 @@ public static partial class DlssVideoPipeline
 {
     // PipelineGate 覆盖完整任务及释放；仅保留一套形状，避免并发共享绑定或换尺寸时显存叠加。
     private static RifeGpuSession? _rifeSession;
-    private static (string Path, long Bytes, long Stamp, int Width, int Height, bool GpuPixels)? _rifeSessionKey;
+    private static (string Path, long Bytes, long Stamp, int Width, int Height)? _rifeSessionKey;
 
     private static async Task<RifeGpuSession> AcquireRifeSessionAsync(TranscodeOptions options, VideoInfo video,
         int width, int height, CancellationToken ct)
@@ -12,10 +12,11 @@ public static partial class DlssVideoPipeline
         bool hdr = video.IsHdr;
         var artifact = RifeGpuSession.ValidateRequest(options, width, height, hdr);
         var file = new FileInfo(artifact.Path);
-        var key = (artifact.Path, file.Length, file.LastWriteTimeUtc.Ticks, width, height, CanEncodeRifeOnGpu(options));
+        var key = (artifact.Path, file.Length, file.LastWriteTimeUtc.Ticks, width, height);
         if (_rifeSessionKey == key && _rifeSession != null)
         {
             ct.ThrowIfCancellationRequested();
+            _rifeSession.ResetFrameState();
             PipelineLog.Info("RIFE GPU 已验证：复用已校验的同模型、同尺寸 GPU 会话。");
             return _rifeSession;
         }

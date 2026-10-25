@@ -35,6 +35,7 @@ internal static class RifeIntegration
             CudaPixelTests.Upload(model.Cuda, firstGpu.Frame, CudaPixelTests.Bgra(first));
             CudaPixelTests.Upload(model.Cuda, secondGpu.Frame, CudaPixelTests.Bgra(second));
             using var run = new RunOptions();
+            var expectedCuda = new List<byte[]>();
             foreach (float amount in new[] { .25f, .5f, .75f })
             {
                 input.AsSpan(6 * plane).Fill(amount);
@@ -53,6 +54,7 @@ internal static class RifeIntegration
                 }
                 model.RunCuda(firstGpu.Frame, secondGpu.Frame, outputGpu.Frame, amount, default);
                 byte[] gpu = CudaPixelTests.Bgra(CudaPixelTests.Download(model.Cuda, outputGpu.Frame));
+                expectedCuda.Add(gpu);
                 double cudaError = 0;
                 for (int y = 0; y < height; y++)
                 for (int x = 0; x < width; x++)
@@ -68,6 +70,14 @@ internal static class RifeIntegration
                 Require(psnr >= 40, $"RGBA/timestep/padding changed: {choice} {width}x{height} t={amount}, PSNR={psnr}, max={maxError}");
                 Console.WriteLine($"PASS RIFE GPU pixels vs original CPU graph: {choice} {width}x{height} t={amount}, PSNR={psnr:F2}, max={maxError}");
             }
+            model.PrepareCudaPair(firstGpu.Frame, secondGpu.Frame, .25f);
+            for (int index = 0; index < 3; index++)
+            {
+                model.RunPreparedCuda(outputGpu.Frame, (index + 1) * .25f, default);
+                var actual = CudaPixelTests.Bgra(CudaPixelTests.Download(model.Cuda, outputGpu.Frame));
+                Require(actual.AsSpan().SequenceEqual(expectedCuda[index]), "Reusing RIFE image planes changed generated pixels.");
+            }
+            Console.WriteLine($"PASS reused RIFE pair is pixel-identical at every timestep: {choice}, {width}x{height}");
             using var memory = new MemoryStream();
             using var stream = new RifeFrameStream(memory, model, 4, default);
             stream.Write(first); stream.Write(second); stream.Complete(); stream.Complete();

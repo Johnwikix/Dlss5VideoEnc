@@ -103,7 +103,7 @@ public static class DemoPaths
         return Path.Combine(RuntimeDir, "nvngx_dlssnr.dll");
     }
 
-    private static IEnumerable<string> EnumerateOverrideDirectories()
+    internal static IEnumerable<string> EnumerateOverrideDirectories()
     {
         var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         var directory = new DirectoryInfo(AppContext.BaseDirectory);

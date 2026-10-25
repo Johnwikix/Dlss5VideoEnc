@@ -121,6 +121,7 @@ public static partial class DlssVideoPipeline
                 {
                     var pairStamp = metrics.Start();
                     bool hold = cuda.HoldPair(first.Buffer.Original.Frame, second.Buffer.Original.Frame, true);
+                    if (!hold) model.PrepareCudaPair(first.Buffer.Original.Frame, second.Buffer.Original.Frame, 1f / options.InterpolationMultiplier);
                     metrics.Record(1, pairStamp);
                     for (int i = 0; i < options.InterpolationMultiplier; i++)
                     {
@@ -128,12 +129,19 @@ public static partial class DlssVideoPipeline
                         var destination = (AVFrame*)first.Buffer.Encoded[i];
                         // NVENC 的异步队列可能仍持有旧帧，重新取引用避免覆盖在途输入。
                         ffmpeg.av_frame_unref(destination);
+                        if (i != 0 && hold)
+                        {
+                            // Repeated/cut/tail frames share immutable NV12 storage, with independent timestamps.
+                            NativeVideo.Check(ffmpeg.av_frame_ref(destination, (AVFrame*)first.Buffer.Encoded[0]), "NVENC repeat frame");
+                            destination->pts = first.Index * options.InterpolationMultiplier + i;
+                            continue;
+                        }
                         NativeVideo.Check(ffmpeg.av_hwframe_get_buffer((AVBufferRef*)poolHandle, destination, 0), "NVENC input frame");
                         var source = first.Buffer.Original.Frame;
                         if (i != 0 && !hold)
                         {
                             var rifeStamp = metrics.Start();
-                            model.RunCuda(source, second.Buffer.Original.Frame, synthesized.Frame, (float)i / options.InterpolationMultiplier, token);
+                            model.RunPreparedCuda(synthesized.Frame, (float)i / options.InterpolationMultiplier, token);
                             metrics.Record(2, rifeStamp);
                             source = synthesized.Frame;
                         }
@@ -229,11 +237,12 @@ public static partial class DlssVideoPipeline
                 }
                 _cuda.UploadRgba(rgba, _current.Frame);
                 bool hold = _cuda.HoldPair(_previous.Frame, _current.Frame, true);
+                if (!hold) _model.PrepareCudaPair(_previous.Frame, _current.Frame, 1f / _multiplier);
                 for (int i = 1; i < _multiplier; i++)
                 {
                     _token.ThrowIfCancellationRequested();
-                    if (hold) Encode(_previous.Frame);
-                    else { _model.RunCuda(_previous.Frame, _current.Frame, _generated.Frame, (float)i / _multiplier, _token); Encode(_generated.Frame); }
+                    if (hold) Repeat();
+                    else { _model.RunPreparedCuda(_generated.Frame, (float)i / _multiplier, _token); Encode(_generated.Frame); }
                 }
                 Encode(_current.Frame);
                 (_previous, _current) = (_current, _previous);
@@ -243,7 +252,13 @@ public static partial class DlssVideoPipeline
                 ffmpeg.av_frame_unref(_frame);
                 NativeVideo.Check(ffmpeg.av_hwframe_get_buffer((AVBufferRef*)_allocator.Frames, _frame, 0), "NVENC input");
                 _cuda.ConvertToNv12(source, (nint)_frame->data[0], (nint)_frame->data[1], _frame->linesize[0], _frame->linesize[1], false);
-                _frame->pts = OutputFrames++; _frame->duration = 1; _frame->color_range = AVColorRange.AVCOL_RANGE_MPEG;
+                _frame->duration = 1; _frame->color_range = AVColorRange.AVCOL_RANGE_MPEG;
+                Repeat();
+            }
+            private void Repeat()
+            {
+                // send_frame takes its own reference; only metadata changes while storage stays immutable.
+                _frame->pts = OutputFrames++;
                 _encoder.Write(_frame);
             }
             public override void Write(byte[] buffer, int offset, int count) => Write(buffer.AsSpan(offset, count));
@@ -251,7 +266,7 @@ public static partial class DlssVideoPipeline
             {
                 if (_complete) return;
                 if (!_hasPrevious) throw new InvalidDataException("输入中没有完整视频帧。");
-                for (int i = 1; i < _multiplier; i++) { _token.ThrowIfCancellationRequested(); Encode(_previous.Frame); }
+                for (int i = 1; i < _multiplier; i++) { _token.ThrowIfCancellationRequested(); Repeat(); }
                 _encoder.Complete(); _complete = true;
             }
             public override void Flush() { }

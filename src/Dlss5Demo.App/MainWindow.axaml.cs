@@ -55,6 +55,8 @@ public partial class MainWindow : Window
         Closed += MainWindow_Closed;
         SizeChanged += (_, _) => LogBox.Height = Height < 800 ? 70 : 110;
         _settings = AppSettingsStore.Load();
+        RefreshNrRuntimes(_settings.NrRuntimeId);
+        NrRuntimeBox.SelectionChanged += (_, _) => UpdateProcessingOrderHint();
         MotionGuidanceBox.PropertyChanged += (_, change) =>
         {
             if (change.Property.Name == nameof(CheckBox.IsChecked)) FineMotionBox.IsEnabled = MotionGuidanceBox.IsChecked == true;
@@ -87,7 +89,7 @@ public partial class MainWindow : Window
         var inputOverride = Environment.GetEnvironmentVariable("DLSS5_INPUT");
         if (!string.IsNullOrWhiteSpace(inputOverride)) InputBox.Text = inputOverride;
         Log("就绪。DLSS 宿主: " + DemoPaths.HostDllPath);
-        Log($"DLSS 运行库: {DemoPaths.RuntimeDllPath}" +
+        Log($"DLSS 运行库: {(NrRuntimeBox.SelectedItem as NrRuntimeInfo)?.DllPath ?? DemoPaths.RuntimeDllPath}" +
             (DemoPaths.RuntimeProfile is { } profile ? $" · GPU profile {profile}" : ""));
         Log(File.Exists(DemoPaths.VsrHostDllPath) && File.Exists(DemoPaths.VsrRuntimeDllPath)
             ? "RTX Video VSR: ready（可选 2×/4×）"
@@ -110,6 +112,7 @@ public partial class MainWindow : Window
     private AppSettings CaptureSettings() => new()
     {
         EnableNr = EnableNrBox.IsChecked == true,
+        NrRuntimeId = (NrRuntimeBox.SelectedItem as NrRuntimeInfo)?.Id ?? "",
         DlssStyle = StyleBox.SelectedIndex,
         DlssIntensity = IntensitySlider.Value,
         DlssLocalTone = LocalToneSlider.Value,
@@ -204,6 +207,24 @@ public partial class MainWindow : Window
 
     private static void Select(ComboBox box, int index)
         => box.SelectedIndex = box.ItemCount > 0 ? Math.Clamp(index, 0, box.ItemCount - 1) : -1;
+
+    private void RefreshNrRuntimes_Click(object? sender, RoutedEventArgs e)
+        => RefreshNrRuntimes((NrRuntimeBox.SelectedItem as NrRuntimeInfo)?.Id);
+
+    private void RefreshNrRuntimes(string? selectedId)
+    {
+        var entries = new List<NrRuntimeInfo> { new("", DemoPaths.RuntimeDllPath, "自动 · 环境变量 / mods / 默认版本") };
+        entries.AddRange(NrRuntimeCatalog.Discover());
+        var selected = entries.Find(item => string.Equals(item.Id, selectedId ?? "", StringComparison.OrdinalIgnoreCase));
+        if (selected == null)
+        {
+            selected = new NrRuntimeInfo(selectedId!, "", "已缺失 · " + selectedId);
+            entries.Add(selected);
+        }
+        NrRuntimeBox.ItemsSource = entries;
+        NrRuntimeBox.SelectedItem = selected;
+        UpdateProcessingOrderHint();
+    }
 
     private void RenderPreviewFrames(object? sender, EventArgs e)
     {
@@ -442,8 +463,13 @@ public partial class MainWindow : Window
         FpsBox.IsEnabled = !interpolate;
         GifFpsBox.IsEnabled = !interpolate;
         NrBeforeSuperResolutionBox.IsEnabled = enabled && nrEnabled;
+        var runtime = NrRuntimeBox.SelectedItem as NrRuntimeInfo;
+        bool runtimeExists = File.Exists(runtime?.DllPath ?? DemoPaths.RuntimeDllPath);
         RuntimeBadge.Text = !nrEnabled ? "DLSS NR · 已关闭"
-            : File.Exists(DemoPaths.RuntimeDllPath) ? "DLSS Runtime · ready" : "DLSS Runtime · missing";
+            : runtimeExists ? "DLSS Runtime · ready" : "DLSS Runtime · missing";
+        NrRuntimeHint.Text = runtimeExists
+            ? "将 DLL 放入 runtime 下独立的版本文件夹，点击刷新即可选择。请选择匹配显卡的版本。"
+            : "所选 NR DLL 不存在。请放回文件后刷新，或选择其他版本。";
         ProcessingOrderHint.Text = !nrEnabled ? enabled ? "仅 RTX Video 超分 → 编码。NR、光流和历史累积已跳过。"
                 : "NR 与超分均已关闭：直接转码，可使用下方输出滤镜。"
             : !enabled ? "超分已关闭：仅处理 DLSS NR。"
@@ -482,6 +508,14 @@ public partial class MainWindow : Window
         var output = OutputBox.Text?.Trim().Trim('"') ?? "";
         var automaticOutput = string.IsNullOrWhiteSpace(output) || output == _suggestedOutputPath;
         var videoOptions = CollectVideoOptions();
+        string runtimeDllPath;
+        try { runtimeDllPath = EnableNrBox.IsChecked == true ? NrRuntimeCatalog.Resolve((NrRuntimeBox.SelectedItem as NrRuntimeInfo)?.Id) : ""; }
+        catch (FileNotFoundException error)
+        {
+            StatusText.Text = error.Message;
+            RefreshNrRuntimes((NrRuntimeBox.SelectedItem as NrRuntimeInfo)?.Id);
+            return;
+        }
         try
         {
             var extension = ContainerExtension(videoOptions.Container);
@@ -520,7 +554,9 @@ public partial class MainWindow : Window
         PipelineStatus.Text = "DLSS NR 正在处理帧…"; LivePreviewText.Text = "SYNC · 源帧与输出帧同步";
         var options = new TranscodeOptions
         {
-            FfmpegPath = DemoPaths.FfmpegPath, HostDllPath = DemoPaths.HostDllPath, RuntimeDllPath = DemoPaths.RuntimeDllPath, LogPath = DemoPaths.LogPath,
+            FfmpegPath = DemoPaths.FfmpegPath, HostDllPath = DemoPaths.HostDllPath,
+            RuntimeDllPath = runtimeDllPath,
+            LogPath = DemoPaths.LogPath,
             EnableNr = EnableNrBox.IsChecked == true,
             DecodeMode = (VideoDecodeMode)Math.Clamp(DecodeModeBox.SelectedIndex, 0, 2),
             EnableInterpolation = EnableInterpolationBox.IsChecked == true,

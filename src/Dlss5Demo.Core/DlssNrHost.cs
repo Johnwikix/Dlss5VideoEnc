@@ -5,6 +5,8 @@ namespace Dlss5Demo.Core;
 /// <summary>DLSS NR 外观参数（对应上游 dlss5tool 的公开设置）。</summary>
 public sealed record DlssNrOptions
 {
+    /// <summary>Keep SDR motion validation and correction history on the GPU when the host supports shared frames.</summary>
+    public bool UseGpuTemporalProcessing { get; init; } = true;
     public const double MaximumStrength = 5;
     /// <summary>保留 NR 自身的连续帧历史；关闭时每帧重置 NR。</summary>
     public bool ContinuousHistory { get; init; } = true;
@@ -116,6 +118,24 @@ public sealed class DlssNrHost : IDisposable
     private static extern void dlssnr_shutdown();
 
     [DllImport(DllName, CallingConvention = CallingConvention.Cdecl)]
+    internal static extern int dlssnr_gpu_frames_create();
+    [DllImport(DllName, CallingConvention = CallingConvention.Cdecl)]
+    internal static extern int dlssnr_gpu_frames_info(int slot, int kind, out nint handle, out ulong allocation,
+        out ulong bytes, out uint pitch, out ulong luid);
+    [DllImport(DllName, CallingConvention = CallingConvention.Cdecl)]
+    internal static extern int dlssnr_gpu_frames_next();
+    [DllImport(DllName, CallingConvention = CallingConvention.Cdecl)]
+    private static extern int dlssnr_gpu_frames_process(int slot, int reset);
+    [DllImport(DllName, CallingConvention = CallingConvention.Cdecl)]
+    internal static extern void dlssnr_gpu_frames_close();
+
+    internal bool ProcessDeviceFrame(int slot, bool reset)
+    {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+        return dlssnr_gpu_frames_process(slot, reset || !_options.ContinuousHistory ? 1 : 0) != 0;
+    }
+
+    [DllImport(DllName, CallingConvention = CallingConvention.Cdecl)]
     private static extern unsafe int dlssnr_enumerate_adapters(NativeAdapterInfo* items, int capacity);
 
     private DlssNrHost(IntPtr library, int width, int height)
@@ -130,6 +150,7 @@ public sealed class DlssNrHost : IDisposable
     internal bool TemporalStabilization => _options.TemporalStabilization;
     internal bool MotionGuidance => _options.MotionGuidance;
     internal bool FineMotion => _options.FineMotion;
+    internal bool UseGpuTemporalProcessing => _options.UseGpuTemporalProcessing;
 
     /// <summary>列出可用图形适配器（无需初始化 NGX）。</summary>
     public static IReadOnlyList<GpuAdapter> EnumerateAdapters(string hostDllPath)
@@ -195,6 +216,7 @@ public sealed class DlssNrHost : IDisposable
                 runtimeDllPath);
 
         options = NormalizeOptions(options);
+        PipelineLog.Info($"NR 运行库: {Path.GetFullPath(runtimeDllPath)}");
         var library = LoadHost(hostDllPath);
         try
         {

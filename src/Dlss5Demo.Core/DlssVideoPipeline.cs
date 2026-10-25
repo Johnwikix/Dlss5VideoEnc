@@ -134,6 +134,7 @@ public static partial class DlssVideoPipeline
             video = video with { FrameCount = 1 };
         var scale = RtxVideoSuperResolutionHost.NormalizeScale(options.SuperResolutionScale);
         var plan = CreateProcessingPlan(video, scale, options.Video.PreserveHdr, !options.EnableNr || options.NrBeforeSuperResolution);
+        options = NormalizeOutputScale(options, plan.ProcessWidth, plan.ProcessHeight);
         if ((plan.SourceWidth & 1) != 0 || (plan.SourceHeight & 1) != 0)
             throw new NotSupportedException($"暂不支持奇数尺寸视频（当前 {plan.SourceWidth}x{plan.SourceHeight}）。");
 
@@ -250,6 +251,22 @@ public static partial class DlssVideoPipeline
            && profile.HardwareBackend == HardwareBackend.Software
            && profile.RateControl == RateControlMode.Bitrate
            && profile.VideoCodec is VideoCodec.H264 or VideoCodec.H265;
+
+    internal static TranscodeOptions NormalizeOutputScale(TranscodeOptions options, int width, int height)
+    {
+        var video = options.Video;
+        if (video.CropEnabled) return options; // Scaling applies after cropping, in a different coordinate space.
+        bool sameSize = video.ScaleMode switch
+        {
+            ScaleMode.Exact or ScaleMode.FitWithin => Math.Max(16, video.ScaleWidth) == width && Math.Max(16, video.ScaleHeight) == height,
+            ScaleMode.Width => Math.Max(16, video.ScaleWidth) == width,
+            ScaleMode.Height => Math.Max(16, video.ScaleHeight) == height,
+            _ => false,
+        };
+        if (!sameSize) return options;
+        PipelineLog.Info($"输出尺寸已是 {width}×{height}：省略同尺寸缩放，保留兼容的 GPU 编码路径。");
+        return options with { Video = video with { ScaleMode = ScaleMode.None } };
+    }
 
     private readonly record struct ProcessingPlan(
         int SourceWidth, int SourceHeight, int ProcessWidth, int ProcessHeight, bool Hdr, bool NrFirst)
@@ -462,12 +479,13 @@ public static partial class DlssVideoPipeline
         ITranscodePreviewSink? preview, int previewFramesPerSecond, double sourceFps, bool useAsyncNrQueue, Action abort,
         CancellationToken cancellationToken)
     {
-        using var flow = host?.MotionGuidance == true
+        using var gpuNr = host != null ? GpuNrProcessor.TryCreate(host, plan.NrWidth, plan.NrHeight, plan.Hdr, sourceFps) : null;
+        using var flow = gpuNr == null && host?.MotionGuidance == true
             ? NvidiaOpticalFlow.TryCreate(plan.NrWidth, plan.NrHeight, plan.Hdr, host.FineMotion ? 1 : 4) : null;
-        host?.ConfigureMotionGuidance(flow != null);
-        var temporal = host?.TemporalStabilization == true
+        if (gpuNr == null) host?.ConfigureMotionGuidance(flow != null);
+        var temporal = gpuNr == null && host?.TemporalStabilization == true
             ? new DlssNrTemporalStabilizer(plan.NrWidth, plan.NrHeight, plan.Hdr, sourceFps, flow != null) : null;
-        var slots = new VideoFrameSlot[vsr?.FrameCapacity ?? FrameSlotCount(plan, host?.MotionGuidance == true, host?.TemporalStabilization == true)];
+        var slots = new VideoFrameSlot[vsr?.FrameCapacity ?? FrameSlotCount(plan, flow != null, temporal != null)];
         try
         {
             for (var index = 0; index < slots.Length; index++)
@@ -483,7 +501,7 @@ public static partial class DlssVideoPipeline
             var lastPreview = -previewInterval;
             long lastPreviewFrame = 0;
             VideoFrameSlot? lastOutput = null;
-            var capacity = host != null && useAsyncNrQueue ? Math.Min(host.QueueCapacity, slots.Length - 1) : 1;
+            var capacity = gpuNr == null && host != null && useAsyncNrQueue ? Math.Min(host.QueueCapacity, slots.Length - 1) : 1;
             if (host != null) PipelineLog.Info($"NR 提交队列: {capacity} 帧（单线程按序提交/回读）");
             if (vsr != null) PipelineLog.Info($"VSR 逐帧处理；GPU 编码={vsr.GpuEncoding}");
             var gpuEncoding = vsr?.GpuEncoding == true;
@@ -540,6 +558,12 @@ public static partial class DlssVideoPipeline
                     temporal.Apply(frame.Input, frame.Output);
                 }
                 metrics.Record(5, started);
+            }
+            void DeviceNeuralRendering(VideoFrameSlot frame, long index)
+            {
+                var started = metrics.Start();
+                gpuNr!.Process(frame.Input, frame.Output);
+                metrics.Record(4, started);
             }
             void QueuedNeuralRendering(IEnumerable<BoundedFramePipeline.Frame<VideoFrameSlot>> input,
                 Action<BoundedFramePipeline.Frame<VideoFrameSlot>> emit, CancellationToken token)
@@ -603,9 +627,13 @@ public static partial class DlssVideoPipeline
             if (vsr != null && !plan.NrFirst) stages.Add(BoundedFramePipeline.PerFrame<VideoFrameSlot>(SuperResolution));
             if (host != null)
             {
-                stages.Add(BoundedFramePipeline.PerFrame<VideoFrameSlot>(Prepare));
-                stages.Add(capacity > 1 ? QueuedNeuralRendering : BoundedFramePipeline.PerFrame<VideoFrameSlot>(NeuralRendering));
-                stages.Add(BoundedFramePipeline.PerFrame<VideoFrameSlot>(Accumulate));
+                if (gpuNr != null) stages.Add(BoundedFramePipeline.PerFrame<VideoFrameSlot>(DeviceNeuralRendering));
+                else
+                {
+                    stages.Add(BoundedFramePipeline.PerFrame<VideoFrameSlot>(Prepare));
+                    stages.Add(capacity > 1 ? QueuedNeuralRendering : BoundedFramePipeline.PerFrame<VideoFrameSlot>(NeuralRendering));
+                    stages.Add(BoundedFramePipeline.PerFrame<VideoFrameSlot>(Accumulate));
+                }
             }
             if (vsr != null && plan.NrFirst) stages.Add(BoundedFramePipeline.PerFrame<VideoFrameSlot>(SuperResolution));
             var processed = BoundedFramePipeline.RunStages(slots, Read, stages.ToArray(), Write,
@@ -619,6 +647,7 @@ public static partial class DlssVideoPipeline
             stopwatch.Stop();
             metrics.Report(processed);
             flow?.ReportMetrics(processed);
+            gpuNr?.ReportMetrics(processed);
             progress?.Report(new TranscodeProgress(processed, totalFrames,
                 processed / Math.Max(stopwatch.Elapsed.TotalSeconds, 0.001), stopwatch.Elapsed));
             return (processed, stopwatch.Elapsed);

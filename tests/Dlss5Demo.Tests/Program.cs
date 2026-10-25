@@ -7,6 +7,8 @@ if (DecoderControlTests.TryServe(args)) return;
 
 var tests = new (string Name, Action Run)[]
 {
+    ("NR versions are discovered recursively and keep stable IDs on refresh", NrRuntimeCatalogTests.Discovery),
+    ("Identity output scaling keeps GPU paths without changing real resize/crop requests", OutputScaleTests.Identity),
     ("Driver HDR maps SDR only; native HDR and RIFE bypass mapping", DriverHdrIntegration.Policy),
     ("NR controls reject model-extrapolating and nonfinite strengths", StrengthBoundaries),
     ("Output names skip existing files and directories", OutputNames),
@@ -34,6 +36,10 @@ foreach (var test in tests)
     Console.WriteLine($"PASS {test.Name}");
 }
 Console.WriteLine($"{tests.Length} regression checks passed.");
+var nrVersions = Array.IndexOf(args, "--nr-versions");
+if (nrVersions >= 0) NrRuntimeCatalogTests.Switch(args[nrVersions + 1]);
+var nrVersionBenchmark = Array.IndexOf(args, "--nr-version-benchmark");
+if (nrVersionBenchmark >= 0) await NrVersionBenchmark.RunAsync(args[nrVersionBenchmark + 1], args[nrVersionBenchmark + 2], args[nrVersionBenchmark + 3], args[nrVersionBenchmark + 4]);
 if (args.Contains("--driver-hdr")) DriverHdrIntegration.RunAsync().GetAwaiter().GetResult();
 if (args.Contains("--gpu"))
 {
@@ -67,9 +73,15 @@ var cudaPipeline = Array.IndexOf(args, "--cuda-pipeline");
 if (cudaPipeline >= 0) CudaPipelineTests.RunAsync(args[cudaPipeline + 1]).GetAwaiter().GetResult();
 var mixedBenchmark = Array.IndexOf(args, "--mixed-benchmark");
 if (mixedBenchmark >= 0) MixedBenchmark.RunAsync(args[mixedBenchmark + 1], args[mixedBenchmark + 2]).GetAwaiter().GetResult();
+var combinationBenchmark = Array.IndexOf(args, "--combination-benchmark");
+if (combinationBenchmark >= 0) CombinationBenchmark.RunAsync(args[combinationBenchmark + 1], args[combinationBenchmark + 2]).GetAwaiter().GetResult();
 var rifeArgument = Array.IndexOf(args, "--rife");
 if (rifeArgument >= 0) InterpolationIntegration.RunAsync(args[rifeArgument + 1], FrameInterpolationBackend.Rife).GetAwaiter().GetResult();
 if (args.Contains("--cuda-pixels")) CudaPixelTests.Scenes();
+if (args.Contains("--gpu-temporal")) GpuTemporalTests.Kernels();
+var gpuTemporalBenchmark = Array.IndexOf(args, "--gpu-temporal-benchmark");
+if (gpuTemporalBenchmark >= 0) await GpuTemporalBenchmark.RunAsync(args[gpuTemporalBenchmark + 1], args[gpuTemporalBenchmark + 2], args[gpuTemporalBenchmark + 3]);
+if (args.Contains("--cuda-repeats")) CudaPipelineTests.StaticFrameReuseAsync().GetAwaiter().GetResult();
 if (args.Contains("--rife-pixels")) RifeIntegration.PixelsAsync().GetAwaiter().GetResult();
 var rifeBenchmark = Array.IndexOf(args, "--rife-benchmark");
 if (rifeBenchmark >= 0) RifeIntegration.BenchmarkAsync(args[rifeBenchmark + 1], args[rifeBenchmark + 2], args.Contains("--benchmark-rife-only")).GetAwaiter().GetResult();
