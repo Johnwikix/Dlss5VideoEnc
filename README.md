@@ -9,8 +9,8 @@ Avalonia 视频转码工作台：可选 DLSS NR → 可选 RTX Video Super Resol
 实际收到 CUDA 硬件表面的首帧后，日志才报告 NVDEC 已确认；主机路径在回读成功后确认。
 自动模式在首帧初始化失败时重新从头软件解码；已经交付帧后遇到错误则停止，不混用两种后端的时序历史。
 
-参考 `little-fancy-tool-ava` 的 NVDEC 混合处理方式，保留现有 NR/VSR 的 CPU 帧接口与 HDR 色彩转换。
-NR/VSR 原有接口仍有硬件帧回读、CPU 色彩转换和上传；2026-10-18 新增 SDR RIFE 的 NVDEC → CUDA → NVENC 管线，适用条件见下文。
+参考 `little-fancy-tool-ava` 的 NVDEC 混合处理方式，保留 NR/VSR 的兼容帧接口与 HDR 色彩转换。
+兼容路径仍有硬件帧回读、CPU 色彩转换和上传；SDR RIFE 组合现在可通过共享显存连接 NVDEC、NR、RTX Video 与 NVENC，适用条件见下文。
 **RTX 5070 Ti / 617.14 已实测 4K/8K 的 SDR、PQ、HLG，以及 AV1 HDR；NVDEC 与软件解码的 RGBA 像素一致。**
 已验证独立开关组合、取消重启、软件双遍，以及发布包的 NVDEC → NR → RTX Video 4K→8K → PQ 补帧。
 实现边界、短片验证矩阵与解码阶段 CPU 耗时对比见 [NVDEC 接入记录](docs/NVDEC_DECODING.md)。
@@ -49,7 +49,11 @@ dotnet run --project src/Dlss5Demo.Cli -c Release -- input.mp4 output.mp4 --nr 0
 # --rife-model full 选择完整版；--gpu-frames 0 对照主机帧路径。
 ```
 
-默认开启显存帧管线：SDR、8 位 YUV420/NV12、NVDEC、NVENC，且没有 NR/SR/CPU 滤镜时，像素沿 NVDEC → CUDA RIFE → NVENC 传递，预览仅回读缩小画面。NR/RTX Video 组合保持原处理顺序和历史累积，在主机输出后只上传一次，再由 RIFE → NVENC 全程处理生成帧。CPU 滤镜、软件编码、软件双遍等条件沿用兼容路径。
+默认开启显存帧管线：SDR、8 位 YUV420/NV12、NVDEC、NVENC，且没有 CPU 滤镜时，像素沿 NVDEC → 可选 NR → 可选 RTX Video → CUDA RIFE → NVENC 传递，也支持先超分再 NR。NR 需要启用光流及 GPU 历史处理；VSR 继续使用独立进程，但通过共享 GPU 缓冲交换帧。解码使用独立 CUDA 流，5 个有界槽位按序交接，预览只回读缩小画面，切镜判断只回读标志。
+
+`--gpu-enhancement 0`（CLI/autorun）可单独关闭 NR/SR 显存衔接用于 A/B 对照，保留原有 GPU NR 历史及 RIFE → NVENC。`--gpu-frames 0` 则关闭整条显存补帧管线。CPU 滤镜、软件编码、软件双遍、不支持的输入格式或显存接口沿用兼容路径。GPU 解码色彩转换与兼容路径的 swscale 有细微舍入/色度重采样差异，性能和画质数据见 [RIFE 显存衔接报告](docs/GPU_RIFE_CHAIN_2026-10-25.md)。
+
+选片旁的“打开目录”在资源管理器中定位源视频；输出路径旁的目录按钮定位输出文件，尚未生成时打开输出目录。窗口和 EXE 图标已统一替换为适合小尺寸的双色扁平图标；矢量源及生成工具见 `Assets/dlss5-video-enc.svg` 与 `tools/generate-icon.py`。
 
 单一任务门控制完整资源生命周期；保留一套同模型、同尺寸的 RIFE 会话，连续任务复用初始化，不共享视频时序历史。切换 GPU 直编与带输出滤镜的兼容路径也可复用网络。换模型、推理尺寸、关闭 RIFE、失败、取消或关闭应用时释放。嵌入 Core 的程序应在关闭时调用 `DlssVideoPipeline.ReleaseGpuResources()`。
 

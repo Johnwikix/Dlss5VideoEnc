@@ -55,7 +55,8 @@ internal static class GpuTemporalBenchmark
                     {
                         HostDllPath = DemoPaths.HostDllPath, RuntimeDllPath = dll, FfmpegPath = DemoPaths.FfmpegPath,
                         LogPath = Path.Combine(root, label + "-native.log"), VsrLogPath = Path.Combine(root, label + "-vsr.log"),
-                        Dlss = new DlssNrOptions { UseGpuTemporalProcessing = gpu }, MaxFrames = test.Frames, EnablePreviewFrames = false,
+                        Dlss = new DlssNrOptions { UseGpuTemporalProcessing = gpu }, UseGpuEnhancementPipeline = false,
+                        MaxFrames = test.Frames, EnablePreviewFrames = false,
                         SuperResolutionScale = test.Sr, SuperResolutionQuality = 4, NrBeforeSuperResolution = test.NrFirst,
                         EnableInterpolation = test.Rife > 1, InterpolationBackend = FrameInterpolationBackend.Rife,
                         InterpolationModel = RifeModel.Lite, InterpolationMultiplier = Math.Max(2, test.Rife),

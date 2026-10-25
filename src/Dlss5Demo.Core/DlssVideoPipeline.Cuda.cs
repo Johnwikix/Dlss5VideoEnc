@@ -14,7 +14,9 @@ public static partial class DlssVideoPipeline
         && options.Video.Denoise == DenoiseMode.None && options.Video.Deinterlace == DeinterlaceMode.None;
 
     private static bool CanUseCudaRife(TranscodeOptions options, VideoInfo video) => CanEncodeRifeOnGpu(options)
-        && !options.EnableNr && options.SuperResolutionScale == 1 && options.DecodeMode != VideoDecodeMode.Software
+        && ((!options.EnableNr && options.SuperResolutionScale == 1) || options.UseGpuEnhancementPipeline)
+        && (!options.EnableNr || options.Dlss.UseGpuTemporalProcessing && options.Dlss.MotionGuidance)
+        && options.DecodeMode != VideoDecodeMode.Software
         && video.PixelFormat is "yuv420p" or "yuvj420p" or "nv12" && !video.IsHdr
         && video.ColorSpace is "" or "unknown" or "unspecified" or "bt709" or "smpte170m" or "bt470bg";
 
@@ -22,21 +24,24 @@ public static partial class DlssVideoPipeline
         VideoInfo video, long totalFrames, RifeGpuSession model, IProgress<TranscodeProgress>? progress, CancellationToken ct)
     {
         var temporary = Path.Combine(Path.GetTempPath(), $"dlss5-cuda-{Guid.NewGuid():N}.nut");
-        var clock = Stopwatch.StartNew();
         try
         {
-            long frames = await Task.Run(() => CudaRifePipeline.Run(input, temporary, options, video, totalFrames, model, progress, ct), ct).ConfigureAwait(false);
-            await RunPassAsync(options.FfmpegPath, EncoderArguments(input, output, options, video, video.Width, video.Height,
+            var outcome = await Task.Run(() => CudaRifePipeline.Run(input, temporary, options, video, totalFrames, model, progress, ct), ct).ConfigureAwait(false);
+            long frames = outcome.Frames;
+            var finalize = Stopwatch.StartNew();
+            int scale = RtxVideoSuperResolutionHost.NormalizeScale(options.SuperResolutionScale);
+            await RunPassAsync(options.FfmpegPath, EncoderArguments(input, output, options, video, video.Width * scale, video.Height * scale,
                 false, temporary, encodedInput: true, encodedFrameCount: frames * options.InterpolationMultiplier), ct).ConfigureAwait(false);
-            clock.Stop();
-            progress?.Report(new TranscodeProgress(frames, totalFrames, frames / clock.Elapsed.TotalSeconds, clock.Elapsed));
-            return new TranscodeResult { OutputPath = output, FramesProcessed = frames, Elapsed = clock.Elapsed,
-                AverageFps = frames / clock.Elapsed.TotalSeconds, OutputBytes = new FileInfo(output).Length };
+            var elapsed = outcome.Elapsed + finalize.Elapsed;
+            progress?.Report(new TranscodeProgress(frames, totalFrames, frames / elapsed.TotalSeconds, elapsed));
+            return new TranscodeResult { OutputPath = output, FramesProcessed = frames, Elapsed = elapsed,
+                AverageFps = frames / elapsed.TotalSeconds, OutputBytes = new FileInfo(output).Length };
         }
         finally { try { File.Delete(temporary); } catch (IOException) { } }
     }
 
     private sealed class CudaDecodeUnavailableException(string message, Exception? inner = null) : Exception(message, inner);
+    private sealed class CudaEnhancementUnavailableException(string message, Exception? inner = null) : Exception(message, inner);
 
     /// <summary>固定槽位：NVDEC/颜色转换 → 两帧 RIFE/NV12 → NVENC。编码器保留的 AVFrame 引用不被提前覆盖。</summary>
     private static unsafe class CudaRifePipeline
@@ -50,40 +55,60 @@ public static partial class DlssVideoPipeline
         [StructLayout(LayoutKind.Explicit, Size = 16)]
         private struct CudaHeader { [FieldOffset(8)] internal nint Stream; }
 
-        internal static long Run(string input, string temporary, TranscodeOptions options, VideoInfo video, long totalFrames,
+        internal static (long Frames, TimeSpan Elapsed) Run(string input, string temporary, TranscodeOptions options, VideoInfo video, long totalFrames,
             RifeGpuSession model, IProgress<TranscodeProgress>? progress, CancellationToken ct)
         {
             NativeVideo.Initialize();
             if (model.Cuda.DeviceId != options.DecodeDeviceIndex)
                 throw new CudaDecodeUnavailableException("Windows ML 推理设备与指定 NVDEC 设备不同，沿用主机帧传输路径。");
             using var cuda = new CudaVideoContext(options.DecodeDeviceIndex);
+            int scale = RtxVideoSuperResolutionHost.NormalizeScale(options.SuperResolutionScale);
+            var plan = CreateProcessingPlan(video, scale, false, !options.EnableNr || options.NrBeforeSuperResolution);
+            var outputVideo = video with { Width = plan.ProcessWidth, Height = plan.ProcessHeight };
+            using var enhancement = new EnhancementStage(options, video, plan, ct);
             AVBufferRef* device = null; AVBufferRef* framesPool = null;
-            var slots = new List<Slot>(5);
+            int capacity = Math.Clamp(options.GpuFrameCapacity, 3, 5);
+            var slots = new List<Slot>(capacity);
             try
             {
-                using var allocator = new FrameAllocator(cuda, video.Width, video.Height);
+                using var allocator = new FrameAllocator(cuda, outputVideo.Width, outputVideo.Height);
                 device = (AVBufferRef*)allocator.Device;
                 framesPool = (AVBufferRef*)allocator.Frames;
-                using var decoder = new Decoder(input, device, cuda, video, options.MaxFrames, ct);
-                using var encoder = new Encoder(temporary, options, video, framesPool);
-                for (int i = 0; i < 5; i++) slots.Add(new Slot(cuda, video.Width, video.Height, options.InterpolationMultiplier));
-                using var synthesized = cuda.Allocate(video.Width, video.Height);
+                // NVDEC and its color conversion must not share the RIFE/NV12
+                // stream: otherwise each handoff also waits for unrelated work
+                // submitted concurrently by the other pipeline stage.
+                using var decodeCuda = new CudaVideoContext(options.DecodeDeviceIndex);
+                using var decodeAllocator = new FrameAllocator(decodeCuda, video.Width, video.Height);
+                using var decoder = new Decoder(input, (AVBufferRef*)decodeAllocator.Device, decodeCuda, video, options.MaxFrames, ct);
+                using var encoder = new Encoder(temporary, options, outputVideo, framesPool);
+                for (int i = 0; i < capacity; i++) slots.Add(new Slot(cuda, plan, options.InterpolationMultiplier, enhancement.Active));
+                using var synthesized = cuda.Allocate(outputVideo.Width, outputVideo.Height);
                 bool input709 = video.ColorSpace.Equals("bt709", StringComparison.OrdinalIgnoreCase);
-                var metrics = new PipelineStageMetrics("显存管线", "decode", "pair", "rife", "nv12", "encode");
+                var metrics = new PipelineStageMetrics("显存管线", "decode", "pair", "rife", "nv12", "encode", "enhance");
                 var clock = Stopwatch.StartNew(); var lastProgress = TimeSpan.FromSeconds(-1); var lastPreview = TimeSpan.FromSeconds(-1);
                 var sink = options.EnablePreviewFrames ? options.PreviewSink : null;
-                int previewWidth = video.Width, previewHeight = video.Height;
+                int previewWidth = outputVideo.Width, previewHeight = outputVideo.Height;
                 if (sink != null && sink.MaxFrameWidth > 0 && sink.MaxFrameHeight > 0)
                 {
-                    double ratio = Math.Min(1, Math.Min((double)sink.MaxFrameWidth / video.Width, (double)sink.MaxFrameHeight / video.Height));
-                    previewWidth = Math.Max(1, (int)(video.Width * ratio)); previewHeight = Math.Max(1, (int)(video.Height * ratio));
+                    double ratio = Math.Min(1, Math.Min((double)sink.MaxFrameWidth / outputVideo.Width, (double)sink.MaxFrameHeight / outputVideo.Height));
+                    previewWidth = Math.Max(1, (int)(outputVideo.Width * ratio)); previewHeight = Math.Max(1, (int)(outputVideo.Height * ratio));
                 }
                 using var preview = sink == null ? null : cuda.Allocate(previewWidth, previewHeight);
                 byte[]? previewBytes = sink == null ? null : new byte[checked(previewWidth * previewHeight * 4)];
-                PipelineLog.Info($"显存帧管线：5 槽；NVDEC → CUDA RIFE → NVENC；像素保留 GPU，预览按需缩小回读。CUDA {cuda.DeviceId}");
+                byte[]? sourcePreviewBytes = sink == null || !enhancement.Active ? previewBytes : new byte[checked(previewWidth * previewHeight * 4)];
+                PipelineLog.Info($"显存帧管线：{capacity} 槽；NVDEC → {enhancement.Description}CUDA RIFE → NVENC；像素保留 GPU，预览按需缩小回读。CUDA {cuda.DeviceId}");
                 nint poolHandle = (nint)framesPool;
-                long written = BoundedFramePipeline.RunStages(slots, (slot, index) => { var stamp = metrics.Start(); bool read = decoder.Read(slot.Original.Frame, ct); metrics.Record(0, stamp); return read; },
-                    [(inputFrames, emit, token) =>
+                var stages = new List<BoundedFramePipeline.Stage<Slot>>();
+                if (enhancement.Active) stages.Add((inputFrames, emit, token) =>
+                {
+                    foreach (var current in inputFrames)
+                    {
+                        token.ThrowIfCancellationRequested();
+                        var stamp = metrics.Start(); enhancement.Process(current.Buffer.Source.Frame, current.Buffer.Original.Frame);
+                        metrics.Record(5, stamp); emit(current);
+                    }
+                });
+                stages.Add((inputFrames, emit, token) =>
                     {
                         BoundedFramePipeline.Frame<Slot>? previous = null;
                         foreach (var current in inputFrames)
@@ -93,7 +118,9 @@ public static partial class DlssVideoPipeline
                             previous = current;
                         }
                         if (previous is { } tail) { Process(tail, tail, token); emit(tail); }
-                    }],
+                    });
+                long written = BoundedFramePipeline.RunStages(slots, (slot, index) => { var stamp = metrics.Start(); bool read = decoder.Read(slot.Source.Frame, ct); metrics.Record(0, stamp); return read; },
+                    stages.ToArray(),
                     (slot, index) =>
                     {
                         var encodeStamp = metrics.Start();
@@ -104,7 +131,13 @@ public static partial class DlssVideoPipeline
                             var source = slot.Original.Frame;
                             cuda.Preview(source.Data, 0, source.Pitch, 0, source.Width, source.Height, preview!.Frame, false, input709, true, previewBytes!);
                             for (int i = 0; i < previewBytes!.Length; i += 4) (previewBytes[i], previewBytes[i + 2]) = (previewBytes[i + 2], previewBytes[i]);
-                            sink.Publish(previewBytes, previewWidth, previewHeight, previewBytes, previewWidth, previewHeight, index + 1, totalFrames, video.Fps);
+                            if (enhancement.Active)
+                            {
+                                var original = slot.Source.Frame;
+                                cuda.Preview(original.Data, 0, original.Pitch, 0, original.Width, original.Height, preview.Frame, false, input709, true, sourcePreviewBytes!);
+                                for (int i = 0; i < sourcePreviewBytes!.Length; i += 4) (sourcePreviewBytes[i], sourcePreviewBytes[i + 2]) = (sourcePreviewBytes[i + 2], sourcePreviewBytes[i]);
+                            }
+                            sink.Publish(sourcePreviewBytes!, previewWidth, previewHeight, previewBytes, previewWidth, previewHeight, index + 1, totalFrames, video.Fps);
                             lastPreview = clock.Elapsed;
                         }
                         if (clock.Elapsed - lastProgress >= ProgressInterval)
@@ -112,10 +145,10 @@ public static partial class DlssVideoPipeline
                             progress?.Report(new TranscodeProgress(index + 1, totalFrames, (index + 1) / clock.Elapsed.TotalSeconds, clock.Elapsed));
                             lastProgress = clock.Elapsed;
                         }
-                    }, decoder.Abort, ct);
-                encoder.Complete(); metrics.Report(written);
+                    }, () => { decoder.Abort(); enhancement.Abort(); }, ct);
+                encoder.Complete(); clock.Stop(); metrics.Report(written); enhancement.ReportMetrics(written);
                 if (written == 0 || totalFrames > 0 && written < totalFrames) throw new InvalidDataException("NVDEC 视频提前结束。");
-                return written;
+                return (written, clock.Elapsed);
 
                 void Process(BoundedFramePipeline.Frame<Slot> first, BoundedFramePipeline.Frame<Slot> second, CancellationToken token)
                 {
@@ -158,6 +191,69 @@ public static partial class DlssVideoPipeline
             {
                 foreach (var slot in slots) slot.Dispose();
 
+            }
+        }
+
+        private sealed class EnhancementStage : IDisposable
+        {
+            private readonly List<IDisposable> _owned = [];
+            private readonly GpuNrProcessor? _nr;
+            private readonly GpuVsrProcessor? _vsr;
+            private readonly RtxVideoWorker? _worker;
+            private readonly CudaVideoContext.CudaBuffer? _intermediate;
+            private readonly bool _nrFirst;
+            internal bool Active => _nr != null || _vsr != null;
+            internal string Description => _nr == null ? (_vsr == null ? "" : "共享显存 SR → ")
+                : _vsr == null ? "共享显存 NR → " : _nrFirst ? "共享显存 NR → SR → " : "共享显存 SR → NR → ";
+
+            internal EnhancementStage(TranscodeOptions options, VideoInfo video, ProcessingPlan plan, CancellationToken ct)
+            {
+                _nrFirst = plan.NrFirst;
+                if (!options.EnableNr && options.SuperResolutionScale == 1) return;
+                try
+                {
+                    var cuda = Own(new CudaVideoContext(options.DecodeDeviceIndex));
+                    _worker = CreateVsr(options, plan, video, ct, deviceFrames: true);
+                    if (_worker != null)
+                    {
+                        Own(_worker);
+                        using var cancel = ct.Register(_worker.Abort);
+                        _vsr = Own(new GpuVsrProcessor(cuda, _worker, plan.SourceWidth, plan.SourceHeight, plan.ProcessWidth / plan.SourceWidth));
+                    }
+                    if (options.EnableNr)
+                    {
+                        if (cuda.DeviceId != 0) throw new InvalidOperationException("NR 光流与解码设备不同。");
+                        var host = Own(DlssNrHost.Create(options.HostDllPath, options.RuntimeDllPath, options.LogPath,
+                            plan.NrWidth, plan.NrHeight, options.Dlss, false, video.ColorTransfer));
+                        _nr = Own(GpuNrProcessor.TryCreate(host, plan.NrWidth, plan.NrHeight, false, video.Fps)
+                            ?? throw new InvalidOperationException("当前 NR 配置不支持显存帧交换。"));
+                        if (_vsr != null && _nrFirst) _intermediate = Own(cuda.Allocate(plan.NrWidth, plan.NrHeight));
+                    }
+                }
+                catch (Exception error)
+                {
+                    Dispose(); ct.ThrowIfCancellationRequested();
+                    throw new CudaEnhancementUnavailableException("NR/SR 显存衔接初始化失败：" + error.Message, error);
+                }
+            }
+
+            private T Own<T>(T value) where T : IDisposable { _owned.Add(value); return value; }
+            internal void Process(CudaVideoFrame input, CudaVideoFrame output)
+            {
+                if (_vsr == null) _nr!.ProcessDevice(input, output);
+                else if (_nr == null) _vsr.Process(input, output);
+                else if (_nrFirst) { _nr.ProcessDevice(input, _intermediate!.Frame); _vsr.Process(_intermediate.Frame, output); }
+                else { _vsr.Process(input, output); _nr.ProcessDevice(output, output); }
+            }
+            internal void ReportMetrics(long frames) => _nr?.ReportMetrics(frames);
+            internal void Abort() => _worker?.Abort();
+            public void Dispose()
+            {
+                Exception? failure = null;
+                for (int i = _owned.Count - 1; i >= 0; i--)
+                    try { _owned[i].Dispose(); } catch (Exception error) { failure ??= error; }
+                _owned.Clear();
+                if (failure != null) throw failure;
             }
         }
 
@@ -285,12 +381,14 @@ public static partial class DlssVideoPipeline
         private sealed class Slot : IDisposable
         {
             internal CudaVideoContext.CudaBuffer Original { get; }
+            internal CudaVideoContext.CudaBuffer Source { get; }
             internal nint[] Encoded { get; }
-            internal Slot(CudaVideoContext cuda, int width, int height, int multiplier)
+            internal Slot(CudaVideoContext cuda, ProcessingPlan plan, int multiplier, bool enhance)
             {
-                Original = cuda.Allocate(width, height); Encoded = new nint[multiplier];
+                Original = cuda.Allocate(plan.ProcessWidth, plan.ProcessHeight); Encoded = new nint[multiplier];
                 try
                 {
+                    Source = enhance ? cuda.Allocate(plan.SourceWidth, plan.SourceHeight) : Original;
                     for (int i = 0; i < multiplier; i++)
                     { Encoded[i] = (nint)ffmpeg.av_frame_alloc(); if (Encoded[i] == 0) throw new OutOfMemoryException(); }
                 }
@@ -300,6 +398,7 @@ public static partial class DlssVideoPipeline
             {
                 for (int i = 0; i < Encoded.Length; i++) { var frame = (AVFrame*)Encoded[i]; Encoded[i] = 0; ffmpeg.av_frame_free(&frame); }
                 Original.Dispose();
+                if (!ReferenceEquals(Source, Original)) Source?.Dispose();
             }
         }
 

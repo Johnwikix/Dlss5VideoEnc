@@ -50,6 +50,9 @@
     <Style Selector="TextBox">
       <Setter Property="MinHeight" Value="36"/>
     </Style>
+    <Style Selector="Button:disabled Path">
+      <Setter Property="Opacity" Value="0.4"/>
+    </Style>
   </Window.Styles>
   <Grid RowDefinitions="Auto,Auto,*,Auto" Margin="24" RowSpacing="16">
     <Grid Grid.Row="0" ColumnDefinitions="*,Auto" VerticalAlignment="Center">
@@ -59,7 +62,19 @@
       </StackPanel>
       <Border Grid.Column="1" Background="#14242A" BorderBrush="#27535A" BorderThickness="1" CornerRadius="18" Padding="16,10" MinWidth="190" VerticalAlignment="Center"><StackPanel Orientation="Horizontal" Spacing="9" VerticalAlignment="Center"><Ellipse Width="8" Height="8" Fill="#5CE1E6" VerticalAlignment="Center"/><TextBlock x:Name="RuntimeBadge" Text="DLSS Runtime · ready" Foreground="#B8F4F0" FontSize="12" VerticalAlignment="Center" /></StackPanel></Border>
     </Grid>
-    <Grid Grid.Row="1" ColumnDefinitions="*,Auto,Auto" ColumnSpacing="10"><TextBox x:Name="InputBox" PlaceholderText="拖入或选择源视频（MP4 / MKV / MOV / TS / WebM）" TextChanged="OnInputTextChanged" FontSize="14" Padding="14,10"/><Button Grid.Column="1" x:Name="BrowseButton" Content="选择视频" Click="Browse_Click" Padding="18,10"/><Button Grid.Column="2" x:Name="CompareButton" Content="载入输出" Click="Compare_Click" IsEnabled="False" Padding="18,10"/></Grid>
+    <Grid Grid.Row="1" ColumnDefinitions="*,Auto,Auto,Auto" ColumnSpacing="10">
+      <TextBox x:Name="InputBox" PlaceholderText="拖入或选择源视频（MP4 / MKV / MOV / TS / WebM）" TextChanged="OnInputTextChanged" FontSize="14" Padding="14,10"/>
+      <Button Grid.Column="1" x:Name="BrowseButton" Content="选择视频" Click="Browse_Click" Padding="18,10"/>
+      <Button Grid.Column="2" x:Name="OpenVideoFolderButton" Click="OpenVideoFolder_Click" IsEnabled="False"
+              Padding="14,10" ToolTip.Tip="在资源管理器中定位源视频" AutomationProperties.Name="打开视频目录">
+        <StackPanel Orientation="Horizontal" Spacing="8">
+          <Path Width="18" Height="18" Stretch="Uniform" Stroke="{Binding $parent[Button].Foreground}" StrokeThickness="1.7"
+                Data="M 3,6 L 9,6 L 11,8 L 21,8 L 21,19 L 3,19 Z M 3,11 L 21,11"/>
+          <TextBlock Text="打开目录" VerticalAlignment="Center"/>
+        </StackPanel>
+      </Button>
+      <Button Grid.Column="3" x:Name="CompareButton" Content="载入输出" Click="Compare_Click" IsEnabled="False" Padding="18,10"/>
+    </Grid>
 
     <Grid Grid.Row="2" ColumnDefinitions="420,16,*">
       <Grid Grid.Column="0" RowDefinitions="*,Auto" RowSpacing="12">
@@ -71,9 +86,14 @@
                 <TextBlock Classes="sectionTitle" Text="源视频"/>
                 <TextBlock x:Name="InfoText" Text="尚未加载视频。" Classes="hint"/>
                 <TextBlock x:Name="HdrSourceText" Text="" Foreground="#FFCF70" FontSize="12" TextWrapping="Wrap"/>
-                <Grid ColumnDefinitions="*,Auto" ColumnSpacing="8">
-                  <TextBox x:Name="OutputBox" PlaceholderText="输出文件路径"/>
+                <Grid ColumnDefinitions="*,Auto,Auto" ColumnSpacing="8">
+                  <TextBox x:Name="OutputBox" PlaceholderText="输出文件路径" TextChanged="OnOutputTextChanged"/>
                   <Button Grid.Column="1" Content="另存为" Click="PickOutput_Click"/>
+                  <Button Grid.Column="2" x:Name="OpenOutputFolderButton" Click="OpenOutputFolder_Click" IsEnabled="False"
+                          Width="36" Height="36" Padding="9" ToolTip.Tip="在资源管理器中打开输出目录" AutomationProperties.Name="打开输出目录">
+                    <Path Width="18" Height="18" Stretch="Uniform" Stroke="{Binding $parent[Button].Foreground}" StrokeThickness="1.7"
+                          Data="M 3,6 L 9,6 L 11,8 L 21,8 L 21,19 L 3,19 Z M 3,11 L 21,11"/>
+                  </Button>
                 </Grid>
               </StackPanel>
             </Border>

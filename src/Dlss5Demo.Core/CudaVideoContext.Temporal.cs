@@ -187,7 +187,7 @@ internal sealed unsafe partial class CudaVideoContext
             _cuda = cuda; Pitch = checked((int)pitch);
             using var scope = cuda.Enter();
             Check(cuDeviceGetLuid(out ulong cudaLuid, out _, cuda.DeviceId));
-            if (cudaLuid != adapterLuid) throw new InvalidOperationException("NR 与 CUDA 适配器不同，无法共享显存。");
+            if (cudaLuid != adapterLuid) throw new InvalidOperationException("D3D12 与 CUDA 适配器不同，无法共享显存。");
             var description = new ExternalMemoryDescription { Type = 5, Handle = handle, Size = allocation, Flags = 1 };
             Check(cuImportExternalMemory(out _memory, ref description));
             try

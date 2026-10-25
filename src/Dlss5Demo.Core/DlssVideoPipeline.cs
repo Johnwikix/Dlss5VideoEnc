@@ -20,6 +20,9 @@ public sealed record TranscodeOptions
     /// <summary>独立 GPU 补帧，支持 NVIDIA Vulkan 与 RIFE，默认关闭。</summary>
     public bool EnableInterpolation { get; init; }
     public bool UseGpuFramePipeline { get; init; } = true;
+    /// <summary>Keep compatible SDR NR/SR frames on the GPU between NVDEC and RIFE.</summary>
+    public bool UseGpuEnhancementPipeline { get; init; } = true;
+    internal int GpuFrameCapacity { get; init; } = 5;
     public int InterpolationMultiplier { get; init; } = 2;
     internal bool UseLinearVulkanImages { get; init; } = true;
     public FrameInterpolationBackend InterpolationBackend { get; init; } = FrameInterpolationBackend.NvidiaOpticalFlow;
@@ -173,6 +176,8 @@ public static partial class DlssVideoPipeline
             try { return await RunCudaRifeAsync(inputPath, outputPath, options, video, totalFrames, rife, progress, cancellationToken).ConfigureAwait(false); }
             catch (CudaDecodeUnavailableException ex) when (options.DecodeMode == VideoDecodeMode.Auto)
             { PipelineLog.Info(ex.Message + " 自动模式从头重试主机帧路径。"); }
+            catch (CudaEnhancementUnavailableException ex)
+            { PipelineLog.Info(ex.Message + " 从头使用 NR/SR 主机传输路径。"); }
         }
 
         using var vsr = await Task.Run(() => CreateVsr(options, plan, video, cancellationToken), cancellationToken).ConfigureAwait(false);
@@ -289,7 +294,7 @@ public static partial class DlssVideoPipeline
     }
 
     private static RtxVideoWorker? CreateVsr(
-        TranscodeOptions options, ProcessingPlan plan, VideoInfo video, CancellationToken cancellationToken)
+        TranscodeOptions options, ProcessingPlan plan, VideoInfo video, CancellationToken cancellationToken, bool deviceFrames = false)
     {
         if (plan.ProcessWidth == plan.SourceWidth && plan.ProcessHeight == plan.SourceHeight)
             return null;
@@ -301,8 +306,8 @@ public static partial class DlssVideoPipeline
         return RtxVideoWorker.Create(
             host, runtime, log, plan.SourceWidth, plan.SourceHeight,
             plan.ProcessWidth / plan.SourceWidth, options.SuperResolutionQuality, plan.Hdr,
-            FrameSlotCount(plan, options.EnableNr && options.Dlss.MotionGuidance, options.EnableNr && options.Dlss.TemporalStabilization),
-            options.VsrWorkerExecutablePath, cancellationToken, CreateGpuEncoderConfiguration(options, plan, video));
+            deviceFrames ? 1 : FrameSlotCount(plan, options.EnableNr && options.Dlss.MotionGuidance, options.EnableNr && options.Dlss.TemporalStabilization),
+            options.VsrWorkerExecutablePath, cancellationToken, deviceFrames ? null : CreateGpuEncoderConfiguration(options, plan, video), deviceFrames);
     }
 
     private static VsrEncoderConfiguration? CreateGpuEncoderConfiguration(TranscodeOptions options, ProcessingPlan plan, VideoInfo video)

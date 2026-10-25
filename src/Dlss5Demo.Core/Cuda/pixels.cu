@@ -1,4 +1,8 @@
 // 自有像素内核；仅使用 CUDA Driver API 装载 PTX，运行时无需 CUDA Toolkit。
+extern "C" __global__ void swap_rb(const unsigned* src, int sp, unsigned* dst, int dp, int w, int h) {
+    int x=blockIdx.x*blockDim.x+threadIdx.x, y=blockIdx.y*blockDim.y+threadIdx.y;
+    if(x<w && y<h) { unsigned p=src[y*sp+x]; dst[y*dp+x]=(p&0xff00ff00u)|((p&255u)<<16)|((p>>16)&255u); }
+}
 extern "C" __global__ void pad(const unsigned* src, int pitch, int w, int h, unsigned* dst, int dw, int dh, int ox, int oy) {
     int x=blockIdx.x*blockDim.x+threadIdx.x, y=blockIdx.y*blockDim.y+threadIdx.y;
     if(x<dw && y<dh) { int sx=max(0,min(w-1,x+ox)), sy=max(0,min(h-1,y+oy)); dst[y*dw+x]=src[sy*pitch+sx]; }

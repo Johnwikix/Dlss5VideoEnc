@@ -15,6 +15,7 @@ var nrFirst = true;
 var enableNr = true;
 var enableInterpolation = false;
 var gpuFrames = true;
+var gpuEnhancement = true;
 var interpolationMultiplier = 2;
 var interpolationBackend = FrameInterpolationBackend.NvidiaOpticalFlow;
 var rifeModel = RifeModel.Lite;
@@ -52,6 +53,7 @@ for (var index = 2; index < args.Length - 1; index++)
         case "--interpolation-backend": interpolationBackend = FrameInterpolationBackends.Parse(args[++index]); break;
         case "--rife-model": rifeModel = Enum.Parse<RifeModel>(args[++index], true); break;
         case "--gpu-frames": gpuFrames = args[++index] != "0"; break;
+        case "--gpu-enhancement": gpuEnhancement = args[++index] != "0"; break;
         case "--interpolate": enableInterpolation = args[++index] != "0"; break;
         case "--interpolation-multiplier": interpolationMultiplier = int.Parse(args[++index]); break;
         case "--nr-queue": nrQueue = args[++index] != "0"; break;
@@ -109,6 +111,7 @@ var result = await DlssVideoPipeline.RunAsync(input, output, new TranscodeOption
     DecodeDeviceIndex = decodeDevice,
     EnableInterpolation = enableInterpolation,
                 UseGpuFramePipeline = gpuFrames,
+    UseGpuEnhancementPipeline = gpuEnhancement,
     InterpolationMultiplier = interpolationMultiplier,
                 InterpolationBackend = interpolationBackend,
                 InterpolationModel = rifeModel,

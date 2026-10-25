@@ -343,6 +343,7 @@ public partial class MainWindow : Window
     {
         var generation = ++_probeGeneration;
         var path = InputBox.Text?.Trim().Trim('"') ?? "";
+        if (OpenVideoFolderButton != null) OpenVideoFolderButton.IsEnabled = File.Exists(path);
         _suggestedOutputPath = null;
         if (OutputBox != null) OutputBox.Text = "";
         _video = null;
@@ -392,6 +393,52 @@ public partial class MainWindow : Window
         });
         if (files.Count > 0) InputBox.Text = files[0].TryGetLocalPath();
     }
+
+    private void OnOutputTextChanged(object? sender, TextChangedEventArgs e)
+    {
+        if (OpenOutputFolderButton != null)
+            OpenOutputFolderButton.IsEnabled = ExistingVideoDirectory(OutputBox.Text) != null;
+    }
+
+    private static string? ExistingVideoDirectory(string? path)
+    {
+        if (string.IsNullOrWhiteSpace(path)) return null;
+        try
+        {
+            var directory = Path.GetDirectoryName(Path.GetFullPath(path.Trim().Trim('"')));
+            return Directory.Exists(directory) ? directory : null;
+        }
+        catch (Exception error) when (error is ArgumentException or NotSupportedException or IOException) { return null; }
+    }
+
+    private void OpenVideoFolder_Click(object? sender, RoutedEventArgs e) => OpenVideoDirectory(InputBox.Text);
+    private void OpenOutputFolder_Click(object? sender, RoutedEventArgs e) => OpenVideoDirectory(OutputBox.Text);
+
+    private void OpenVideoDirectory(string? path)
+    {
+        try
+        {
+            var directory = ExistingVideoDirectory(path);
+            if (directory == null) { Log("目录不存在，请检查视频路径。"); return; }
+            var fullPath = Path.GetFullPath(path!.Trim().Trim('"'));
+            if (File.Exists(fullPath))
+            {
+                // Unicode shell item IDs avoid Explorer's command-line parsing
+                // ambiguities for filenames containing commas and brackets.
+                Marshal.ThrowExceptionForHR(SHParseDisplayName(fullPath, 0, out var item, 0, out _));
+                try { Marshal.ThrowExceptionForHR(SHOpenFolderAndSelectItems(item, 0, 0, 0)); }
+                finally { Marshal.FreeCoTaskMem(item); }
+            }
+            else Process.Start(new ProcessStartInfo(directory) { UseShellExecute = true })?.Dispose();
+        }
+        catch (Exception error) when (error is System.ComponentModel.Win32Exception or IOException or ArgumentException or NotSupportedException or COMException)
+        { Log("无法打开目录：" + error.Message); }
+    }
+
+    [DllImport("shell32.dll", CharSet = CharSet.Unicode)]
+    private static extern int SHParseDisplayName(string name, nint bindContext, out nint item, uint attributesIn, out uint attributesOut);
+    [DllImport("shell32.dll")]
+    private static extern int SHOpenFolderAndSelectItems(nint item, uint count, nint children, uint flags);
 
     private async void PickOutput_Click(object? sender, RoutedEventArgs e)
     {

@@ -3,6 +3,7 @@ using System.IO.MemoryMappedFiles;
 using System.Globalization;
 using System.Text.Json;
 using System.Text;
+using System.Runtime.InteropServices;
 
 namespace Dlss5Demo.Core;
 
@@ -34,7 +35,7 @@ public sealed unsafe class RtxVideoWorker : IDisposable
     internal static RtxVideoWorker Create(string host, string runtime, string log,
         int width, int height, int scale, int quality, bool hdr, int capacity,
         string workerExecutable = "", CancellationToken cancellationToken = default,
-        VsrEncoderConfiguration? encoder = null)
+        VsrEncoderConfiguration? encoder = null, bool deviceFrames = false)
     {
         var worker = new RtxVideoWorker();
         try
@@ -45,7 +46,7 @@ public sealed unsafe class RtxVideoWorker : IDisposable
             worker._processBytes = checked(worker._sourceBytes * scale * scale);
             worker._slotBytes = worker._sourceBytes + worker._processBytes;
             var name = "Local\\Dlss5Vsr_" + Guid.NewGuid().ToString("N");
-            worker._mapping = MemoryMappedFile.CreateNew(name, checked(worker._slotBytes * capacity));
+            worker._mapping = MemoryMappedFile.CreateNew(name, deviceFrames ? 1 : checked(worker._slotBytes * capacity));
             worker._view = worker._mapping.CreateViewAccessor();
             byte* pointer = null;
             worker._view.SafeMemoryMappedViewHandle.AcquirePointer(ref pointer);
@@ -74,6 +75,7 @@ public sealed unsafe class RtxVideoWorker : IDisposable
                 quality.ToString(CultureInfo.InvariantCulture), hdr ? "1" : "0", capacity.ToString(CultureInfo.InvariantCulture),
                 Path.GetFullPath(host), Path.GetFullPath(runtime), Path.GetFullPath(log),
                 Environment.ProcessId.ToString(CultureInfo.InvariantCulture) }) start.ArgumentList.Add(argument);
+            if (deviceFrames) start.ArgumentList.Add("--device-frames");
             worker._process = Process.Start(start) ?? throw new InvalidOperationException("Cannot start RTX Video worker.");
             worker._errors = worker._process.StandardError.ReadToEndAsync();
             worker._commands = new BinaryWriter(worker._process.StandardInput.BaseStream);
@@ -97,7 +99,7 @@ public sealed unsafe class RtxVideoWorker : IDisposable
                 }
                 else PipelineLog.Info("VSR GPU 编码不可用，回退原始帧编码路径。");
             }
-            PipelineLog.Info($"RTX VSR 独立进程已就绪: {width}×{height} → {width * scale}×{height * scale}; 共享内存 {capacity} 帧");
+            PipelineLog.Info($"RTX VSR 独立进程已就绪: {width}×{height} → {width * scale}×{height * scale}; {(deviceFrames ? "共享显存" : $"共享内存 {capacity} 帧")}");
             return worker;
         }
         catch (Exception error)
@@ -116,6 +118,45 @@ public sealed unsafe class RtxVideoWorker : IDisposable
         _commands!.Write(slot); _commands.Write(preview); _commands.Flush();
         if (_responses!.ReadInt32() != 1) throw FrameError("processing");
     }
+
+    internal CudaVideoContext.SharedBuffer[] ImportGpuFrames(CudaVideoContext cuda)
+    {
+        _commands!.Write(-5); _commands.Flush();
+        if (_responses!.ReadInt32() != 1) throw FrameError("shared GPU initialization");
+        // Drain the complete response before importing, so a failed CUDA import
+        // cannot leave the pipe in the middle of a descriptor.
+        var descriptors = new (nint Handle, ulong Allocation, ulong Bytes, uint Pitch, ulong Luid)[2];
+        for (int i = 0; i < 2; i++) descriptors[i] = ((nint)_responses.ReadInt64(),
+            _responses.ReadUInt64(), _responses.ReadUInt64(), _responses.ReadUInt32(), _responses.ReadUInt64());
+        var buffers = new CudaVideoContext.SharedBuffer[2];
+        try
+        {
+            for (int i = 0; i < 2; i++)
+            {
+                var descriptor = descriptors[i];
+                if (!DuplicateHandle(_process!.Handle, descriptor.Handle, GetCurrentProcess(), out var handle, 0, false, 2))
+                    throw new System.ComponentModel.Win32Exception(Marshal.GetLastWin32Error());
+                try { buffers[i] = new(cuda, handle, descriptor.Allocation, descriptor.Bytes, descriptor.Pitch, descriptor.Luid); }
+                finally { CloseHandle(handle); }
+            }
+            return buffers;
+        }
+        catch { foreach (var buffer in buffers) buffer?.Dispose(); throw; }
+    }
+
+    internal void ProcessGpuFrame()
+    {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+        _commands!.Write(-6); _commands.Flush();
+        if (_responses!.ReadInt32() != 1) throw FrameError("shared GPU processing");
+    }
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool DuplicateHandle(nint sourceProcess, nint source, nint targetProcess,
+        out nint target, uint access, [MarshalAs(UnmanagedType.Bool)] bool inherit, uint options);
+    [DllImport("kernel32.dll")] private static extern nint GetCurrentProcess();
+    [DllImport("kernel32.dll")] [return: MarshalAs(UnmanagedType.Bool)] private static extern bool CloseHandle(nint handle);
 
     internal void FinishEncoding()
     {
@@ -175,7 +216,9 @@ public sealed unsafe class RtxVideoWorker : IDisposable
         try
         {
             if (!OperatingSystem.IsWindows()) throw new PlatformNotSupportedException("RTX Video shared-memory worker requires Windows.");
-            if (args.Length != 12) throw new ArgumentException("Invalid RTX Video worker arguments.");
+            if (args.Length != 12 && !(args.Length == 13 && args[12] == "--device-frames"))
+                throw new ArgumentException("Invalid RTX Video worker arguments.");
+            bool deviceFrames = args.Length == 13;
             var parent = Process.GetProcessById(int.Parse(args[11], CultureInfo.InvariantCulture));
             // A crashed parent cannot leave an orphan inside a driver teardown call.
             _ = Task.Run(() =>
@@ -205,6 +248,26 @@ public sealed unsafe class RtxVideoWorker : IDisposable
                 {
                     var slot = commands.ReadInt32();
                     if (slot == -1) break;
+                    if (slot == -5)
+                    {
+                        var enabled = host.SupportsGpuFrames && RtxVideoSuperResolutionHost.vsr_gpu_frames_create() != 0;
+                        responses.Write(enabled ? 1 : 0);
+                        if (enabled) for (int kind = 0; kind < 2; kind++)
+                        {
+                            if (RtxVideoSuperResolutionHost.vsr_gpu_frames_info(kind, out var handle, out var allocation,
+                                out var bytes, out var pitch, out var luid) == 0) throw new InvalidOperationException("VSR shared GPU descriptor missing.");
+                            responses.Write((long)handle); responses.Write(allocation); responses.Write(bytes);
+                            responses.Write(pitch); responses.Write(luid);
+                        }
+                        responses.Flush(); continue;
+                    }
+                    if (slot == -6)
+                    {
+                        var deviceOk = RtxVideoSuperResolutionHost.vsr_gpu_frames_process() != 0;
+                        responses.Write(deviceOk ? 1 : 0); responses.Flush();
+                        if (!deviceOk) throw new InvalidOperationException("VSR shared GPU evaluation failed.");
+                        continue;
+                    }
                     if (slot == -3)
                     {
                         var configuration = JsonSerializer.Deserialize<VsrEncoderConfiguration>(commands.ReadString())
@@ -216,7 +279,7 @@ public sealed unsafe class RtxVideoWorker : IDisposable
                     {
                         responses.Write(host.FinishEncoding() ? 1 : 0); responses.Flush(); continue;
                     }
-                    if ((uint)slot >= (uint)capacity) throw new ArgumentOutOfRangeException(nameof(slot));
+                    if (deviceFrames || (uint)slot >= (uint)capacity) throw new ArgumentOutOfRangeException(nameof(slot));
                     var preview = commands.ReadBoolean();
                     var source = pointer + view.PointerOffset + slot * slotBytes;
                     var ok = host.ProcessFrame(source, source + sourceBytes, preview);

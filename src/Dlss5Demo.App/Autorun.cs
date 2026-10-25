@@ -14,6 +14,7 @@ internal static class Autorun
         var enableNr = true;
         var enableInterpolation = false;
         var gpuFrames = true;
+        var gpuEnhancement = true;
         var gpuTemporal = true;
         var interpolationMultiplier = 2;
         var interpolationBackend = FrameInterpolationBackend.NvidiaOpticalFlow;
@@ -43,6 +44,8 @@ internal static class Autorun
                 gpuFrames = args[++index] != "0";
             else if (args[index] == "--gpu-temporal" && index + 1 < args.Length)
                 gpuTemporal = args[++index] != "0";
+            else if (args[index] == "--gpu-enhancement" && index + 1 < args.Length)
+                gpuEnhancement = args[++index] != "0";
             else if (args[index] == "--interpolate" && index + 1 < args.Length)
                 enableInterpolation = args[++index] != "0";
             else if (args[index] == "--interpolation-multiplier" && index + 1 < args.Length)
@@ -85,6 +88,7 @@ internal static class Autorun
                 DecodeDeviceIndex = decodeDevice,
                 EnableInterpolation = enableInterpolation,
                 UseGpuFramePipeline = gpuFrames,
+                UseGpuEnhancementPipeline = gpuEnhancement,
                 Dlss = new DlssNrOptions { UseGpuTemporalProcessing = gpuTemporal },
                 InterpolationMultiplier = interpolationMultiplier,
                 InterpolationBackend = interpolationBackend,

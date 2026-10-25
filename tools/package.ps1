@@ -144,13 +144,14 @@ Dlss5VideoEnc
 应用已包含 .NET、FFmpeg、DLSS NR 和 RTX Video VSR 运行文件。
 RTX Video 2x/4x 需要兼容的 NVIDIA GPU 与驱动。
 解码默认优先 NVDEC，首帧初始化失败时自动软件回退；也可选择强制 NVDEC 或 CPU。
-NVDEC 使用驱动中的 CUDA/解码组件，不额外打包 CUDA Toolkit；SDR RIFE + NVENC 可全程使用 GPU 像素，NR/RTX Video 组合仍有主机帧接口。
+NVDEC 使用驱动中的 CUDA/解码组件，不额外打包 CUDA Toolkit；兼容的 SDR RIFE + NVENC 组合可通过共享显存衔接 NR/RTX Video，避免中间整帧回读和重复上传。NR 需要启用光流和 GPU 历史处理；CPU 滤镜等不适用条件保留兼容路径。
 SDR NR 的光流前后处理和历史累积优先留在显存，使用 NVOFA 专用光流引擎并与 NR 共享 GPU 缓冲；不支持时自动使用兼容路径。
 补帧支持 NVIDIA Vulkan 光流和 RIFE 4.25 Lite/4.25，倍率 2x/4x/6x。RIFE 仅支持 SDR，需要 Windows 11 24H2+ 与 Windows ML NVIDIA GPU 提供程序；首次使用可能下载提供程序。
 补帧在 NR/RTX Video 之后运行，HDR 颜色使用 16-bit 路径；进度与预览计数源帧。
 SDR 强制 HDR10 使用驱动 RTX Video HDR 在 Vulkan 补帧后映射为 BT.2020/PQ 并进行 10-bit 编码；RIFE 保持 SDR，跳过该映射。HDR 源保留原路径。
 在「NR 版本」中选择发布包包含的 DLL。后续可将 nvngx_dlssnr.dll 放入 runtime\任意版本名称\，点击刷新即可选择，无需更新程序。目录名可标注适用显卡；DLL 必须匹配 RTX 代际。
 「自动」保留 DLSS5_NR_RUNTIME_DLL、mods\nvngx_dlssnr.dll、DLSS5_GPU_SERIES 与默认 DLL 的原有优先级。明确选择的版本优先于自动策略。
+选择视频旁的“打开目录”定位源视频；输出路径旁的目录按钮定位产物，未生成时打开输出目录。
 AMD/Intel 的 OpenDLSS-NR 后端当前未接入，AMD/Intel 仅用于 FFmpeg AMF/QSV 编码。
 NVIDIA 组件仍遵循 licenses\NVIDIA_RTX_Video_SDK_License.pdf 中的许可。
 本应用使用 NVIDIA RTX Video SDK。第三方文件不受本项目源码许可覆盖。

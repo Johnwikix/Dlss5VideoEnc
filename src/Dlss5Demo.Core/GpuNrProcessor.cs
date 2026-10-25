@@ -22,7 +22,7 @@ internal sealed unsafe class GpuNrProcessor : IDisposable
     private nint _staging, _resetHost;
     private bool _nativeCreated, _disposed;
     private long _frames;
-    private readonly PipelineStageMetrics _metrics = new("GPU NR", "upload", "nvofa", "prepare", "nr", "history_readback");
+    private readonly PipelineStageMetrics _metrics = new("GPU NR", "input", "nvofa", "prepare", "nr", "history_output");
 
     internal static GpuNrProcessor? TryCreate(DlssNrHost host, int width, int height, bool hdr, double fps)
     {
@@ -31,7 +31,7 @@ internal sealed unsafe class GpuNrProcessor : IDisposable
         try
         {
             processor.Initialize();
-            PipelineLog.Info("光流/历史显存管线：CUDA 灰度 → NVOFA → CUDA 运动验证 → 共享显存 NR → CUDA 历史累积；仅回读切镜标志与最终帧。");
+            PipelineLog.Info("光流/历史显存管线：CUDA 灰度 → NVOFA → CUDA 运动验证 → 共享显存 NR → CUDA 历史累积；回读切镜标志，像素可直接交给 GPU 后续阶段。");
             return processor;
         }
         catch (Exception error) when (error is EntryPointNotFoundException or DllNotFoundException or InvalidOperationException)
@@ -75,7 +75,6 @@ internal sealed unsafe class GpuNrProcessor : IDisposable
             ?? throw new InvalidOperationException("NVOFA 设备路径不可用。"));
         long pixels = checked((long)_width * _height);
         _motion = Device(pixels * 8); _rejected = Device(pixels); _reset = Device(4);
-        _staging = Own(new CudaVideoContext.PinnedAllocation(_cuda, checked((nuint)(pixels * 4)))).Data;
         _resetHost = Own(new CudaVideoContext.PinnedAllocation(_cuda, 4)).Data;
         if (_history)
         {
@@ -87,13 +86,43 @@ internal sealed unsafe class GpuNrProcessor : IDisposable
 
     internal void Process(byte* input, byte* output)
     {
+        int slot = NextSlot();
+        if (_staging == 0) _staging = Own(new CudaVideoContext.PinnedAllocation(_cuda, checked((nuint)(_width * (long)_height * 4)))).Data;
+        var color = _shared[slot, 0]; var result = _shared[slot, 2];
+        long stamp = _metrics.Start();
+        _cuda.UploadRgbaRows(input, _staging, color.Data, color.Pitch, _width, _height);
+        _metrics.Record(0, stamp);
+        stamp = ProcessShared(slot);
+        _cuda.DownloadRgbaRows(result.Data, result.Pitch, _staging, output, _width, _height);
+        _metrics.Record(4, stamp); _frames++;
+    }
+
+    internal void ProcessDevice(CudaVideoFrame input, CudaVideoFrame output)
+    {
+        if (input.Width != _width || input.Height != _height || output.Width != _width || output.Height != _height)
+            throw new ArgumentException("NR 设备帧尺寸不符。");
+        int slot = NextSlot();
+        var color = _shared[slot, 0]; var result = _shared[slot, 2];
+        long stamp = _metrics.Start();
+        _cuda.SwapRedBlue(input.Data, input.Pitch, color.Data, color.Pitch, _width, _height);
+        _metrics.Record(0, stamp);
+        stamp = ProcessShared(slot);
+        _cuda.SwapRedBlue(result.Data, result.Pitch, output.Data, output.Pitch, _width, _height);
+        _metrics.Record(4, stamp); _frames++;
+    }
+
+    private int NextSlot()
+    {
         ObjectDisposedException.ThrowIf(_disposed, this);
         int slot = DlssNrHost.dlssnr_gpu_frames_next();
         if (slot < 0 || slot >= _shared.GetLength(0)) throw new InvalidOperationException("NR 共享显存槽不可用。");
+        return slot;
+    }
+
+    private long ProcessShared(int slot)
+    {
         var color = _shared[slot, 0]; var halfMotion = _shared[slot, 1]; var result = _shared[slot, 2];
         long stamp = _metrics.Start();
-        _cuda.UploadRgbaRows(input, _staging, color.Data, color.Pitch, _width, _height);
-        _metrics.Record(0, stamp); stamp = _metrics.Start();
         var flow = _flow.CalculateDevice(_cuda, color.Data, color.Pitch, _frames == 0);
         _metrics.Record(1, stamp); stamp = _metrics.Start();
         _cuda.TemporalExpand(flow, _motion, _rejected, _width, _height);
@@ -116,8 +145,7 @@ internal sealed unsafe class GpuNrProcessor : IDisposable
                 _motion, _errors, _reset, _width, _height, _weight, _fused);
             (_previousResidual, _nextResidual) = (_nextResidual, _previousResidual);
         }
-        _cuda.DownloadRgbaRows(result.Data, result.Pitch, _staging, output, _width, _height);
-        _metrics.Record(4, stamp); _frames++;
+        return stamp;
     }
 
     internal void ReportMetrics(long frames) => _metrics.Report(frames);

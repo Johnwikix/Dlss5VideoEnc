@@ -28,6 +28,16 @@ public sealed class RtxVideoSuperResolutionHost : IDisposable
     private static extern int vsr_encoder_finish();
 
     [DllImport(DllName, CallingConvention = CallingConvention.Cdecl)]
+    internal static extern int vsr_gpu_frames_create();
+    [DllImport(DllName, CallingConvention = CallingConvention.Cdecl)]
+    internal static extern int vsr_gpu_frames_info(int kind, out nint handle, out ulong allocation,
+        out ulong bytes, out uint pitch, out ulong luid);
+    [DllImport(DllName, CallingConvention = CallingConvention.Cdecl)]
+    internal static extern int vsr_gpu_frames_process();
+
+    internal bool SupportsGpuFrames => NativeLibrary.TryGetExport(_library, "vsr_gpu_frames_process", out _);
+
+    [DllImport(DllName, CallingConvention = CallingConvention.Cdecl)]
     private static extern void vsr_shutdown();
 
     private RtxVideoSuperResolutionHost(IntPtr library, int width, int height, int scale, bool hdr)

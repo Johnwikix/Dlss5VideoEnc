@@ -31,6 +31,7 @@ internal sealed unsafe partial class CudaVideoContext : IDisposable
             Check(cuStreamCreate(out _stream, 1));
             _module = LoadModule("pixels");
             Check(cuModuleGetFunction(out _rgba, _module, "rgba"));
+            Check(cuModuleGetFunction(out _swapRedBlue, _module, "swap_rb"));
             Check(cuModuleGetFunction(out _pad, _module, "pad"));
             Check(cuModuleGetFunction(out _paste, _module, "paste"));
             Check(cuModuleGetFunction(out _nv12, _module, "nv12"));
@@ -78,6 +79,16 @@ internal sealed unsafe partial class CudaVideoContext : IDisposable
         using var scope = Enter();
         // 帧交接只等待 NVDEC 的专用流，不阻塞其他会话的非阻塞推理流。
         Check(cuStreamSynchronize(decoderStream));
+    }
+
+    private nint _swapRedBlue;
+    // Exact byte permutation for NR/VSR RGBA <-> RIFE BGRA. Pitches can differ.
+    internal void SwapRedBlue(nint input, int sourcePitch, nint output, int destinationPitch, int width, int height)
+    {
+        using var scope = Enter();
+        int sp = sourcePitch / 4, dp = destinationPitch / 4;
+        void** args = stackalloc void*[6] { &input, &sp, &output, &dp, &width, &height };
+        Launch(_swapRedBlue, width, height, args);
     }
 
     internal void Pad(CudaVideoFrame source, nint output, int width, int height, int x, int y)

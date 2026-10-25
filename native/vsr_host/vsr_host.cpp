@@ -40,6 +40,12 @@ UINT64 g_input_staging_size = 0;
 UINT64 g_output_staging_size = 0;
 unsigned char *g_upload_map = nullptr;
 unsigned char *g_readback_map = nullptr;
+// One serialized cross-process transaction. CUDA finishes before processing;
+// ExecuteAndWait finishes before the caller consumes/reuses either buffer.
+ID3D12Resource *g_shared[2] = {};
+HANDLE g_shared_handles[2] = {};
+UINT64 g_shared_allocations[2] = {};
+bool g_device_frame = false;
 
 NVSDK_NGX_Parameter *g_parameters = nullptr;
 NVSDK_NGX_Handle *g_feature = nullptr;
@@ -204,7 +210,7 @@ void RecordUpload()
     auto to_copy = Transition(g_input, D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_COPY_DEST);
     g_list->ResourceBarrier(1, &to_copy);
     D3D12_TEXTURE_COPY_LOCATION source = {};
-    source.pResource = g_upload;
+    source.pResource = g_device_frame ? g_shared[0] : g_upload;
     source.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
     source.PlacedFootprint = g_input_footprint;
     D3D12_TEXTURE_COPY_LOCATION destination = {};
@@ -223,7 +229,7 @@ void RecordReadback()
     source.pResource = g_output;
     source.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
     D3D12_TEXTURE_COPY_LOCATION destination = {};
-    destination.pResource = g_readback;
+    destination.pResource = g_device_frame ? g_shared[1] : g_readback;
     destination.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
     destination.PlacedFootprint = g_output_footprint;
     g_list->CopyTextureRegion(&destination, 0, 0, 0, &source, nullptr);
@@ -424,6 +430,12 @@ void Shutdown()
     if (g_upload && g_upload_map) g_upload->Unmap(0, nullptr);
     if (g_readback && g_readback_map) g_readback->Unmap(0, nullptr);
     Release(g_upload); Release(g_readback); Release(g_input); Release(g_output);
+    for (int i = 0; i < 2; ++i) {
+        Release(g_shared[i]);
+        if (g_shared_handles[i]) CloseHandle(g_shared_handles[i]);
+        g_shared_handles[i] = nullptr; g_shared_allocations[i] = 0;
+    }
+    g_device_frame = false;
     Release(g_list); Release(g_allocator);
     g_upload_map = nullptr;
     g_readback_map = nullptr;
@@ -530,11 +542,18 @@ extern "C" __declspec(dllexport) int vsr_init(
 
 static int ProcessFrame(const void *input_rgba, void *output_rgba, int preview)
 {
-    if (g_feature == nullptr || input_rgba == nullptr || (g_encode_frame == nullptr && output_rgba == nullptr))
+    if (g_feature == nullptr || (!g_device_frame &&
+        (input_rgba == nullptr || (g_encode_frame == nullptr && output_rgba == nullptr))))
         return 0;
-    CopyInput(input_rgba);
+    if (!g_device_frame) CopyInput(input_rgba);
     if (!BeginCommands())
         return 0;
+    if (g_device_frame) {
+        const D3D12_RESOURCE_BARRIER barriers[] = {
+            Transition(g_shared[0], D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_COPY_SOURCE),
+            Transition(g_shared[1], D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_COPY_DEST)};
+        g_list->ResourceBarrier(2, barriers);
+    }
     RecordUpload();
     NVSDK_NGX_D3D12_VSR_Eval_Params parameters = {};
     parameters.pInput = g_input;
@@ -551,7 +570,14 @@ static int ProcessFrame(const void *input_rgba, void *output_rgba, int preview)
         return 0;
     }
     if (g_encode_frame == nullptr) RecordReadback();
+    if (g_device_frame) {
+        const D3D12_RESOURCE_BARRIER barriers[] = {
+            Transition(g_shared[0], D3D12_RESOURCE_STATE_COPY_SOURCE, D3D12_RESOURCE_STATE_COMMON),
+            Transition(g_shared[1], D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_COMMON)};
+        g_list->ResourceBarrier(2, barriers);
+    }
     if (!ExecuteAndWait()) return 0;
+    if (g_device_frame) return 1;
     if (g_encode_frame != nullptr) return g_encode_frame(0, output_rgba, preview);
     CopyOutput(output_rgba);
     return 1;
@@ -565,6 +591,49 @@ extern "C" __declspec(dllexport) int vsr_process(const void *input_rgba, void *o
 extern "C" __declspec(dllexport) int vsr_process_ex(const void *input_rgba, void *output_rgba, int preview)
 {
     return ProcessFrame(input_rgba, output_rgba, preview);
+}
+
+extern "C" __declspec(dllexport) int vsr_gpu_frames_create()
+{
+    if (!g_feature || g_hdr || g_encode_frame) return 0;
+    if (g_shared[0] && g_shared[1]) return 1;
+    const auto heap = HeapProperties(D3D12_HEAP_TYPE_DEFAULT);
+    for (int i = 0; i < 2; ++i) {
+        const auto description = BufferDescription(i == 0 ? g_input_staging_size : g_output_staging_size);
+        if (FAILED(g_device->CreateCommittedResource(&heap, D3D12_HEAP_FLAG_SHARED, &description,
+            D3D12_RESOURCE_STATE_COMMON, nullptr, IID_PPV_ARGS(&g_shared[i]))) ||
+            FAILED(g_device->CreateSharedHandle(g_shared[i], nullptr, GENERIC_ALL, nullptr, &g_shared_handles[i]))) {
+            for (int j = 0; j < 2; ++j) {
+                Release(g_shared[j]);
+                if (g_shared_handles[j]) CloseHandle(g_shared_handles[j]);
+                g_shared_handles[j] = nullptr; g_shared_allocations[j] = 0;
+            }
+            return 0;
+        }
+        g_shared_allocations[i] = g_device->GetResourceAllocationInfo(0, 1, &description).SizeInBytes;
+    }
+    Log("CUDA shared GPU frames enabled (no host pixel transport)");
+    return 1;
+}
+
+extern "C" __declspec(dllexport) int vsr_gpu_frames_info(int kind, HANDLE *handle,
+    UINT64 *allocation, UINT64 *bytes, UINT *pitch, UINT64 *luid)
+{
+    if (kind < 0 || kind > 1 || !g_shared[kind] || !handle || !allocation || !bytes || !pitch || !luid) return 0;
+    *handle = g_shared_handles[kind]; *allocation = g_shared_allocations[kind];
+    *bytes = kind == 0 ? g_input_staging_size : g_output_staging_size;
+    *pitch = (kind == 0 ? g_input_footprint : g_output_footprint).Footprint.RowPitch;
+    const LUID adapter = g_device->GetAdapterLuid(); memcpy(luid, &adapter, sizeof(adapter));
+    return 1;
+}
+
+extern "C" __declspec(dllexport) int vsr_gpu_frames_process()
+{
+    if (!g_shared[0] || !g_shared[1] || g_encode_frame) return 0;
+    g_device_frame = true;
+    const int result = ProcessFrame(nullptr, nullptr, 0);
+    g_device_frame = false;
+    return result;
 }
 
 extern "C" __declspec(dllexport) int vsr_encoder_init(const wchar_t *library_path,
