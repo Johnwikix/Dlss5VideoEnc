@@ -78,7 +78,6 @@ internal static class Autorun
             };
             var result = await DlssVideoPipeline.RunAsync(input, output, new TranscodeOptions
             {
-                FfmpegPath = DemoPaths.FfmpegPath,
                 HostDllPath = DemoPaths.HostDllPath,
                 RuntimeDllPath = enableNr ? NrRuntimeCatalog.ResolveArgument(nrRuntime) : "",
                 LogPath = DemoPaths.LogPath,

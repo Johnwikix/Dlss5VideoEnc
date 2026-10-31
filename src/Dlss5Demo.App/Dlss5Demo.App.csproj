@@ -31,8 +31,12 @@
 
   <ItemGroup>
     <ProjectReference Include="..\Dlss5Demo.Core\Dlss5Demo.Core.csproj" />
-    <None Include="..\..\runtime\av*.dll" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" Link="%(Filename)%(Extension)" />
-    <None Include="..\..\runtime\sw*.dll" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" Link="%(Filename)%(Extension)" />
+    <!-- 完整 runtime 随发布带走（宿主 DLL、全部 NR 显卡版本、ffmpeg、RIFE 模型），
+         按 runtime\ 子目录布局放置：DemoPaths 从 exe 目录逐级向上定位该目录。 -->
+    <None Include="..\..\runtime\**\*.dll;..\..\runtime\**\*.exe;..\..\runtime\**\*.onnx;..\..\runtime\**\*.txt"
+          Exclude="..\..\runtime\Cache\**;..\..\runtime\**\*.log"
+          CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest"
+          Link="runtime\%(RecursiveDir)%(Filename)%(Extension)" />
   </ItemGroup>
 
 </Project>

@@ -101,7 +101,6 @@ var progress = new Progress<TranscodeProgress>(update =>
 
 var result = await DlssVideoPipeline.RunAsync(input, output, new TranscodeOptions
 {
-    FfmpegPath = DemoPaths.FfmpegPath,
     HostDllPath = DemoPaths.HostDllPath,
     RuntimeDllPath = runtimeDllPath,
     LogPath = DemoPaths.LogPath,

@@ -18,32 +18,6 @@ public static class DemoPaths
     public static string VsrRuntimeDllPath => Path.Combine(RuntimeDir, "nvngx_vsr.dll");
     public static string LogPath => Path.Combine(RuntimeDir, "dlss_run.log");
     public static string VsrLogPath => Path.Combine(RuntimeDir, "vsr_run.log");
-    public static string FfmpegPath
-    {
-        get
-        {
-            var configured = Environment.GetEnvironmentVariable("DLSS5_FFMPEG");
-            if (!string.IsNullOrWhiteSpace(configured))
-                return configured;
-
-            // Packaged builds place ffmpeg.exe beside the application. Prefer it
-            // so a packaged copy works without requiring a global PATH entry.
-            var local = Path.Combine(AppContext.BaseDirectory, "ffmpeg.exe");
-            if (File.Exists(local)) return local;
-            var interpolation = Path.Combine(RuntimeDir, "ffmpeg.exe");
-            return File.Exists(interpolation) ? interpolation : "ffmpeg";
-        }
-    }
-    public static string FfprobePath
-    {
-        get
-        {
-            var ffmpeg = FfmpegPath;
-            if (string.Equals(Path.GetFileNameWithoutExtension(ffmpeg), "ffmpeg", StringComparison.OrdinalIgnoreCase))
-                return Path.Combine(Path.GetDirectoryName(ffmpeg) ?? "", "ffprobe" + Path.GetExtension(ffmpeg));
-            return "ffprobe";
-        }
-    }
 
     private static string FindRuntimeDir()
     {

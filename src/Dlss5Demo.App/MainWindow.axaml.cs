@@ -365,7 +365,7 @@ public partial class MainWindow : Window
         {
             _suggestedOutputPath = OutputFileNames.ForInput(path, ContainerExtension(CollectVideoOptions().Container));
             OutputBox!.Text = _suggestedOutputPath;
-            var video = await Task.Run(() => MediaProbe.Probe(path, DemoPaths.FfprobePath));
+            var video = await Task.Run(() => MediaProbe.Probe(path));
             if (generation != _probeGeneration || _closed) return;
             _video = video;
             InfoText.Text = $"{_video.Codec} · {_video.Width}×{_video.Height} · {_video.Fps:0.##} fps · {_video.PixelFormat}\n" +
@@ -601,7 +601,7 @@ public partial class MainWindow : Window
         PipelineStatus.Text = "DLSS NR 正在处理帧…"; LivePreviewText.Text = "SYNC · 源帧与输出帧同步";
         var options = new TranscodeOptions
         {
-            FfmpegPath = DemoPaths.FfmpegPath, HostDllPath = DemoPaths.HostDllPath,
+            HostDllPath = DemoPaths.HostDllPath,
             RuntimeDllPath = runtimeDllPath,
             LogPath = DemoPaths.LogPath,
             EnableNr = EnableNrBox.IsChecked == true,

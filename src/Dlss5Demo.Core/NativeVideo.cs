@@ -15,7 +15,13 @@ internal static unsafe class NativeVideo
         ffmpeg.RootPath = File.Exists(Path.Combine(DemoPaths.RuntimeDir, "avutil-61.dll")) ? DemoPaths.RuntimeDir : AppContext.BaseDirectory;
         return handles;
     });
-    internal static void Initialize() { _ = Libraries.Value; _ = ffmpeg.av_version_info(); }
+    internal static void Initialize()
+    {
+        _ = Libraries.Value;
+        _ = ffmpeg.av_version_info();
+        // 与旧 ffmpeg.exe 子进程的 -loglevel error 对齐，避免 libavfilter 的 info 级日志泄漏到控制台。
+        ffmpeg.av_log_set_level(ffmpeg.AV_LOG_ERROR);
+    }
     internal static void Check(int result, string action)
     {
         if (result >= 0) return;

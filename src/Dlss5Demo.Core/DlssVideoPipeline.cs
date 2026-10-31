@@ -1,13 +1,11 @@
 using System.Diagnostics;
 using System.Buffers;
 using System.Runtime.InteropServices;
-using System.Text;
 
 namespace Dlss5Demo.Core;
 
 public sealed record TranscodeOptions
 {
-    public string FfmpegPath { get; init; } = "ffmpeg";
     public string HostDllPath { get; init; } = "";
     public string RuntimeDllPath { get; init; } = "";
     public string LogPath { get; init; } = "";
@@ -71,7 +69,7 @@ public sealed record TranscodeResult
 }
 
 /// <summary>
-/// ffmpeg 解码（rawvideo RGBA 管道）→ DLSS NR 逐帧处理 → ffmpeg 编码、音频和封装。
+/// 进程内解码（软解/NVDEC → RGBA 帧）→ DLSS NR 逐帧处理 → 进程内编码、音频与封装。无 ffmpeg 子进程。
 /// </summary>
 public static partial class DlssVideoPipeline
 {
@@ -103,9 +101,8 @@ public static partial class DlssVideoPipeline
         }
         catch (Exception ex) when (cancellationToken.IsCancellationRequested)
         {
-            // 取消回调会杀掉两个 ffmpeg 子进程：随后的管道破裂（“管道已结束”）
-            // 和 ExitCode 校验失败都是取消的连带产物，统一归并为取消，
-            // 不能当成转码失败报告给 UI。
+            // 取消会让解码中断回调生效：随后的管道中断与失败都是取消的连带产物，
+            // 统一归并为取消，不能当成转码失败报告给 UI。
             PipelineLog.Info($"取消时归并 {ex.GetType().Name}: {ex.Message.Split('\n')[0]}");
             throw new OperationCanceledException("转码已取消。", ex, cancellationToken);
         }
@@ -129,7 +126,7 @@ public static partial class DlssVideoPipeline
 
         if (options.MaxFrames is <= 0) throw new ArgumentOutOfRangeException(nameof(options.MaxFrames));
         options = NormalizeHdrOptions(options);
-        var video = MediaProbe.Probe(inputPath, DemoPaths.FfprobePath);
+        var video = MediaProbe.Probe(inputPath);
         ValidateDecodeOptions(options, video);
         ValidateDriverHdrOutput(options, video);
         if (options.EnableInterpolation && video.FrameCount == 0
@@ -194,14 +191,12 @@ public static partial class DlssVideoPipeline
                 decoder, Stream.Null, host, vsr, plan, totalFrames, options.LogPath, progress,
                 options.EnablePreviewFrames ? options.PreviewSink : null, options.PreviewFramesPerSecond,
                 video.Fps, options.UseAsyncNrQueue, cancellationToken)).ConfigureAwait(false);
-            decoder.Process.WaitForExit(30_000);
-            if (decoder.Process.ExitCode != 0 || totalFrames > 0 && outcome.Frames < totalFrames)
-                throw new InvalidOperationException("ffmpeg 解码提前结束：\n" + decoder.ErrorTail);
+            if (totalFrames > 0 && outcome.Frames < totalFrames)
+                throw new InvalidOperationException($"解码提前结束：期望 {totalFrames} 帧，只读到 {outcome.Frames} 帧。");
             var finalize = Stopwatch.StartNew();
             vsr.FinishEncoding();
-            await RunPassAsync(options.FfmpegPath, EncoderArguments(inputPath, outputPath, options, video,
-                plan.ProcessWidth, plan.ProcessHeight, plan.Hdr, vsr.Encoder!.OutputPath,
-                encodedInput: true, encodedFrameCount: outcome.Frames), cancellationToken).ConfigureAwait(false);
+            await Task.Run(() => RemuxEncoded(inputPath, outputPath, options, video,
+                vsr.Encoder!.OutputPath, outcome.Frames), cancellationToken).ConfigureAwait(false);
             outcome.Elapsed += finalize.Elapsed;
             PipelineLog.Info($"VSR 编码排空与封装: {finalize.Elapsed.TotalMilliseconds:0} ms（计入最终处理耗时）");
         }
@@ -218,22 +213,18 @@ public static partial class DlssVideoPipeline
                     options.PreviewFramesPerSecond, video.Fps, options.UseAsyncNrQueue, cancellationToken)).ConfigureAwait(false);
                 var finalize = Stopwatch.StartNew();
                 encoder.Complete();
-                if (!decoder.Process.WaitForExit(30_000)) throw new TimeoutException("解码进程未能退出。");
-                if (decoder.Process.ExitCode != 0 || totalFrames > 0 && outcome.Frames < totalFrames)
-                    throw new InvalidOperationException("解码提前结束：" + decoder.ErrorTail);
-                await RunPassAsync(options.FfmpegPath, EncoderArguments(inputPath, outputPath, options, video,
-                    plan.ProcessWidth, plan.ProcessHeight, false, cache, encodedInput: true,
-                    encodedFrameCount: encoder.OutputFrames), cancellationToken).ConfigureAwait(false);
+                if (totalFrames > 0 && outcome.Frames < totalFrames)
+                    throw new InvalidOperationException($"解码提前结束：期望 {totalFrames} 帧，只读到 {outcome.Frames} 帧。");
+                await Task.Run(() => RemuxEncoded(inputPath, outputPath, options, video, cache, encoder.OutputFrames), cancellationToken).ConfigureAwait(false);
                 outcome.Elapsed += finalize.Elapsed;
             }
             finally { try { File.Delete(cache); } catch (IOException) { } }
         }
         else
         {
-            await using var encoder = new CommandDrain("ffmpeg-encode", options.FfmpegPath,
-                EncoderArguments(inputPath, outputPath, options, video,
-                    plan.ProcessWidth, plan.ProcessHeight, plan.Hdr), redirectStdin: true);
-            using var cancellation = cancellationToken.Register(() => { decoder.Abort(); TryKill(encoder.Process); });
+            await using var encoder = new RawVideoEncoder(inputPath, outputPath, options, video,
+                plan.ProcessWidth, plan.ProcessHeight, plan.Hdr, cancellationToken);
+            using var cancellation = cancellationToken.Register(() => { decoder.Abort(); encoder.Close(); });
             outcome = await Task.Run(() => RunFrameLoop(
                 decoder, encoder, host, vsr, plan, totalFrames, options.LogPath, progress,
                 options.EnablePreviewFrames ? options.PreviewSink : null,
@@ -374,18 +365,21 @@ public static partial class DlssVideoPipeline
                         options.PreviewFramesPerSecond, video.Fps, options.UseAsyncNrQueue, cancellationToken)).ConfigureAwait(false);
                     interpolation?.Complete();
                     hdr?.Complete();
-                    decoder.Process.WaitForExit(30_000);
-                    if (decoder.Process.ExitCode != 0)
-                        throw new InvalidOperationException("ffmpeg 解码失败：\n" + decoder.ErrorTail);
                 }
             }
 
-            await RunPassAsync(options.FfmpegPath,
-                EncoderArguments(inputPath, outputPath, options, video,
-                    plan.ProcessWidth, plan.ProcessHeight, plan.Hdr, rawPath, 1, passLog), cancellationToken).ConfigureAwait(false);
-            await RunPassAsync(options.FfmpegPath,
-                EncoderArguments(inputPath, outputPath, options, video,
-                    plan.ProcessWidth, plan.ProcessHeight, plan.Hdr, rawPath, 2, passLog), cancellationToken).ConfigureAwait(false);
+            await Task.Run(() =>
+            {
+                using var first = new RawVideoEncoder(inputPath, outputPath, options, video,
+                    plan.ProcessWidth, plan.ProcessHeight, plan.Hdr, cancellationToken, rawPath, pass: 1, passLog);
+                first.RunFromRawFile();
+            }, cancellationToken).ConfigureAwait(false);
+            await Task.Run(() =>
+            {
+                using var second = new RawVideoEncoder(inputPath, outputPath, options, video,
+                    plan.ProcessWidth, plan.ProcessHeight, plan.Hdr, cancellationToken, rawPath, pass: 2, passLog);
+                second.RunFromRawFile();
+            }, cancellationToken).ConfigureAwait(false);
 
             started.Stop();
             var outputInfo = new FileInfo(outputPath);
@@ -410,15 +404,6 @@ public static partial class DlssVideoPipeline
         }
     }
 
-    private static async Task RunPassAsync(string ffmpegPath, IReadOnlyList<string> arguments,
-        CancellationToken cancellationToken)
-    {
-        await using var process = new CommandDrain("ffmpeg-pass", ffmpegPath, arguments);
-        await process.WaitForExitAsync(cancellationToken).ConfigureAwait(false);
-        if (process.Process.ExitCode != 0)
-            throw new InvalidOperationException("ffmpeg 编码/封装失败：\n" + process.ErrorTail);
-    }
-
     private static (long Frames, TimeSpan Elapsed) RunFrameStream(
         FrameDecoder decoder, Stream destination, DlssNrHost? host, RtxVideoWorker? vsr,
         ProcessingPlan plan, long totalFrames, string logPath, IProgress<TranscodeProgress>? progress,
@@ -428,33 +413,25 @@ public static partial class DlssVideoPipeline
             preview, previewFramesPerSecond, sourceFps, useAsyncNrQueue, decoder.Abort, cancellationToken);
 
     private static (long Frames, TimeSpan Elapsed) RunFrameLoop(
-        FrameDecoder decoder, CommandDrain encoder, DlssNrHost? host, RtxVideoWorker? vsr,
+        FrameDecoder decoder, RawVideoEncoder encoder, DlssNrHost? host, RtxVideoWorker? vsr,
         ProcessingPlan plan, long totalFrames, string logPath, IProgress<TranscodeProgress>? progress,
         ITranscodePreviewSink? preview, int previewFramesPerSecond, double sourceFps, bool useAsyncNrQueue,
         CancellationToken cancellationToken, RifeGpuSession? rife, VulkanInterpolationSession? vulkan, int multiplier, DriverHdrMapper? hdrMapper)
     {
         var stopwatch = Stopwatch.StartNew();
-        using var hdr = hdrMapper == null ? null : new DriverHdrFrameStream(hdrMapper, encoder.Process.StandardInput.BaseStream, cancellationToken);
-        Stream destination = hdr ?? encoder.Process.StandardInput.BaseStream;
+        using var hdr = hdrMapper == null ? null : new DriverHdrFrameStream(hdrMapper, encoder, cancellationToken);
+        Stream destination = hdr ?? (Stream)encoder;
         using InterpolationFrameStream? interpolation = rife != null ? new RifeFrameStream(destination, rife, multiplier, cancellationToken)
             : vulkan != null ? new VulkanFrameStream(destination, vulkan, cancellationToken) : null;
         var result = RunFrameCore(decoder, interpolation ?? destination, host, vsr, plan,
             totalFrames, logPath, progress, preview, previewFramesPerSecond, sourceFps, useAsyncNrQueue,
-            () => { decoder.Abort(); TryKill(encoder.Process); }, cancellationToken);
+            decoder.Abort, cancellationToken);
         interpolation?.Complete();
         hdr?.Complete();
-        encoder.Process.StandardInput.Close();
-        if (!encoder.Process.WaitForExit(120_000))
-            throw new TimeoutException("ffmpeg 编码排空超时。\n" + encoder.ErrorTail);
-        if (!decoder.Process.WaitForExit(30_000))
-            throw new TimeoutException("ffmpeg 解码进程未能退出。\n" + decoder.ErrorTail);
-        if (encoder.Process.ExitCode != 0)
-            throw new InvalidOperationException("ffmpeg 编码失败：\n" + encoder.ErrorTail);
-        if (decoder.Process.ExitCode != 0)
-            throw new InvalidOperationException("ffmpeg 解码失败：\n" + decoder.ErrorTail);
+        encoder.Complete();
         if (totalFrames > 0 && result.Frames < totalFrames)
             throw new InvalidOperationException(
-                $"解码提前结束：期望 {totalFrames} 帧，只读到 {result.Frames} 帧。\n{decoder.ErrorTail}");
+                $"解码提前结束：期望 {totalFrames} 帧，只读到 {result.Frames} 帧。");
         // Interpolation/encoding may still be draining on the GPU after the raw
         // producer reaches EOF. Include that work in final elapsed time and FPS.
         stopwatch.Stop();
@@ -748,211 +725,6 @@ public static partial class DlssVideoPipeline
         var srgb = value <= 0.0031308f ? value * 12.92f : 1.055f * MathF.Pow(value, 1 / 2.4f) - 0.055f;
         return (byte)Math.Clamp(MathF.Round(srgb * 255f), 0, 255);
     }
-    private static IReadOnlyList<string> DecoderArguments(
-        string input, int? maxFrames, VideoInfo video, bool hdr, bool exactFrames = false,
-        string? cudaSurface = null, int cudaDeviceIndex = 0)
-    {
-        var arguments = new List<string> { "-hide_banner", "-loglevel", "error", "-nostdin" };
-        if (cudaSurface != null)
-            arguments.AddRange(["-hwaccel", "cuda", "-hwaccel_device", cudaDeviceIndex.ToString(System.Globalization.CultureInfo.InvariantCulture),
-                "-hwaccel_output_format", "cuda", "-extra_hw_frames", "4", "-threads", "1"]);
-        arguments.AddRange(["-i", input, "-map", "0:v:0", "-an", "-sn", "-dn"]);
-        // hwdownload accepts hardware frames only. A decoder silently selecting
-        // software cannot be mistaken for successful NVDEC decoding.
-        // Restore the software decoder's layout before color conversion. swscale
-        // uses different chroma upsampling for NV12→RGBA and YUV420P→RGBA even
-        // when their decoded YUV pixels are identical (32.67 dB on the fixture).
-        var download = cudaSurface == null ? ""
-            : $"hwdownload,format={cudaSurface},format={video.PixelFormat},";
-        if (hdr)
-        {
-            var transfer = string.IsNullOrWhiteSpace(video.ColorTransfer) ? "smpte2084" : video.ColorTransfer;
-            var primaries = string.IsNullOrWhiteSpace(video.ColorPrimaries) ? "bt2020" : video.ColorPrimaries;
-            var matrix = string.IsNullOrWhiteSpace(video.ColorSpace) ? "bt2020nc" : video.ColorSpace;
-            var range = video.ColorRange is "pc" or "jpeg" or "full" ? "full" : "limited";
-            arguments.AddRange(["-vf",
-                $"{download}zscale=matrixin={matrix}:matrix={matrix}:transferin={transfer}:transfer={transfer}:primariesin={primaries}:primaries={primaries}:rangein={range}:range=full,format=gbrp16le,format=rgba64le",
-                "-f", "rawvideo", "-pix_fmt", "rgba64le"]);
-        }
-        else
-            arguments.AddRange(["-vf", download + "format=rgba", "-f", "rawvideo", "-pix_fmt", "rgba"]);
-        // The interpolation clock is constructed from source frames. Letting
-        // the rawvideo muxer duplicate timestamp gaps would interpolate twice.
-        if (exactFrames) arguments.AddRange(["-fps_mode", "passthrough"]);
-        if (maxFrames is { } limit)
-        {
-            arguments.Add("-frames:v");
-            arguments.Add(limit.ToString());
-        }
-        arguments.Add("pipe:1");
-        return arguments;
-    }
-
-    private static IReadOnlyList<string> EncoderArguments(
-        string input, string output, TranscodeOptions options, VideoInfo video,
-        int rawWidth, int rawHeight, bool hdr,
-        string? rawInputPath = null, int pass = 0, string? passLog = null, bool encodedInput = false,
-        long? encodedFrameCount = null)
-    {
-        // The path is a newly created file owned by this session; its live
-        // reservation prevents replacement. Existing user files are never passed here.
-        var arguments = new List<string> { "-hide_banner", "-loglevel", "error", "-y" };
-        var mappedHdr = NeedsDriverHdr(options, video);
-        var outputVideo = mappedHdr ? DriverHdrOutputVideo(video) : video;
-        var rawFormat = mappedHdr ? "x2bgr10le" : hdr ? "rgba64le" : "rgba";
-        if (encodedInput)
-            arguments.AddRange(["-i", rawInputPath ?? throw new ArgumentNullException(nameof(rawInputPath))]);
-        else if (rawInputPath is null)
-            arguments.AddRange(["-f", "rawvideo", "-framerate", options.EnableInterpolation ? VulkanFrameInterpolation.OutputRate(video, options.InterpolationMultiplier) : video.FrameRate,
-                "-pix_fmt", rawFormat, "-s", $"{rawWidth}x{rawHeight}", "-i", "pipe:0"]);
-        else
-            arguments.AddRange(["-f", "rawvideo", "-framerate", options.EnableInterpolation ? VulkanFrameInterpolation.OutputRate(video, options.InterpolationMultiplier) : video.FrameRate,
-                "-pix_fmt", rawFormat, "-s", $"{rawWidth}x{rawHeight}", "-i", rawInputPath]);
-
-        var profile = options.Video;
-        var includeAudio = options.CopyAudio && video.HasAudio && profile.AudioCodec != AudioCodec.None
-            && profile.Container != VideoContainer.Gif && pass != 1;
-        var copyAudio = includeAudio && profile.AudioCodec == AudioCodec.Copy;
-        if (includeAudio)
-        {
-            arguments.Add("-i");
-            arguments.Add(input);
-        }
-        arguments.Add("-map");
-        arguments.Add("0:v:0");
-        if (includeAudio)
-        {
-            arguments.Add("-map");
-            arguments.Add("1:a:0?");
-        }
-
-        var filters = encodedInput ? "" : BuildFilterChain(profile, outputVideo, options.VideoEncoder,
-            options.EnableInterpolation, mappedHdr);
-        if (!string.IsNullOrWhiteSpace(filters))
-        {
-            arguments.Add("-vf");
-            arguments.Add(filters);
-        }
-        arguments.AddRange(encodedInput ? ["-c:v", "copy"] : VideoEncoderArguments(options, outputVideo, hdr || mappedHdr, mappedHdr));
-        if (pass is 1 or 2)
-            arguments.AddRange(["-pass", pass.ToString(System.Globalization.CultureInfo.InvariantCulture),
-                options.VideoEncoder == "libx265" ? "-x265-stats" : "-passlogfile",
-                passLog ?? Path.Combine(Path.GetTempPath(), "dlss5-pass")]);
-        if (copyAudio)
-        {
-            arguments.Add("-c:a");
-            arguments.Add("copy");
-        }
-        else if (includeAudio)
-        {
-            arguments.Add("-c:a");
-            arguments.Add(AudioEncoder(profile.AudioCodec));
-            if (profile.AudioCodec != AudioCodec.Flac)
-            {
-                arguments.Add("-b:a");
-                arguments.Add($"{Math.Clamp(profile.AudioBitrateKbps, 32, 512)}k");
-            }
-            if (Math.Abs(profile.AudioGainDb) > 0.01)
-            {
-                arguments.Add("-af");
-                arguments.Add($"volume={profile.AudioGainDb.ToString("0.###", System.Globalization.CultureInfo.InvariantCulture)}dB");
-            }
-        }
-        if (profile.PreserveHdr && (video.IsHdr || profile.ForceHdr))
-        {
-            arguments.Add("-color_primaries"); arguments.Add(string.IsNullOrWhiteSpace(outputVideo.ColorPrimaries) ? "bt2020" : outputVideo.ColorPrimaries);
-            arguments.Add("-color_trc"); arguments.Add(string.IsNullOrWhiteSpace(outputVideo.ColorTransfer) ? "smpte2084" : outputVideo.ColorTransfer);
-            arguments.Add("-colorspace"); arguments.Add(string.IsNullOrWhiteSpace(outputVideo.ColorSpace) ? "bt2020nc" : outputVideo.ColorSpace);
-            if (!string.IsNullOrWhiteSpace(outputVideo.ColorRange)) { arguments.Add("-color_range"); arguments.Add(outputVideo.ColorRange); }
-            if (!mappedHdr)
-            {
-                arguments.Add("-metadata:s:v:0"); arguments.Add("master-display=G(13250,34500)B(7500,3000)R(34000,16000)WP(15635,16450)L(10000000,1)");
-                arguments.Add("-metadata:s:v:0"); arguments.Add("max-cll=1000,400");
-            }
-        }
-        if (profile.Container == VideoContainer.Gif)
-            arguments.AddRange(["-loop", Math.Max(0, profile.GifLoop).ToString(System.Globalization.CultureInfo.InvariantCulture)]);
-        var sourceFrameLimit = options.MaxFrames is { } requested
-            ? video.FrameCount > 0 ? Math.Min(requested, video.FrameCount) : requested
-            : video.FrameCount > 0 ? video.FrameCount : (long?)null;
-        var frameLimit = encodedInput ? encodedFrameCount : options.EnableInterpolation
-            ? sourceFrameLimit * options.InterpolationMultiplier : options.MaxFrames;
-        if (frameLimit is { } maxFrames)
-        {
-            arguments.AddRange(["-frames:v", Math.Max(1, maxFrames).ToString(System.Globalization.CultureInfo.InvariantCulture)]);
-            if (includeAudio && video.Fps > 0)
-            {
-                // Audio can demux far ahead of a slow rawvideo pipe. Bound both
-                // streams by source-frame duration instead of producer timing.
-                var limitedFrames = encodedInput && encodedFrameCount is { } actualOutputFrames
-                    ? actualOutputFrames / (options.EnableInterpolation ? options.InterpolationMultiplier : 1)
-                    : options.EnableInterpolation ? sourceFrameLimit!.Value
-                    : video.FrameCount > 0 ? Math.Min(Math.Max(1, maxFrames), video.FrameCount) : Math.Max(1, maxFrames);
-                arguments.AddRange(["-t", (limitedFrames / video.Fps).ToString("0.#########", System.Globalization.CultureInfo.InvariantCulture)]);
-            }
-        }
-        // Compressed video is already finite. -shortest can stop stream-copy on
-        // an early audio/DTS boundary and discard reordered video tail packets.
-        // Bound its audio to the actual processed frame duration instead.
-        if (includeAudio && !encodedInput && !options.EnableInterpolation)
-            arguments.Add("-shortest");
-        if (options.EnableInterpolation)
-        {
-            // The interpolation filter clears copied source-frame durations.
-            // Supply the multiplied rational rate so CFR retains every original
-            // and generated frame at its PTS without duplicating the first frame.
-            arguments.AddRange(["-fps_mode", "cfr", "-r", VulkanFrameInterpolation.OutputRate(video, options.InterpolationMultiplier)]);
-            if (sourceFrameLimit == null && video.DurationSeconds > 0)
-                arguments.AddRange(["-t", video.DurationSeconds.ToString("0.#########", System.Globalization.CultureInfo.InvariantCulture)]);
-        }
-        if (pass == 1)
-            arguments.AddRange(["-f", "null", OperatingSystem.IsWindows() ? "NUL" : "/dev/null"]);
-        else
-            arguments.Add(output);
-        return arguments;
-    }
-
-    private static IReadOnlyList<string> VideoEncoderArguments(TranscodeOptions options, VideoInfo video, bool hdr, bool mappedHdr)
-    {
-        var profile = options.Video;
-        var encoder = string.IsNullOrWhiteSpace(options.VideoEncoder) ? VideoCodecNames.Encoder(profile) : options.VideoEncoder;
-        var quality = Math.Clamp(profile.Quality > 0 ? profile.Quality : options.Quality, 0, 51);
-        var list = new List<string> { "-c:v", encoder };
-        if (encoder.EndsWith("_nvenc", StringComparison.Ordinal))
-        {
-            list.AddRange(["-preset", string.IsNullOrWhiteSpace(profile.EncoderPreset) ? "p5" : profile.EncoderPreset,
-                "-tune", "hq", "-rc", profile.RateControl == RateControlMode.Bitrate ? "vbr" : "constqp"]);
-            if (profile.RateControl == RateControlMode.Bitrate)
-            {
-                list.AddRange(["-b:v", $"{Math.Max(100, profile.VideoBitrateKbps)}k"]);
-            }
-            else list.AddRange(["-cq", quality.ToString(), "-b:v", "0"]);
-        }
-        else if (encoder.EndsWith("_qsv", StringComparison.Ordinal) || encoder.EndsWith("_amf", StringComparison.Ordinal))
-        {
-            list.AddRange(["-global_quality", quality.ToString()]);
-        }
-        else if (encoder is "gif")
-        {
-            // GIF is configured entirely through the filter chain.
-        }
-        else
-        {
-            list.AddRange(["-preset", SoftwarePreset(profile.EncoderPreset),
-                profile.RateControl == RateControlMode.Bitrate ? "-b:v" : "-crf",
-                profile.RateControl == RateControlMode.Bitrate ? $"{Math.Max(100, profile.VideoBitrateKbps)}k" : quality.ToString()]);
-        }
-        if (encoder == "gif")
-            list.AddRange(["-pix_fmt", "pal8"]);
-        else
-        {
-            var hdrFormat = !mappedHdr || encoder.EndsWith("_nvenc", StringComparison.Ordinal) || encoder.EndsWith("_qsv", StringComparison.Ordinal)
-                || encoder.EndsWith("_amf", StringComparison.Ordinal) ? "p010le" : "yuv420p10le";
-            list.AddRange(["-pix_fmt", hdr && profile.VideoCodec != VideoCodec.H264 ? hdrFormat : "yuv420p"]);
-        }
-        return list;
-    }
-
     private static string SoftwarePreset(string preset) => preset.ToLowerInvariant() switch
     {
         "p1" => "ultrafast",
@@ -1012,102 +784,5 @@ public static partial class DlssVideoPipeline
             filters.Add($"setparams=color_primaries={primaries}:color_trc={transfer}:colorspace={matrix}");
         }
         return string.Join(',', filters);
-    }
-
-    private static bool Fill(Stream stream, Span<byte> buffer)
-    {
-        var filled = 0;
-        while (filled < buffer.Length)
-        {
-            var read = stream.Read(buffer[filled..]);
-            if (read <= 0)
-            {
-                if (filled > 0) throw new EndOfStreamException("解码器返回了不完整的视频帧。");
-                return false;
-            }
-            filled += read;
-        }
-        return true;
-    }
-
-    private static void TryKill(Process process)
-    {
-        try
-        {
-            if (!process.HasExited)
-                process.Kill(entireProcessTree: true);
-        }
-        catch { /* 取消路径上的清理失败不再传播 */ }
-    }
-
-    /// <summary>包装 ffmpeg 子进程：异步排空 stderr（保留尾部），退出时确保回收。</summary>
-    private sealed class CommandDrain : IAsyncDisposable
-    {
-        private readonly StringBuilder _stderr = new();
-        private readonly Task _drainTask;
-
-        public CommandDrain(string name, string executable, IReadOnlyList<string> arguments,
-            bool redirectStdout = false, bool redirectStdin = false)
-        {
-            var startInfo = new ProcessStartInfo
-            {
-                FileName = executable,
-                RedirectStandardOutput = redirectStdout,
-                RedirectStandardInput = redirectStdin,
-                RedirectStandardError = true,
-                UseShellExecute = false,
-                CreateNoWindow = true,
-                StandardErrorEncoding = Encoding.UTF8,
-            };
-            if (redirectStdout)
-                startInfo.StandardOutputEncoding = Encoding.UTF8;
-            foreach (var argument in arguments)
-                startInfo.ArgumentList.Add(argument);
-            Process = Process.Start(startInfo)
-                ?? throw new InvalidOperationException($"无法启动 {name}（{executable}）。");
-            _drainTask = Task.Run(async () =>
-            {
-                var buffer = new char[4096];
-                var reader = Process.StandardError;
-                int read;
-                while ((read = await reader.ReadAsync(buffer)) > 0)
-                {
-                    const int cap = 16 * 1024;
-                    lock (_stderr)
-                    {
-                        if (_stderr.Length > cap)
-                            _stderr.Remove(0, _stderr.Length - cap);
-                        _stderr.Append(buffer, 0, read);
-                    }
-                }
-            });
-        }
-
-        public Process Process { get; }
-        public string ErrorTail { get { lock (_stderr) return _stderr.ToString().TrimEnd(); } }
-
-        public async Task WaitForExitAsync(CancellationToken cancellationToken)
-        {
-            await Process.WaitForExitAsync(cancellationToken).ConfigureAwait(false);
-            try { await _drainTask.WaitAsync(TimeSpan.FromSeconds(2), cancellationToken).ConfigureAwait(false); }
-            catch (TimeoutException) { }
-        }
-
-        public async ValueTask DisposeAsync()
-        {
-            try
-            {
-                if (!Process.HasExited)
-                {
-                    Process.Kill(entireProcessTree: true);
-                    await Process.WaitForExitAsync(CancellationToken.None).WaitAsync(
-                        TimeSpan.FromSeconds(10)).ConfigureAwait(false);
-                }
-            }
-            catch { /* 清理阶段忽略 */ }
-            // 某些 FFmpeg 构建在进程退出后仍会保持 stderr 管道句柄；不能让 UI 永久卡在清理阶段。
-            try { await _drainTask.WaitAsync(TimeSpan.FromSeconds(2)).ConfigureAwait(false); } catch (TimeoutException) { }
-            Process.Dispose();
-        }
     }
 }

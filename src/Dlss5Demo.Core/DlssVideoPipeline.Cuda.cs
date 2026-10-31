@@ -30,8 +30,8 @@ public static partial class DlssVideoPipeline
             long frames = outcome.Frames;
             var finalize = Stopwatch.StartNew();
             int scale = RtxVideoSuperResolutionHost.NormalizeScale(options.SuperResolutionScale);
-            await RunPassAsync(options.FfmpegPath, EncoderArguments(input, output, options, video, video.Width * scale, video.Height * scale,
-                false, temporary, encodedInput: true, encodedFrameCount: frames * options.InterpolationMultiplier), ct).ConfigureAwait(false);
+            await Task.Run(() => RemuxEncoded(input, output, options, video, temporary,
+                frames * options.InterpolationMultiplier), ct).ConfigureAwait(false);
             var elapsed = outcome.Elapsed + finalize.Elapsed;
             progress?.Report(new TranscodeProgress(frames, totalFrames, frames / elapsed.TotalSeconds, elapsed));
             return new TranscodeResult { OutputPath = output, FramesProcessed = frames, Elapsed = elapsed,

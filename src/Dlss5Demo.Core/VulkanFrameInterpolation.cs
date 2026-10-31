@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using FFmpeg.AutoGen;
 
 namespace Dlss5Demo.Core;
 
@@ -8,28 +9,36 @@ namespace Dlss5Demo.Core;
 /// </summary>
 internal static class VulkanFrameInterpolation
 {
-    internal static async Task<bool> IsSingleFrameAsync(string input, CancellationToken cancellationToken)
+    internal static Task<bool> IsSingleFrameAsync(string input, CancellationToken cancellationToken)
+        => Task.Run(() => IsSingleFrame(input, cancellationToken), cancellationToken);
+
+    /// <summary>有些容器不带 nb_frames（包括单帧 Matroska）：只读前两个视频包判断。</summary>
+    private static unsafe bool IsSingleFrame(string input, CancellationToken cancellationToken)
     {
-        var start = new ProcessStartInfo(DemoPaths.FfprobePath)
-        { UseShellExecute = false, CreateNoWindow = true, RedirectStandardOutput = true, RedirectStandardError = true };
-        // Some containers omit nb_frames, including one-frame Matroska files.
-        // Inspect at most two packets rather than decoding the entire clip.
-        foreach (var argument in new[] { "-v", "error", "-select_streams", "v:0", "-read_intervals", "%+#2",
-            "-count_frames", "-show_entries", "stream=nb_read_frames", "-of", "csv=p=0", input })
-            start.ArgumentList.Add(argument);
-        using var process = Process.Start(start)!;
-        using var stop = cancellationToken.Register(() =>
-        {
-            try { if (!process.HasExited) process.Kill(entireProcessTree: true); } catch (InvalidOperationException) { }
-        });
-        var stdout = process.StandardOutput.ReadToEndAsync();
-        var stderr = process.StandardError.ReadToEndAsync();
-        await process.WaitForExitAsync(CancellationToken.None).ConfigureAwait(false);
-        var output = await stdout.ConfigureAwait(false);
-        var error = await stderr.ConfigureAwait(false);
         cancellationToken.ThrowIfCancellationRequested();
-        if (process.ExitCode != 0) throw new InvalidOperationException("检查补帧输入失败：" + error.Trim());
-        return int.TryParse(output.Trim(), out var frames) && frames == 1;
+        NativeVideo.Initialize();
+        AVFormatContext* format = null;
+        var packet = ffmpeg.av_packet_alloc();
+        try
+        {
+            if (packet == null) throw new OutOfMemoryException();
+            NativeVideo.Check(ffmpeg.avformat_open_input(&format, input, null, null), "检查补帧输入");
+            var index = ffmpeg.av_find_best_stream(format, AVMediaType.AVMEDIA_TYPE_VIDEO, -1, -1, null, 0);
+            if (index < 0) return false;
+            var frames = 0;
+            int result;
+            while (frames < 2 && (result = ffmpeg.av_read_frame(format, packet)) >= 0)
+            {
+                if (packet->stream_index == index) frames++;
+                ffmpeg.av_packet_unref(packet);
+            }
+            return frames == 1;
+        }
+        finally
+        {
+            ffmpeg.av_packet_free(&packet);
+            ffmpeg.avformat_close_input(&format);
+        }
     }
 
     internal static string OutputRate(VideoInfo video, int multiplier)

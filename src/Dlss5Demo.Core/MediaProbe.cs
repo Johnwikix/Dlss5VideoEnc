@@ -1,6 +1,5 @@
-using System.Diagnostics;
-using System.Globalization;
-using System.Text.Json;
+using System.Runtime.InteropServices;
+using FFmpeg.AutoGen;
 
 namespace Dlss5Demo.Core;
 
@@ -30,84 +29,90 @@ public sealed record VideoInfo
     {
         var parts = (text ?? "").Split('/');
         if (parts.Length == 2 &&
-            double.TryParse(parts[0], NumberStyles.Float, CultureInfo.InvariantCulture, out var numerator) &&
-            double.TryParse(parts[1], NumberStyles.Float, CultureInfo.InvariantCulture, out var denominator) &&
+            double.TryParse(parts[0], System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var numerator) &&
+            double.TryParse(parts[1], System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var denominator) &&
             denominator != 0)
             return numerator / denominator;
-        return double.TryParse(text, NumberStyles.Float, CultureInfo.InvariantCulture, out var value) ? value : 0;
+        return double.TryParse(text, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var value) ? value : 0;
     }
 }
 
-public static class MediaProbe
+/// <summary>
+/// 进程内探测（avformat_open_input + avformat_find_stream_info），不再依赖 ffprobe.exe。
+/// </summary>
+public static unsafe class MediaProbe
 {
-    public static VideoInfo Probe(string mediaPath, string ffprobePath = "ffprobe")
+    private const int ProbeTimeoutSec = 15;
+
+    // Root the native callback; its opaque deadline lives until avformat_close_input returns.
+    private static readonly AVIOInterruptCB_callback ProbeInterrupt = static opaque =>
+        System.Diagnostics.Stopwatch.GetTimestamp() >= *(long*)opaque ? 1 : 0;
+
+    public static VideoInfo Probe(string mediaPath)
     {
-        var startInfo = new ProcessStartInfo
+        if (!File.Exists(mediaPath)) throw new FileNotFoundException("输入视频不存在。", mediaPath);
+        NativeVideo.Initialize();
+        AVFormatContext* format = null;
+        long deadline = System.Diagnostics.Stopwatch.GetTimestamp()
+            + ProbeTimeoutSec * System.Diagnostics.Stopwatch.Frequency;
+        try
         {
-            FileName = ffprobePath,
-            RedirectStandardOutput = true,
-            RedirectStandardError = true,
-            UseShellExecute = false,
-            CreateNoWindow = true,
-        };
-        startInfo.ArgumentList.Add("-v");
-        startInfo.ArgumentList.Add("error");
-        startInfo.ArgumentList.Add("-print_format");
-        startInfo.ArgumentList.Add("json");
-        startInfo.ArgumentList.Add("-show_streams");
-        startInfo.ArgumentList.Add(mediaPath);
-        using var process = Process.Start(startInfo)
-            ?? throw new InvalidOperationException("无法启动 ffprobe，请确认已安装并在 PATH 中。");
-        var stdout = process.StandardOutput.ReadToEnd();
-        var stderr = process.StandardError.ReadToEnd();
-        process.WaitForExit(15000);
-        if (process.ExitCode != 0)
-            throw new InvalidOperationException($"ffprobe 失败：{stderr.Trim()}");
+            format = ffmpeg.avformat_alloc_context();
+            if (format == null) throw new OutOfMemoryException();
+            format->interrupt_callback = new AVIOInterruptCB { callback = ProbeInterrupt, opaque = &deadline };
+            var opened = ffmpeg.avformat_open_input(&format, mediaPath, null, null);
+            if (opened < 0 || format == null)
+                NativeVideo.Check(opened, $"打开输入（{Path.GetFileName(mediaPath)}）");
+            NativeVideo.Check(ffmpeg.avformat_find_stream_info(format, null), "读取流信息");
 
-        using var document = JsonDocument.Parse(stdout);
-        JsonElement video = default;
-        var hasAudio = false;
-        var audioCodec = "";
-        foreach (var stream in document.RootElement.GetProperty("streams").EnumerateArray())
-        {
-            var type = stream.TryGetProperty("codec_type", out var codecType) ? codecType.GetString() : null;
-            if (type == "video" && video.ValueKind == JsonValueKind.Undefined)
-                video = stream;
-            else if (type == "audio" && !hasAudio)
+            AVStream* videoStream = null;
+            var audioCodec = "";
+            var hasAudio = false;
+            for (uint i = 0; i < format->nb_streams; i++)
             {
-                hasAudio = true;
-                audioCodec = stream.TryGetProperty("codec_name", out var name) ? name.GetString() ?? "" : "";
+                var stream = format->streams[i];
+                var type = stream->codecpar->codec_type;
+                if (type == AVMediaType.AVMEDIA_TYPE_VIDEO && videoStream == null) videoStream = stream;
+                else if (type == AVMediaType.AVMEDIA_TYPE_AUDIO && !hasAudio)
+                {
+                    hasAudio = true;
+                    audioCodec = ffmpeg.avcodec_get_name(stream->codecpar->codec_id) ?? "";
+                }
             }
+            if (videoStream == null) throw new InvalidOperationException("输入文件中没有视频流。");
+
+            var par = videoStream->codecpar;
+            var rate = videoStream->avg_frame_rate;
+            if (rate.num <= 0 || rate.den <= 0) rate = videoStream->r_frame_rate;
+            if (rate.num <= 0 || rate.den <= 0) rate = new() { num = 0, den = 1 };
+            var duration = videoStream->duration > 0
+                ? videoStream->duration * ffmpeg.av_q2d(videoStream->time_base)
+                : format->duration > 0 ? format->duration / (double)ffmpeg.AV_TIME_BASE : 0;
+
+            return new VideoInfo
+            {
+                Codec = ffmpeg.avcodec_get_name(par->codec_id) ?? "",
+                Width = par->width,
+                Height = par->height,
+                PixelFormat = par->format >= 0
+                    ? ffmpeg.av_get_pix_fmt_name((AVPixelFormat)par->format) ?? "" : "",
+                FrameRate = $"{rate.num}/{rate.den}",
+                FrameCount = videoStream->nb_frames > 0 ? videoStream->nb_frames : 0,
+                DurationSeconds = duration,
+                HasAudio = hasAudio,
+                AudioCodec = audioCodec,
+                ColorPrimaries = ffmpeg.av_color_primaries_name(par->color_primaries) ?? "",
+                ColorTransfer = ffmpeg.av_color_transfer_name(par->color_trc) ?? "",
+                ColorSpace = ffmpeg.av_color_space_name(par->color_space) ?? "",
+                ColorRange = ffmpeg.av_color_range_name(par->color_range) ?? "",
+            };
         }
-        if (video.ValueKind == JsonValueKind.Undefined)
-            throw new InvalidOperationException("输入文件中没有视频流。");
-
-        long frames = 0;
-        if (video.TryGetProperty("nb_frames", out var nbFrames) &&
-            long.TryParse(nbFrames.GetString(), NumberStyles.Integer, CultureInfo.InvariantCulture, out var parsed))
-            frames = parsed;
-        double duration = 0;
-        if (video.TryGetProperty("duration", out var durationElement) &&
-            double.TryParse(durationElement.GetString(), NumberStyles.Float, CultureInfo.InvariantCulture, out var parsedDuration))
-            duration = parsedDuration;
-
-        return new VideoInfo
+        finally
         {
-            Codec = video.GetProperty("codec_name").GetString() ?? "",
-            Width = video.GetProperty("width").GetInt32(),
-            Height = video.GetProperty("height").GetInt32(),
-            PixelFormat = video.TryGetProperty("pix_fmt", out var fmt) ? fmt.GetString() ?? "" : "",
-            FrameRate = video.TryGetProperty("avg_frame_rate", out var rate)
-                ? rate.GetString() ?? "0/1"
-                : video.TryGetProperty("r_frame_rate", out var realRate) ? realRate.GetString() ?? "0/1" : "0/1",
-            FrameCount = frames,
-            DurationSeconds = duration,
-            HasAudio = hasAudio,
-            AudioCodec = audioCodec,
-            ColorPrimaries = video.TryGetProperty("color_primaries", out var primaries) ? primaries.GetString() ?? "" : "",
-            ColorTransfer = video.TryGetProperty("color_transfer", out var transfer) ? transfer.GetString() ?? "" : "",
-            ColorSpace = video.TryGetProperty("color_space", out var space) ? space.GetString() ?? "" : "",
-            ColorRange = video.TryGetProperty("color_range", out var range) ? range.GetString() ?? "" : "",
-        };
+            ffmpeg.avformat_close_input(&format);
+        }
     }
+
+    private static string? PtrToString(byte* pointer)
+        => pointer == null ? null : Marshal.PtrToStringUTF8((nint)pointer);
 }
