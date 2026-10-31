@@ -113,6 +113,13 @@ public static unsafe partial class DlssVideoPipeline
                 : $"解码方式: 软件解码（{(options.DecodeMode == VideoDecodeMode.Software ? "显式指定" : $"未接入 {video.Codec}/{video.PixelFormat} 的 NVDEC 表面")}）。");
         }
 
+        /// <summary>中断回调触发的 AVERROR_EXIT 是取消，不是转码失败。</summary>
+        private static void CheckIo(int result, string action)
+        {
+            if (result == ffmpeg.AVERROR_EXIT) throw new OperationCanceledException(action + "：已被取消。");
+            NativeVideo.Check(result, action);
+        }
+
         private void Open(bool nvdec)
         {
             AVFormatContext* format = null;
@@ -123,9 +130,9 @@ public static unsafe partial class DlssVideoPipeline
                 format = ffmpeg.avformat_alloc_context();
                 if (format == null) throw new OutOfMemoryException();
                 format->interrupt_callback = new AVIOInterruptCB { callback = Interrupt, opaque = (void*)GCHandle.ToIntPtr(_interrupt) };
-                NativeVideo.Check(ffmpeg.avformat_open_input(&format, _input, null, null), "打开输入");
+                CheckIo(ffmpeg.avformat_open_input(&format, _input, null, null), "打开输入");
                 _format = format;
-                NativeVideo.Check(ffmpeg.avformat_find_stream_info(_format, null), "读取流信息");
+                CheckIo(ffmpeg.avformat_find_stream_info(_format, null), "读取流信息");
                 _index = ffmpeg.av_find_best_stream(_format, AVMediaType.AVMEDIA_TYPE_VIDEO, -1, -1, null, 0);
                 NativeVideo.Check(_index, "查找视频流");
                 var stream = _format->streams[_index];
@@ -332,7 +339,7 @@ public static unsafe partial class DlssVideoPipeline
                     _demuxEof = true;
                     return;
                 }
-                if (result < 0) NativeVideo.Check(result, "读包");
+                if (result < 0) CheckIo(result, "读包");
                 try
                 {
                     if (_packet->stream_index == _index)

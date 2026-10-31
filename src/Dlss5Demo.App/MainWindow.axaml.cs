@@ -94,7 +94,7 @@ public partial class MainWindow : Window
         Log(File.Exists(DemoPaths.VsrHostDllPath) && File.Exists(DemoPaths.VsrRuntimeDllPath)
             ? "RTX Video VSR: ready（可选 2×/4×）"
             : "RTX Video VSR: optional runtime missing（关闭选项仍可使用）");
-        Log("FFmpeg: 外部 ffmpeg/ffprobe（支持通过 PATH 或 DLSS5_FFMPEG 指定）");
+        Log("FFmpeg: 进程内共享库（avformat/avcodec/avfilter），无外部 ffmpeg/ffprobe 子进程");
     }
 
     private void MainWindow_Closed(object? sender, EventArgs e)

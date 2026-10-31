@@ -3,7 +3,6 @@ using System.Numerics;
 using System.Diagnostics;
 
 if (RtxVideoWorker.TryServe(args)) return;
-if (DecoderControlTests.TryServe(args)) return;
 
 var tests = new (string Name, Action Run)[]
 {
@@ -115,7 +114,7 @@ static async Task NrSwitchIntegration(string input)
     var sourceFrames = source.FrameCount;
     if (sourceFrames == 0)
     {
-        var count = new ProcessStartInfo(DemoPaths.FfprobePath)
+        var count = new ProcessStartInfo("ffprobe")
         { UseShellExecute = false, CreateNoWindow = true, RedirectStandardOutput = true };
         foreach (var argument in new[] { "-v", "error", "-select_streams", "v:0", "-count_frames", "-show_entries", "stream=nb_read_frames", "-of", "csv=p=0", input })
             count.ArgumentList.Add(argument);
@@ -859,7 +858,7 @@ static async Task VsrTransportIntegration(string input)
             Check(last?.FramesDone == 1, "GPU one-frame processing lost its final preview.");
         }
         var rawOutput = await Run("raw-frames", Options("raw-frames") with { UseGpuVsrEncoding = false }, false);
-        var compare = new ProcessStartInfo(DemoPaths.FfmpegPath)
+        var compare = new ProcessStartInfo("ffmpeg")
         {
             UseShellExecute = false, CreateNoWindow = true, RedirectStandardError = true,
         };
@@ -916,7 +915,7 @@ static unsafe void NativeNrBenchmark(string inputPath)
     var video = MediaProbe.Probe(inputPath);
     var input = new byte[checked(video.Width * video.Height * 4)];
     var output = new byte[input.Length];
-    var start = new ProcessStartInfo(DemoPaths.FfmpegPath) { UseShellExecute = false, CreateNoWindow = true, RedirectStandardOutput = true };
+    var start = new ProcessStartInfo("ffmpeg") { UseShellExecute = false, CreateNoWindow = true, RedirectStandardOutput = true };
     foreach (var argument in new[] { "-v", "error", "-i", inputPath, "-frames:v", "1", "-f", "rawvideo", "-pix_fmt", "rgba", "pipe:1" })
         start.ArgumentList.Add(argument);
     using (var decoder = Process.Start(start)!)

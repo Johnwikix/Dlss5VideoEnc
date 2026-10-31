@@ -26,11 +26,11 @@ internal static class DriverHdrIntegration
         var previous = PipelineLog.Sink;
         PipelineLog.Sink = line => { lock (log) log.Add(line); Console.WriteLine(line); };
         string fixture = Path.Combine(root, "source-bt709.mp4");
-        await Command(DemoPaths.FfmpegPath, ["-v", "error", "-y", "-f", "lavfi", "-i", "testsrc2=size=320x192:rate=24000/1001",
+        await Command("ffmpeg", ["-v", "error", "-y", "-f", "lavfi", "-i", "testsrc2=size=320x192:rate=24000/1001",
             "-f", "lavfi", "-i", "sine=frequency=440:sample_rate=48000", "-frames:v", "8", "-t", "0.333667", "-c:v", "libx264",
             "-pix_fmt", "yuv420p", "-color_primaries", "bt709", "-color_trc", "bt709", "-colorspace", "bt709", "-color_range", "tv", "-c:a", "aac", fixture]);
-        var source = MediaProbe.Probe(fixture, DemoPaths.FfprobePath);
-        TranscodeOptions Options() => new() { FfmpegPath = DemoPaths.FfmpegPath, EnableNr = false, EnablePreviewFrames = false,
+        var source = MediaProbe.Probe(fixture);
+        TranscodeOptions Options() => new() { EnableNr = false, EnablePreviewFrames = false,
             HostDllPath = DemoPaths.HostDllPath, RuntimeDllPath = DemoPaths.RuntimeDllPath,
             LogPath = Path.Combine(root, "nr.log"), VsrLogPath = Path.Combine(root, "vsr.log"),
             MaxFrames = 6, Video = new VideoTranscodeOptions { ForceHdr = true } };
@@ -38,7 +38,7 @@ internal static class DriverHdrIntegration
         {
             lock (log) log.Clear();
             var result = await DlssVideoPipeline.RunAsync(input, Path.Combine(root, name + ".mp4"), options).WaitAsync(TimeSpan.FromMinutes(3));
-            var output = MediaProbe.Probe(result.OutputPath, DemoPaths.FfprobePath);
+            var output = MediaProbe.Probe(result.OutputPath);
             int multiplier = options.EnableInterpolation ? options.InterpolationMultiplier : 1;
             Require(result.FramesProcessed == options.MaxFrames && output.FrameCount == result.FramesProcessed * multiplier, name + ": lost frames");
             Require(Math.Abs(output.Fps - source.Fps * multiplier) < .00001, name + ": wrong frame rate");
@@ -47,7 +47,7 @@ internal static class DriverHdrIntegration
             Require(output.IsHdr == expectHdr, name + ": unexpected HDR state");
             if (expectHdr)
             {
-                var inputVideo = MediaProbe.Probe(input, DemoPaths.FfprobePath);
+                var inputVideo = MediaProbe.Probe(input);
                 Require(output.PixelFormat == "yuv420p10le", name + ": encoder did not produce 10-bit YUV");
                 Require(output.ColorPrimaries == "bt2020" && output.ColorSpace == "bt2020nc" && output.ColorRange == "tv"
                     && output.ColorTransfer == (mapped ? "smpte2084" : inputVideo.ColorTransfer), name + ": wrong HDR VUI");
@@ -58,14 +58,14 @@ internal static class DriverHdrIntegration
                 if (mapped) Require(log.Any(l => l.StartsWith($"驱动 RTX Video HDR 映射完成：{output.FrameCount} 输出帧")), name + ": tail frames bypassed mapper");
                 File.WriteAllLines(Path.Combine(root, name + ".log"), log);
             }
-            await Command(DemoPaths.FfprobePath, ["-v", "error", "-show_streams", "-of", "json", result.OutputPath], Path.Combine(root, name + "-probe.json"));
+            await Command("ffprobe", ["-v", "error", "-show_streams", "-of", "json", result.OutputPath], Path.Combine(root, name + "-probe.json"));
             Console.WriteLine($"PASS HDR {name}: {output.FrameCount} frames @{output.FrameRate}, {output.PixelFormat}, {output.ColorPrimaries}/{output.ColorTransfer}/{output.ColorSpace}/{output.ColorRange}");
             return result.OutputPath;
         }
         async Task<byte[]> Decode(string input, string name, string format = "gbrp16le")
         {
             string path = Path.Combine(root, name + ".raw");
-            await Command(DemoPaths.FfmpegPath, ["-v", "error", "-y", "-i", input, "-map", "0:v:0", "-an", "-pix_fmt", format, "-f", "rawvideo", path]);
+            await Command("ffmpeg", ["-v", "error", "-y", "-i", input, "-map", "0:v:0", "-an", "-pix_fmt", format, "-f", "rawvideo", path]);
             return await File.ReadAllBytesAsync(path);
         }
         try
@@ -86,7 +86,7 @@ internal static class DriverHdrIntegration
                 if (transfer == "arib-std-b67")
                 {
                     input = Path.Combine(root, "source-hlg.mp4");
-                    await Command(DemoPaths.FfmpegPath, ["-v", "error", "-y", "-i", hdrSource, "-vf",
+                    await Command("ffmpeg", ["-v", "error", "-y", "-i", hdrSource, "-vf",
                         "zscale=transferin=smpte2084:transfer=arib-std-b67,format=yuv420p10le,setparams=color_primaries=bt2020:color_trc=arib-std-b67:colorspace=bt2020nc",
                         "-c:v", "hevc_nvenc", "-pix_fmt", "p010le", "-color_primaries", "bt2020", "-color_trc", "arib-std-b67", "-colorspace", "bt2020nc", "-c:a", "copy", input]);
                 }
@@ -107,7 +107,7 @@ internal static class DriverHdrIntegration
             using (var file = File.Create(raw))
                 for (int i = 0; i < 6; i++) mapper.Write(rgba.AsSpan(i * mapper.FrameBytes, mapper.FrameBytes), file);
             string reference = Path.Combine(root, "driver-reference.yuv");
-            await Command(DemoPaths.FfmpegPath, ["-v", "error", "-y", "-f", "rawvideo", "-pixel_format", "x2bgr10le", "-video_size", "320x192", "-i", raw,
+            await Command("ffmpeg", ["-v", "error", "-y", "-f", "rawvideo", "-pixel_format", "x2bgr10le", "-video_size", "320x192", "-i", raw,
                 "-vf", "format=gbrp16le,zscale=matrixin=gbr:matrix=bt2020nc:transferin=smpte2084:transfer=smpte2084:primariesin=bt2020:primaries=bt2020:rangein=full:range=limited,format=yuv420p10le",
                 "-f", "rawvideo", reference]);
             var expected = await File.ReadAllBytesAsync(reference);

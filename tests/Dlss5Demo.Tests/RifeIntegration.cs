@@ -101,13 +101,13 @@ internal static class RifeIntegration
     {
         Directory.CreateDirectory(outputRoot);
         var measurements = new List<object>();
-        var video = MediaProbe.Probe(input, DemoPaths.FfprobePath);
+        var video = MediaProbe.Probe(input);
         foreach (var name in (rifeOnly ? new[] { "rife-lite-host", "rife-lite-cuda", "rife-full-host", "rife-full-cuda" } : new[] { "native-optimal", "native-linear", "rife-lite-host", "rife-lite-cuda", "rife-full-host", "rife-full-cuda" }))
         for (int iteration = 0; iteration < 3; iteration++)
         {
             var options = new TranscodeOptions
             {
-                FfmpegPath = DemoPaths.FfmpegPath, EnableNr = false, EnableInterpolation = true,
+                EnableNr = false, EnableInterpolation = true,
                 UseLinearVulkanImages = name != "native-optimal", UseGpuFramePipeline = name.EndsWith("cuda"), InterpolationMultiplier = 4,
                 InterpolationBackend = name.StartsWith("rife") ? FrameInterpolationBackend.Rife : FrameInterpolationBackend.NvidiaOpticalFlow,
                 InterpolationModel = name.Contains("full") ? RifeModel.Full : RifeModel.Lite,
@@ -117,7 +117,7 @@ internal static class RifeIntegration
             var wall = System.Diagnostics.Stopwatch.StartNew();
             var result = await DlssVideoPipeline.RunAsync(input, Path.Combine(outputRoot, $"{name}-{iteration}.mp4"), options);
             wall.Stop();
-            var output = MediaProbe.Probe(result.OutputPath, DemoPaths.FfprobePath);
+            var output = MediaProbe.Probe(result.OutputPath);
             Require(output.FrameCount == 288 && Math.Abs(output.Fps - video.Fps * 4) < .00001, "Benchmark output frame clock failed");
             measurements.Add(new { name, iteration, sourceFrames = result.FramesProcessed,
                 outputFrames = output.FrameCount, seconds = result.Elapsed.TotalSeconds, wallSeconds = wall.Elapsed.TotalSeconds,

@@ -31,10 +31,12 @@
 
   <ItemGroup>
     <ProjectReference Include="..\Dlss5Demo.Core\Dlss5Demo.Core.csproj" />
-    <!-- 完整 runtime 随发布带走（宿主 DLL、全部 NR 显卡版本、ffmpeg、RIFE 模型），
-         按 runtime\ 子目录布局放置：DemoPaths 从 exe 目录逐级向上定位该目录。 -->
-    <None Include="..\..\runtime\**\*.dll;..\..\runtime\**\*.exe;..\..\runtime\**\*.onnx;..\..\runtime\**\*.txt"
-          Exclude="..\..\runtime\Cache\**;..\..\runtime\**\*.log"
+    <!-- 完整 runtime 随发布带走（宿主 DLL、全部 NR 显卡版本、RIFE 模型、进程内 FFmpeg 六库），
+         按 runtime\ 子目录布局放置：DemoPaths 从 exe 目录逐级向上定位该目录。
+         剔除进程内化后不再使用的 ffmpeg.exe/ffprobe.exe/avdevice（无任何模块依赖它）
+         与非必需文档；LICENSE.txt 因 GPL 分发义务保留。 -->
+    <None Include="..\..\runtime\**\*.dll;..\..\runtime\**\*.onnx;..\..\runtime\LICENSE.txt"
+          Exclude="..\..\runtime\Cache\**;..\..\runtime\avdevice-63.dll;..\..\runtime\**\*.log"
           CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest"
           Link="runtime\%(RecursiveDir)%(Filename)%(Extension)" />
   </ItemGroup>

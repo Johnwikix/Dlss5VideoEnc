@@ -38,7 +38,7 @@ internal static class GpuTemporalBenchmark
             foreach (var test in cases)
             {
                 string input = Path.Combine(fixtures, $"input-{test.Width}x{test.Height}.mp4");
-                var source = MediaProbe.Probe(input, DemoPaths.FfprobePath);
+                var source = MediaProbe.Probe(input);
                 if (source.Width != test.Width || source.Height != test.Height || source.FrameCount < test.Frames || source.Fps != 60)
                     throw new InvalidDataException("Unexpected benchmark fixture");
                 for (int trial = 0; trial <= 3; trial++)
@@ -53,7 +53,7 @@ internal static class GpuTemporalBenchmark
                     };
                     var options = new TranscodeOptions
                     {
-                        HostDllPath = DemoPaths.HostDllPath, RuntimeDllPath = dll, FfmpegPath = DemoPaths.FfmpegPath,
+                        HostDllPath = DemoPaths.HostDllPath, RuntimeDllPath = dll, 
                         LogPath = Path.Combine(root, label + "-native.log"), VsrLogPath = Path.Combine(root, label + "-vsr.log"),
                         Dlss = new DlssNrOptions { UseGpuTemporalProcessing = gpu }, UseGpuEnhancementPipeline = false,
                         MaxFrames = test.Frames, EnablePreviewFrames = false,
@@ -65,7 +65,7 @@ internal static class GpuTemporalBenchmark
                     var wall = Stopwatch.StartNew();
                     var result = await DlssVideoPipeline.RunAsync(input, Path.Combine(root, label + ".mp4"), options);
                     wall.Stop();
-                    var output = MediaProbe.Probe(result.OutputPath, DemoPaths.FfprobePath);
+                    var output = MediaProbe.Probe(result.OutputPath);
                     if (usedGpu != gpu || result.FramesProcessed != test.Frames || output.Width != test.Width * test.Sr || output.Height != test.Height * test.Sr
                         || output.FrameCount != test.Frames * test.Rife || output.Fps != 60 * test.Rife)
                         throw new InvalidDataException("Unexpected benchmark path/frame clock: " + label);

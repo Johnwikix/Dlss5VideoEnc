@@ -20,7 +20,7 @@ internal static class GpuEnhancementBenchmark
                 PipelineLog.Sink = message => { lock (log) log.WriteLine(message); };
                 var result = await DlssVideoPipeline.RunAsync(input, Path.Combine(root, label + ".mp4"), new TranscodeOptions
                 {
-                    FfmpegPath = DemoPaths.FfmpegPath, HostDllPath = DemoPaths.HostDllPath, RuntimeDllPath = NrRuntimeCatalog.ResolveArgument(dll), LogPath = Path.Combine(root, label + "-nr.log"),
+                    HostDllPath = DemoPaths.HostDllPath, RuntimeDllPath = NrRuntimeCatalog.ResolveArgument(dll), LogPath = Path.Combine(root, label + "-nr.log"),
                     VsrLogPath = Path.Combine(root, label + "-vsr.log"), GpuFrameCapacity = slots, MaxFrames = 90, SuperResolutionScale = 2,
                     EnableInterpolation = true, InterpolationBackend = FrameInterpolationBackend.Rife, InterpolationMultiplier = 4, EnablePreviewFrames = false,
                     Video = new VideoTranscodeOptions { AudioCodec = AudioCodec.None, EncoderPreset = "p5", Quality = 19 },
@@ -78,7 +78,7 @@ internal static class GpuEnhancementBenchmark
                     PipelineLog.Sink = line => { lock (log) { log.WriteLine(line); if (line.StartsWith("显存帧管线：")) usedGpu = true; } };
                     var options = new TranscodeOptions
                     {
-                        FfmpegPath = DemoPaths.FfmpegPath, HostDllPath = DemoPaths.HostDllPath, RuntimeDllPath = dll,
+                        HostDllPath = DemoPaths.HostDllPath, RuntimeDllPath = dll,
                         LogPath = Path.Combine(root, label + "-nr.log"), VsrLogPath = Path.Combine(root, label + "-vsr.log"),
                         MaxFrames = test.Frames, EnableNr = test.Nr, UseGpuEnhancementPipeline = gpu, EnablePreviewFrames = false,
                         SuperResolutionScale = test.Sr, SuperResolutionQuality = 4, NrBeforeSuperResolution = test.NrFirst,

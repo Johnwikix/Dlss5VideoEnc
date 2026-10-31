@@ -11,7 +11,7 @@ internal static class MixedBenchmark
         {
             var options = new TranscodeOptions
             {
-                FfmpegPath = DemoPaths.FfmpegPath, HostDllPath = DemoPaths.HostDllPath, RuntimeDllPath = DemoPaths.RuntimeDllPath,
+                HostDllPath = DemoPaths.HostDllPath, RuntimeDllPath = DemoPaths.RuntimeDllPath,
                 LogPath = Path.Combine(outputRoot, "nr.log"), VsrLogPath = Path.Combine(outputRoot, "vsr.log"),
                 EnableNr = name.StartsWith("nr"), SuperResolutionScale = name.Contains("sr") ? 2 : 1,
                 EnableInterpolation = true, InterpolationBackend = FrameInterpolationBackend.Rife, InterpolationMultiplier = 4,
@@ -21,7 +21,7 @@ internal static class MixedBenchmark
             var wall = System.Diagnostics.Stopwatch.StartNew();
             var result = await DlssVideoPipeline.RunAsync(input, Path.Combine(outputRoot, $"{name}-{iteration}.mp4"), options);
             wall.Stop();
-            var video = MediaProbe.Probe(result.OutputPath, DemoPaths.FfprobePath);
+            var video = MediaProbe.Probe(result.OutputPath);
             if (video.FrameCount != 96 || video.Width != 1920 * options.SuperResolutionScale || video.Height != 1080 * options.SuperResolutionScale)
                 throw new Exception("Mixed benchmark output dimensions/count changed");
             rows.Add(new { name, iteration, seconds = result.Elapsed.TotalSeconds, wallSeconds = wall.Elapsed.TotalSeconds,

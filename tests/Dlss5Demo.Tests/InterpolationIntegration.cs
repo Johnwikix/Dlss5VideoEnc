@@ -47,7 +47,7 @@ internal static class InterpolationIntegration
 
     internal static async Task RunAsync(string input, FrameInterpolationBackend backend = FrameInterpolationBackend.NvidiaOpticalFlow)
     {
-        var source = MediaProbe.Probe(input, DemoPaths.FfprobePath);
+        var source = MediaProbe.Probe(input);
         var root = Path.Combine(Environment.CurrentDirectory, ".qa", "interpolation-port-2026-10-17", "integration-" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(root);
         var logs = new List<string>();
@@ -55,7 +55,7 @@ internal static class InterpolationIntegration
         PipelineLog.Sink = line => { lock (logs) logs.Add(line); };
         TranscodeOptions Options() => new()
         {
-            FfmpegPath = DemoPaths.FfmpegPath, EnableNr = false, EnableInterpolation = true,
+            EnableNr = false, EnableInterpolation = true,
             InterpolationBackend = backend,
             HostDllPath = DemoPaths.HostDllPath, RuntimeDllPath = DemoPaths.RuntimeDllPath,
             LogPath = Path.Combine(root, "nr.log"), VsrLogPath = Path.Combine(root, "vsr.log"),
@@ -67,7 +67,7 @@ internal static class InterpolationIntegration
             lock (logs) logs.Clear();
             var result = await DlssVideoPipeline.RunAsync(input, Path.Combine(root, name + ".mp4"), options)
                 .WaitAsync(TimeSpan.FromMinutes(5));
-            var output = MediaProbe.Probe(result.OutputPath, DemoPaths.FfprobePath);
+            var output = MediaProbe.Probe(result.OutputPath);
             var multiplier = options.EnableInterpolation ? options.InterpolationMultiplier : 1;
             Require(output.FrameCount == result.FramesProcessed * multiplier, $"{name}: source={result.FramesProcessed}, output={output.FrameCount}");
             Require(Math.Abs(output.Fps - source.Fps * multiplier) < .00001, name + ": incorrect rational rate");
@@ -110,7 +110,7 @@ internal static class InterpolationIntegration
                 foreach (var count in new[] { 1, 6 })
                 {
                     var fixture = Path.Combine(root, $"unknown-{count}.mkv");
-                    var start = new ProcessStartInfo(DemoPaths.FfmpegPath)
+                    var start = new ProcessStartInfo("ffmpeg")
                     { UseShellExecute = false, CreateNoWindow = true, RedirectStandardError = true };
                     foreach (var argument in new[] { "-v", "error", "-y", "-i", input, "-map", "0:v:0", "-c", "copy",
                         "-frames:v", count.ToString(), fixture }) start.ArgumentList.Add(argument);
@@ -118,9 +118,9 @@ internal static class InterpolationIntegration
                     var error = process.StandardError.ReadToEndAsync();
                     await process.WaitForExitAsync().WaitAsync(TimeSpan.FromSeconds(30));
                     Require(process.ExitCode == 0, await error);
-                    Require(MediaProbe.Probe(fixture, DemoPaths.FfprobePath).FrameCount == 0, "Matroska fixture unexpectedly has frame count");
+                    Require(MediaProbe.Probe(fixture).FrameCount == 0, "Matroska fixture unexpectedly has frame count");
                     var result = await DlssVideoPipeline.RunAsync(fixture, Path.Combine(root, $"unknown-{count}.mp4"), Options() with { MaxFrames = null });
-                    var output = MediaProbe.Probe(result.OutputPath, DemoPaths.FfprobePath);
+                    var output = MediaProbe.Probe(result.OutputPath);
                     Require(result.FramesProcessed == count && output.FrameCount == count * 2, "Unknown source count caused duplicated/missing frames");
                     Require(Math.Abs(output.DurationSeconds - count / source.Fps) < .003, "Unknown source count changed duration");
                     Console.WriteLine($"PASS interpolation Matroska without nb_frames: {count} source → {output.FrameCount} output");

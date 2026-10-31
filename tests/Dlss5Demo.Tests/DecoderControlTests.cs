@@ -3,109 +3,110 @@ using Dlss5Demo.Core;
 
 internal static class DecoderControlTests
 {
-    // Actual child processes exercise EOF, stderr drains and process replacement,
-    // but deliberately never initialize a GPU while another chat benchmarks it.
-    internal static bool TryServe(string[] args)
-    {
-        var behavior = Environment.GetEnvironmentVariable("DLSS5_TEST_DECODER");
-        if (behavior == null || args.FirstOrDefault() != "-hide_banner") return false;
-        var hardware = args.Contains("-hwaccel");
-        if (hardware && behavior == "block")
-        {
-            Thread.Sleep(Timeout.Infinite);
-            return true;
-        }
-        using var output = Console.OpenStandardOutput();
-        if (hardware)
-        {
-            if (behavior == "partial") output.Write(new byte[7]);
-            if (behavior == "late") output.Write(Enumerable.Repeat((byte)7, 32).ToArray());
-            output.Flush();
-            Console.Error.WriteLine("CONTROL_TEST: hardware negotiation failed");
-            Environment.ExitCode = 65;
-            return true;
-        }
-        output.Write(Enumerable.Repeat((byte)1, 32).ToArray());
-        output.Write(Enumerable.Repeat((byte)2, 32).ToArray());
-        return true;
-    }
-
+    // 进程内解码器没有子进程替身可注入失败；用真实夹具 + 不存在的 CUDA 设备号
+    // 触发 NVDEC 打开失败，验证回退与取消语义。夹具由 PATH 上的 ffmpeg 生成。
     internal static async Task RunAsync()
     {
-        var savedBehavior = Environment.GetEnvironmentVariable("DLSS5_TEST_DECODER");
+        var root = Path.Combine(Path.GetTempPath(), "dlss5-decoder-control-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(root);
+        var fixture = Path.Combine(root, "fixture.mp4");
+        if (Run("ffmpeg", ["-v", "error", "-y", "-f", "lavfi", "-i", "testsrc2=size=320x192:rate=24",
+                "-frames:v", "10", "-pix_fmt", "yuv420p", "-c:v", "libx264", fixture]) != 0)
+            throw new Exception("无法用 PATH 上的 ffmpeg 生成夹具");
         var savedLog = PipelineLog.Sink;
         var logs = new List<string>();
         PipelineLog.Sink = logs.Add;
-        var video = new VideoInfo { Codec = "h264", Width = 4, Height = 2,
-            PixelFormat = "yuv420p", FrameRate = "24/1", FrameCount = 2 };
-        var options = new TranscodeOptions
-        {
-            FfmpegPath = Path.Combine(AppContext.BaseDirectory, "Dlss5Demo.Tests.exe"),
-            EnableNr = false,
-        };
+        var video = MediaProbe.Probe(fixture);
+        var pixels = new byte[video.Width * video.Height * 4];
+        const int missingDevice = 99;
         void Require(bool value, string message) { if (!value) throw new Exception(message); }
         try
         {
-            foreach (var behavior in new[] { "fail", "partial" })
+            // Auto 模式：NVDEC 打开失败必须从头回退软件解码，不丢帧、不泄漏半帧。
+            logs.Clear();
+            await using (var decoder = new DlssVideoPipeline.FrameDecoder(fixture,
+                new TranscodeOptions { EnableNr = false, DecodeDeviceIndex = missingDevice }, video, false, default))
             {
-                Environment.SetEnvironmentVariable("DLSS5_TEST_DECODER", behavior);
-                logs.Clear();
-                await using var decoder = new DlssVideoPipeline.FrameDecoder("fixture", options, video, false, default);
-                var originalProcess = decoder.Process;
-                var originalId = originalProcess.Id;
-                var pixels = new byte[32];
-                Require(decoder.ReadFrame(pixels) && pixels.All(value => value == 1), "Fallback leaked partial GPU pixels");
-                Require(decoder.Process.Id != originalId, "Fallback did not replace the failed process");
-                Require(decoder.ReadFrame(pixels) && pixels.All(value => value == 2) && !decoder.ReadFrame(pixels), "Fallback lost/duplicated source frames");
-                Require(logs.Count(line => line.StartsWith("NVDEC 首帧初始化失败")) == 1
-                    && !logs.Any(line => line.StartsWith("NVDEC 已确认")), "Wrong fallback backend reporting");
-                Console.WriteLine($"PASS decoder process fallback before first frame: {behavior}");
+                var frames = 0;
+                while (decoder.ReadFrame(pixels)) frames++;
+                Require(frames == 10, $"回退软解丢帧：{frames}");
             }
-            Environment.SetEnvironmentVariable("DLSS5_TEST_DECODER", "fail");
-            await using (var decoder = new DlssVideoPipeline.FrameDecoder("fixture", options with { DecodeMode = VideoDecodeMode.Nvdec }, video, false, default))
+            Require(logs.Any(line => line.StartsWith("NVDEC 初始化失败")), "回退没有记录原因");
+            Require(logs.Any(line => line.StartsWith("软件解码已确认")), "回退后没有软件解码确认日志");
+            Console.WriteLine("PASS decoder auto fallback replaces hardware with software");
+
+            // 强制 NVDEC：失败必须以 InvalidOperationException 上抛，不能静默回退。
+            // 进程内实现在构造时即创建 CUDA 设备，失败可能发生在构造或首次读取。
+            DlssVideoPipeline.FrameDecoder? forced = null;
+            try
             {
-                try { decoder.ReadFrame(new byte[32]); throw new Exception("Forced NVDEC silently fell back"); }
-                catch (InvalidOperationException error) { Require(error.Message.Contains("CONTROL_TEST"), "Lost hardware decoder error"); }
+                forced = new DlssVideoPipeline.FrameDecoder(fixture,
+                    new TranscodeOptions { EnableNr = false, DecodeMode = VideoDecodeMode.Nvdec, DecodeDeviceIndex = missingDevice },
+                    video, false, default);
+                forced.ReadFrame(pixels);
+                throw new Exception("Forced NVDEC silently fell back");
             }
+            catch (InvalidOperationException) { }
+            finally { if (forced != null) await forced.DisposeAsync(); }
             Console.WriteLine("PASS decoder forced NVDEC preserves failure");
 
-            Environment.SetEnvironmentVariable("DLSS5_TEST_DECODER", "late");
-            logs.Clear();
-            await using (var decoder = new DlssVideoPipeline.FrameDecoder("fixture", options, video, false, default))
+            // 软件解码：正常路径逐帧到 EOF。
+            await using (var decoder = new DlssVideoPipeline.FrameDecoder(fixture,
+                new TranscodeOptions { EnableNr = false, DecodeMode = VideoDecodeMode.Software }, video, false, default))
             {
-                Require(decoder.ReadFrame(new byte[32]), "Missing hardware first frame");
-                try { decoder.ReadFrame(new byte[32]); throw new Exception("Midstream failure silently restarted history"); }
-                catch (InvalidOperationException error) { Require(error.Message.Contains("已输出 1 帧"), "Lost midstream frame position"); }
-                Require(!logs.Any(line => line.StartsWith("NVDEC 首帧初始化失败")), "Midstream history was retried");
+                var frames = 0;
+                while (decoder.ReadFrame(pixels)) frames++;
+                Require(frames == 10, $"软件解码帧数不符：{frames}");
             }
-            Console.WriteLine("PASS decoder never switches backends after publishing a frame");
+            Console.WriteLine("PASS decoder software reads the whole fixture");
 
-            Environment.SetEnvironmentVariable("DLSS5_TEST_DECODER", "block");
-            using (var stop = new CancellationTokenSource())
-            await using (var decoder = new DlssVideoPipeline.FrameDecoder("fixture", options, video, false, stop.Token))
+            // 帧数上限：读到限制即停，不触碰其余输入。
+            await using (var decoder = new DlssVideoPipeline.FrameDecoder(fixture,
+                new TranscodeOptions { EnableNr = false, MaxFrames = 3 }, video, false, default))
             {
-                var reading = Task.Run(() => decoder.ReadFrame(new byte[32]));
-                stop.CancelAfter(150);
-                try { await reading.WaitAsync(TimeSpan.FromSeconds(5)); throw new Exception("Blocked decoder ignored cancellation"); }
-                catch (OperationCanceledException) { }
-                Require(decoder.Process.HasExited, "Cancelled child process survived");
+                var frames = 0;
+                while (decoder.ReadFrame(pixels)) frames++;
+                Require(frames == 3, $"帧数上限失效：{frames}");
             }
-            Console.WriteLine("PASS decoder cancellation terminates a blocked frame read");
+            Console.WriteLine("PASS decoder stops at the frame limit");
 
-            Environment.SetEnvironmentVariable("DLSS5_TEST_DECODER", "fail");
-            using (var stop = new CancellationTokenSource())
+            // 已取消的令牌：构造或首次读取立即中止，不再解码。
+            using (var stopped = new CancellationTokenSource())
             {
-                PipelineLog.Sink = line => { if (line.StartsWith("NVDEC 首帧初始化失败")) stop.Cancel(); };
-                await using var decoder = new DlssVideoPipeline.FrameDecoder("fixture", options, video, false, stop.Token);
-                try { decoder.ReadFrame(new byte[32]); throw new Exception("Cancelled fallback started another decoder"); }
+                stopped.Cancel();
+                DlssVideoPipeline.FrameDecoder? cancelled = null;
+                try
+                {
+                    cancelled = new DlssVideoPipeline.FrameDecoder(fixture,
+                        new TranscodeOptions { EnableNr = false }, video, false, stopped.Token);
+                    cancelled.ReadFrame(pixels);
+                    throw new Exception("Cancelled decoder kept reading");
+                }
                 catch (OperationCanceledException) { }
+                finally { if (cancelled != null) await cancelled.DisposeAsync(); }
             }
-            Console.WriteLine("PASS cancellation at fallback boundary starts no replacement process");
+            Console.WriteLine("PASS decoder honours a cancelled token");
+
+            await Task.CompletedTask;
         }
         finally
         {
             PipelineLog.Sink = savedLog;
-            Environment.SetEnvironmentVariable("DLSS5_TEST_DECODER", savedBehavior);
+            try { Directory.Delete(root, true); } catch (IOException) { }
         }
+    }
+
+    private static int Run(string name, string[] arguments)
+    {
+        var startInfo = new ProcessStartInfo
+        {
+            FileName = name,
+            UseShellExecute = false,
+            CreateNoWindow = true,
+        };
+        foreach (var argument in arguments) startInfo.ArgumentList.Add(argument);
+        using var process = Process.Start(startInfo) ?? throw new Exception($"无法启动 {name}");
+        process.WaitForExit(15000);
+        return process.HasExited ? process.ExitCode : -1;
     }
 }

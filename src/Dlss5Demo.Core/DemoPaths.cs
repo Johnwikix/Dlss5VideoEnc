@@ -63,17 +63,20 @@ public static class DemoPaths
         var profile = RuntimeProfile;
         if (profile != null)
         {
-            var profileDirectory = Path.Combine(RuntimeDir, profile);
-            var profileCandidate = Path.Combine(profileDirectory, "nvngx_dlssnr.dll");
-            if (File.Exists(profileCandidate))
-                return profileCandidate;
-
+            // nr\ 下按系列命名的版本目录（当前布局），以及 runtime 根的同名目录（旧布局兼容）。
+            foreach (var directory in new[] { Path.Combine(RuntimeDir, "nr"), RuntimeDir })
+            {
+                var profileCandidate = Path.Combine(directory, profile, "nvngx_dlssnr.dll");
+                if (File.Exists(profileCandidate))
+                    return Path.GetFullPath(profileCandidate);
+            }
             var suffixedCandidate = Path.Combine(RuntimeDir, $"nvngx_dlssnr_{profile}.dll");
             if (File.Exists(suffixedCandidate))
-                return suffixedCandidate;
+                return Path.GetFullPath(suffixedCandidate);
         }
 
-        // 保留原有布局，便于已有安装直接升级。
+        // 根目录是"当前默认"位：放本机显卡适配的最新版本（NrRuntimeCatalog 里
+        // nr\ 下的历史/其他系列版本仍可经下拉框或 DLSS5_GPU_SERIES 选用）。
         return Path.Combine(RuntimeDir, "nvngx_dlssnr.dll");
     }
 

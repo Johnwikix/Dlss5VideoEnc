@@ -61,6 +61,7 @@ public static class NrRuntimeCatalog
             catch (UnauthorizedAccessException) { }
             string label = id.EndsWith("/nvngx_dlssnr.dll", StringComparison.OrdinalIgnoreCase)
                 ? id[..^"/nvngx_dlssnr.dll".Length] : id;
+            if (label == "runtime") label = "runtime（当前默认）";
             results.Add(new NrRuntimeInfo(id, fullPath,
                 string.IsNullOrWhiteSpace(version) ? label : $"{version} · {label}"));
         }

@@ -89,7 +89,7 @@ internal static class NrVersionBenchmark
                 };
                 var options = new TranscodeOptions
                 {
-                    FfmpegPath = DemoPaths.FfmpegPath, HostDllPath = DemoPaths.HostDllPath, RuntimeDllPath = runtime.Path,
+                    HostDllPath = DemoPaths.HostDllPath, RuntimeDllPath = runtime.Path,
                     LogPath = Path.Combine(root, label + "-native.log"), VsrLogPath = Path.Combine(root, label + "-vsr.log"),
                     EnableNr = true, MaxFrames = test.Frames, EnablePreviewFrames = false,
                     SuperResolutionScale = test.Sr, SuperResolutionQuality = 4, NrBeforeSuperResolution = test.NrFirst,
@@ -100,7 +100,7 @@ internal static class NrVersionBenchmark
                 var wall = Stopwatch.StartNew();
                 var result = await DlssVideoPipeline.RunAsync(test.Width == 1920 ? hd : uhd, Path.Combine(root, label + ".mp4"), options);
                 wall.Stop();
-                var output = MediaProbe.Probe(result.OutputPath, DemoPaths.FfprobePath);
+                var output = MediaProbe.Probe(result.OutputPath);
                 if (result.FramesProcessed != test.Frames || output.Width != test.Width * test.Sr || output.Height != test.Height * test.Sr
                     || output.FrameCount != test.Frames * test.Rife || Math.Abs(output.Fps - 60 * test.Rife) > .001)
                     throw new InvalidDataException("Benchmark output shape/frame clock changed: " + label);
@@ -174,7 +174,7 @@ internal static class NrVersionBenchmark
         string path = Path.Combine(root, $"input-{width}x{height}.mp4");
         if (!File.Exists(path)) await Ffmpeg(["-v", "error", "-i", input, "-an", "-frames:v", "240", "-vf", $"scale={width}:{height}:flags=lanczos,fps=60",
             "-c:v", "libx264", "-preset", "fast", "-crf", "16", "-pix_fmt", "yuv420p", path]);
-        var video = MediaProbe.Probe(path, DemoPaths.FfprobePath);
+        var video = MediaProbe.Probe(path);
         Require(video.FrameCount == 240 && video.Width == width && video.Height == height && video.Fps == 60, "Fixture must provide 240 frames at 60 fps");
         return path;
     }
@@ -186,7 +186,7 @@ internal static class NrVersionBenchmark
     }
     private static async Task<byte[]> Ffmpeg(string[] arguments)
     {
-        var start = new ProcessStartInfo(DemoPaths.FfmpegPath) { UseShellExecute = false, CreateNoWindow = true, RedirectStandardError = true, RedirectStandardOutput = true };
+        var start = new ProcessStartInfo("ffmpeg") { UseShellExecute = false, CreateNoWindow = true, RedirectStandardError = true, RedirectStandardOutput = true };
         foreach (string argument in arguments) start.ArgumentList.Add(argument);
         using var process = Process.Start(start)!;
         var error = process.StandardError.ReadToEndAsync();

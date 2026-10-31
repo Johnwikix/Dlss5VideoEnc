@@ -1,24 +1,27 @@
+using System.Diagnostics;
 using Dlss5Demo.Core;
 
 internal static class NvdecIntegration
 {
     internal static async Task BenchmarkAsync(string input)
     {
-        var video = MediaProbe.Probe(input, DemoPaths.FfprobePath);
+        var video = MediaProbe.Probe(input);
         var pixels = GC.AllocateUninitializedArray<byte>(checked(video.Width * video.Height * (video.IsHdr ? 8 : 4)));
         var results = new List<object>();
         async Task Measure(VideoDecodeMode mode, int limit, bool warmup)
         {
             var options = new TranscodeOptions
             {
-                FfmpegPath = DemoPaths.FfmpegPath, EnableNr = false, DecodeMode = mode, MaxFrames = limit,
+                EnableNr = false, DecodeMode = mode, MaxFrames = limit,
             };
-            var watch = System.Diagnostics.Stopwatch.StartNew();
+            var watch = Stopwatch.StartNew();
+            // 进程内解码不再有子进程；采样当前进程 CPU 前后差作为解码开销。
+            var cpuStart = Process.GetCurrentProcess().TotalProcessorTime;
             await using var decoder = new DlssVideoPipeline.FrameDecoder(input, options, video, video.IsHdr, default);
             var frames = 0;
             while (decoder.ReadFrame(pixels)) frames++;
             watch.Stop();
-            var cpuSeconds = decoder.Process.TotalProcessorTime.TotalSeconds;
+            var cpuSeconds = (Process.GetCurrentProcess().TotalProcessorTime - cpuStart).TotalSeconds;
             if (frames != Math.Min(limit, video.FrameCount > 0 ? video.FrameCount : limit))
                 throw new Exception("Decode benchmark did not read the expected source frames");
             if (!warmup)
@@ -41,12 +44,12 @@ internal static class NvdecIntegration
 
     internal static async Task RunAsync(string input)
     {
-        var video = MediaProbe.Probe(input, DemoPaths.FfprobePath);
+        var video = MediaProbe.Probe(input);
         var hdr = video.IsHdr;
         var logs = new System.Collections.Concurrent.ConcurrentQueue<string>();
         var saved = PipelineLog.Sink;
         PipelineLog.Sink = logs.Enqueue;
-        var settings = new TranscodeOptions { FfmpegPath = DemoPaths.FfmpegPath, EnableNr = false, MaxFrames = 3 };
+        var settings = new TranscodeOptions { EnableNr = false, MaxFrames = 3 };
         var frameBytes = checked(video.Width * video.Height * (hdr ? 8 : 4));
         var softwarePixels = GC.AllocateUninitializedArray<byte>(frameBytes);
         var hardwarePixels = GC.AllocateUninitializedArray<byte>(frameBytes);
@@ -107,7 +110,7 @@ internal static class NvdecIntegration
             async Task Run(string name, TranscodeOptions options)
             {
                 var result = await DlssVideoPipeline.RunAsync(input, Path.Combine(root, name + ".mp4"), options);
-                var output = MediaProbe.Probe(result.OutputPath, DemoPaths.FfprobePath);
+                var output = MediaProbe.Probe(result.OutputPath);
                 Require(result.FramesProcessed == 3, name + ": lost source frames");
                 Require(output.FrameCount == 3 * (options.EnableInterpolation ? options.InterpolationMultiplier : 1), name + ": wrong output count");
                 Require(output.IsHdr == hdr && (!hdr || output.ColorTransfer == video.ColorTransfer && output.PixelFormat.Contains("10")), name + ": HDR changed");

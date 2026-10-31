@@ -15,7 +15,7 @@ internal static class GpuEnhancementTests
         {
             var result = await DlssVideoPipeline.RunAsync(input, Path.Combine(root, "fallback.mp4"), new TranscodeOptions
             {
-                FfmpegPath = DemoPaths.FfmpegPath, HostDllPath = DemoPaths.HostDllPath, RuntimeDllPath = NrRuntimeCatalog.ResolveArgument(nrDll),
+                HostDllPath = DemoPaths.HostDllPath, RuntimeDllPath = NrRuntimeCatalog.ResolveArgument(nrDll),
                 LogPath = Path.Combine(root, "nr.log"), VsrHostDllPath = Path.GetFullPath(oldVsrHost), VsrLogPath = Path.Combine(root, "vsr.log"),
                 SuperResolutionScale = 2, EnableInterpolation = true, InterpolationBackend = FrameInterpolationBackend.Rife,
                 MaxFrames = 6, EnablePreviewFrames = false,
@@ -106,7 +106,7 @@ internal static class GpuEnhancementTests
         PipelineLog.Sink = line => { lock (lines) lines.Add(line); };
         TranscodeOptions Options() => new()
         {
-            FfmpegPath = DemoPaths.FfmpegPath, HostDllPath = DemoPaths.HostDllPath, RuntimeDllPath = dll, LogPath = DemoPaths.LogPath,
+            HostDllPath = DemoPaths.HostDllPath, RuntimeDllPath = dll, LogPath = DemoPaths.LogPath,
             EnableInterpolation = true, InterpolationBackend = FrameInterpolationBackend.Rife, MaxFrames = 6,
             EnablePreviewFrames = false, Video = new VideoTranscodeOptions { AudioCodec = AudioCodec.Copy },
         };
@@ -122,7 +122,7 @@ internal static class GpuEnhancementTests
             await Run("CPU-temporal", Options() with { Dlss = new DlssNrOptions { UseGpuTemporalProcessing = false } }, false);
             await Run("software-decode", Options() with { DecodeMode = VideoDecodeMode.Software, SuperResolutionScale = 2 }, false);
             string unsupported = Path.Combine(root, "ffv1.mkv");
-            var start = new ProcessStartInfo(DemoPaths.FfmpegPath) { UseShellExecute = false, CreateNoWindow = true, RedirectStandardError = true };
+            var start = new ProcessStartInfo("ffmpeg") { UseShellExecute = false, CreateNoWindow = true, RedirectStandardError = true };
             foreach (var argument in new[] { "-v", "error", "-i", input, "-an", "-frames:v", "6", "-c:v", "ffv1", unsupported }) start.ArgumentList.Add(argument);
             using (var process = Process.Start(start)!)
             {

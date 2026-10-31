@@ -28,7 +28,7 @@ internal static class CombinationBenchmark
             var fixture = Path.Combine(root, $"input-{group.Key}.mp4");
             if (!File.Exists(fixture))
             {
-                var start = new ProcessStartInfo(DemoPaths.FfmpegPath) { UseShellExecute = false, CreateNoWindow = true };
+                var start = new ProcessStartInfo("ffmpeg") { UseShellExecute = false, CreateNoWindow = true };
                 foreach (string arg in new[] { "-v", "error", "-i", input, "-an", "-frames:v", "24", "-vf", $"scale={group.Key}:{group.Key * 9 / 16}:flags=lanczos", "-c:v", "libx264", "-preset", "fast", "-crf", "16", "-pix_fmt", "yuv420p", fixture })
                     start.ArgumentList.Add(arg);
                 using var process = Process.Start(start)!;
@@ -40,7 +40,7 @@ internal static class CombinationBenchmark
             {
                 var options = new TranscodeOptions
                 {
-                    FfmpegPath = DemoPaths.FfmpegPath, HostDllPath = DemoPaths.HostDllPath, RuntimeDllPath = DemoPaths.RuntimeDllPath,
+                    HostDllPath = DemoPaths.HostDllPath, RuntimeDllPath = DemoPaths.RuntimeDllPath,
                     LogPath = Path.Combine(root, "nr.log"), VsrLogPath = Path.Combine(root, "vsr.log"),
                     EnableNr = test.Nr, SuperResolutionScale = test.Sr,
                     EnableInterpolation = test.Multiplier > 1, InterpolationBackend = FrameInterpolationBackend.Rife,
@@ -57,7 +57,7 @@ internal static class CombinationBenchmark
                     var wall = Stopwatch.StartNew();
                     var result = await DlssVideoPipeline.RunAsync(fixture, Path.Combine(root, $"{test.Name}-{iteration}.mp4"), options);
                     wall.Stop();
-                    var video = MediaProbe.Probe(result.OutputPath, DemoPaths.FfprobePath);
+                    var video = MediaProbe.Probe(result.OutputPath);
                     int width = test.Scale ? 1280 : test.Width * test.Sr, height = test.Scale ? 720 : test.Width * 9 / 16 * test.Sr;
                     if (video.Width != width || video.Height != height || video.FrameCount != 24 * test.Multiplier)
                         throw new Exception($"Invalid output {test.Name}: {video.Width}x{video.Height}, {video.FrameCount} frames");

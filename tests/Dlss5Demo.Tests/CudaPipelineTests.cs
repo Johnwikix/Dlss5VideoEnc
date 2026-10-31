@@ -15,7 +15,7 @@ internal static class CudaPipelineTests
         {
             var result = await DlssVideoPipeline.RunAsync(input, Path.Combine(root, decoder + ".mp4"), new TranscodeOptions
             {
-                FfmpegPath = DemoPaths.FfmpegPath, EnableNr = false, EnableInterpolation = true,
+                EnableNr = false, EnableInterpolation = true,
                 InterpolationBackend = FrameInterpolationBackend.Rife, InterpolationMultiplier = 6,
                 DecodeMode = decoder, EnablePreviewFrames = false, Video = new VideoTranscodeOptions { AudioCodec = AudioCodec.None },
             });
@@ -28,7 +28,7 @@ internal static class CudaPipelineTests
 
         static async Task<byte[]> Command(string[] args)
         {
-            var start = new ProcessStartInfo(DemoPaths.FfmpegPath) { UseShellExecute = false, CreateNoWindow = true,
+            var start = new ProcessStartInfo("ffmpeg") { UseShellExecute = false, CreateNoWindow = true,
                 RedirectStandardOutput = true, RedirectStandardError = true };
             foreach (string argument in args) start.ArgumentList.Add(argument);
             using var process = Process.Start(start)!;
@@ -45,10 +45,10 @@ internal static class CudaPipelineTests
     {
         string root = Path.Combine(Environment.CurrentDirectory, ".qa", "interpolation-port-2026-10-17", "cuda-cases-" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(root);
-        var original = MediaProbe.Probe(input, DemoPaths.FfprobePath);
+        var original = MediaProbe.Probe(input);
         var lines = new List<string>(); var previous = PipelineLog.Sink;
         PipelineLog.Sink = line => { lock (lines) lines.Add(line); };
-        TranscodeOptions Options() => new() { FfmpegPath = DemoPaths.FfmpegPath, EnableNr = false,
+        TranscodeOptions Options() => new() { EnableNr = false,
             EnableInterpolation = true, InterpolationBackend = FrameInterpolationBackend.Rife, InterpolationMultiplier = 4,
             MaxFrames = 6, EnablePreviewFrames = false, Video = new VideoTranscodeOptions { AudioCodec = AudioCodec.Copy } };
         try
@@ -70,18 +70,18 @@ internal static class CudaPipelineTests
                 Console.WriteLine("PASS CUDA reduced GPU preview and source/result identity");
             }
             string unknownAudio = Path.Combine(root, "unknown-audio.mkv");
-            var copy = new ProcessStartInfo(DemoPaths.FfmpegPath) { UseShellExecute = false, CreateNoWindow = true, RedirectStandardError = true };
+            var copy = new ProcessStartInfo("ffmpeg") { UseShellExecute = false, CreateNoWindow = true, RedirectStandardError = true };
             foreach (var argument in new[] { "-v", "error", "-i", input, "-map", "0", "-c", "copy", unknownAudio }) copy.ArgumentList.Add(argument);
             using (var process = Process.Start(copy)!) { var error = process.StandardError.ReadToEndAsync(); await process.WaitForExitAsync(); Require(process.ExitCode == 0, await error); }
-            Require(MediaProbe.Probe(unknownAudio, DemoPaths.FfprobePath).FrameCount == 0, "Fixture unexpectedly exposes frame count");
+            Require(MediaProbe.Probe(unknownAudio).FrameCount == 0, "Fixture unexpectedly exposes frame count");
             var unknownResult = await DlssVideoPipeline.RunAsync(unknownAudio, Path.Combine(root, "unknown-audio.mp4"), Options() with { MaxFrames = null });
-            var unknownOutput = MediaProbe.Probe(unknownResult.OutputPath, DemoPaths.FfprobePath);
+            var unknownOutput = MediaProbe.Probe(unknownResult.OutputPath);
             Require(unknownOutput.FrameCount == unknownResult.FramesProcessed * 4 && unknownOutput.HasAudio, "Unknown source count lost video/audio");
             Require(Math.Abs(unknownOutput.DurationSeconds - unknownResult.FramesProcessed / original.Fps) < .003, "Unknown source count changed duration");
             Console.WriteLine("PASS CUDA unknown source frame count retains bounded audio and complete video");
             await Run("software-decoder", input, Options() with { DecodeMode = VideoDecodeMode.Software }, false);
             string fixture = Path.Combine(root, "ffv1.mkv");
-            var start = new ProcessStartInfo(DemoPaths.FfmpegPath) { UseShellExecute = false, CreateNoWindow = true, RedirectStandardError = true };
+            var start = new ProcessStartInfo("ffmpeg") { UseShellExecute = false, CreateNoWindow = true, RedirectStandardError = true };
             foreach (var argument in new[] { "-v", "error", "-i", input, "-map", "0:v:0", "-frames:v", "6", "-vf", "format=yuv420p", "-c:v", "ffv1", fixture }) start.ArgumentList.Add(argument);
             using (var process = Process.Start(start)!)
             {
@@ -106,10 +106,10 @@ internal static class CudaPipelineTests
         {
             lock (lines) lines.Clear();
             var result = await DlssVideoPipeline.RunAsync(source, Path.Combine(root, name + ".mp4"), options).WaitAsync(TimeSpan.FromMinutes(2));
-            var output = MediaProbe.Probe(result.OutputPath, DemoPaths.FfprobePath);
+            var output = MediaProbe.Probe(result.OutputPath);
             Require(output.FrameCount == 24 && Math.Abs(output.Fps - original.Fps * 4) < .00001, name + ": frame count/rate changed");
             Require(Math.Abs(output.DurationSeconds - 6 / original.Fps) < .003, name + ": duration changed");
-            Require(output.HasAudio == MediaProbe.Probe(source, DemoPaths.FfprobePath).HasAudio, name + ": audio changed");
+            Require(output.HasAudio == MediaProbe.Probe(source).HasAudio, name + ": audio changed");
             if (cuda) lock (lines) Require(lines.Any(l => l.StartsWith("NVDEC 显存帧已确认")), name + ": did not use GPU frames");
             Console.WriteLine("PASS CUDA real pipeline: " + name);
         }

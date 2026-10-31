@@ -6,7 +6,7 @@ internal static class RifeGuardTests
     {
         string root = Path.Combine(Environment.CurrentDirectory, ".qa", "interpolation-port-2026-10-17", "guards");
         Directory.CreateDirectory(root);
-        TranscodeOptions Options() => new() { FfmpegPath = DemoPaths.FfmpegPath, EnableNr = false,
+        TranscodeOptions Options() => new() { EnableNr = false,
             EnableInterpolation = true, InterpolationBackend = FrameInterpolationBackend.Rife, EnablePreviewFrames = false, MaxFrames = 6 };
         await Reject<ArgumentOutOfRangeException>("invalid-backend", input, Options() with { InterpolationBackend = (FrameInterpolationBackend)999 });
         await Reject<ArgumentOutOfRangeException>("invalid-model", input, Options() with { InterpolationModel = (RifeModel)999 });
