@@ -152,7 +152,7 @@ public sealed class DlssNrHost : IDisposable
     internal bool FineMotion => _options.FineMotion;
     internal bool UseGpuTemporalProcessing => _options.UseGpuTemporalProcessing;
 
-    /// <summary>列出可用图形适配器（无需初始化 NGX）。</summary>
+    /// <summary>列出可用图形适配器（无需初始化 NGX）。用完即卸载宿主，进程退出不残留驱动线程。</summary>
     public static IReadOnlyList<GpuAdapter> EnumerateAdapters(string hostDllPath)
     {
         var library = LoadHost(hostDllPath);

@@ -1449,7 +1449,14 @@ std::wstring DirectoryOf(const wchar_t *path)
     return result;
 }
 
-void ShutdownInternal()
+// Watchdog: ReleaseFeature / FreeLibrary can hang inside the driver when the
+// runtime is a community-patched build or loaded from a non-standard path.
+// Run the cleanup on a worker thread with a deadline; on timeout abandon it
+// and let process exit terminate the stuck thread (encoded output is already
+// complete by then, so functionality is unaffected).
+volatile LONG g_teardown_abandoned = 0;
+
+DWORD WINAPI TeardownThread(LPVOID)
 {
     ReleaseFeatureResources();
     gpu_output::Close();
@@ -1480,6 +1487,27 @@ void ShutdownInternal()
         fclose(g_log);
         g_log = nullptr;
     }
+    return 0;
+}
+
+void ShutdownInternal()
+{
+    if (g_teardown_abandoned != 0)
+        return; // Previous cleanup was abandoned; process exit reclaims the rest.
+    HANDLE worker = CreateThread(nullptr, 0, TeardownThread, nullptr, 0, nullptr);
+    if (worker == nullptr)
+    {
+        TeardownThread(nullptr);
+        return;
+    }
+    if (WaitForSingleObject(worker, 3000) != WAIT_OBJECT_0)
+    {
+        InterlockedExchange(&g_teardown_abandoned, 1);
+        // The stuck thread may still wake up later; it must not touch shared
+        // state (including the log handle) from here on. Process exit ends it.
+        Log("teardown watchdog timeout; abandoning NGX cleanup, process exit will reclaim");
+    }
+    CloseHandle(worker);
 }
 
 } // namespace
@@ -1617,6 +1645,21 @@ extern "C" __declspec(dllexport) int dlssnr_init(
     int width, int height, int preset, const wchar_t *runtime_path, const wchar_t *log_path)
 {
     ShutdownInternal();
+    if (g_teardown_abandoned != 0)
+    {
+        // A previous teardown was abandoned by the watchdog: the NGX session is
+        // still held by the driver and cannot be rebuilt safely in this process.
+        // Fail explicitly instead of hanging in the next driver call; restart
+        // the process to recover.
+        if (log_path != nullptr)
+        {
+            _wfopen_s(&g_log, log_path, L"w");
+            Log("init rejected: previous NGX teardown was abandoned (watchdog timeout)");
+            fclose(g_log);
+            g_log = nullptr;
+        }
+        return 0;
+    }
     if (log_path != nullptr)
         _wfopen_s(&g_log, log_path, L"w");
     Log("=== dlssnr_host_v2 init w=%d h=%d preset=%d ===", width, height, preset);

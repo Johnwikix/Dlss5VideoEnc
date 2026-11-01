@@ -220,7 +220,7 @@ dotnet run --project tests/Dlss5Demo.Tests -c Release -- --nr-switch "小素材.
 
 界面的「NR 版本」从实际安装目录递归发现 `nvngx_dlssnr*.dll`，显示 DLL 文件版本及目录标签，版本列表没有写死。明确选择的 DLL 用于下一次转码，并按相对路径保存；刷新、重启、移动整个发布目录不会因选项排序变化而选错版本。文件缺失时提示重新选择，不静默替换。
 
-用户自行添加版本：把 DLL 放入 `runtime\任意版本名称\nvngx_dlssnr.dll`，在界面点击「刷新」。可以多层嵌套，也支持 `nvngx_dlssnr_自定义名称.dll`。用文件夹名标注适用显卡和来源；版本号相同的原版/社区版可区分。发布脚本自动携带 runtime 中发现的全部 NR DLL。
+用户自行添加版本：把 DLL 放入 `runtime\任意版本名称\nvngx_dlssnr.dll`，在界面点击「刷新」。可以多层嵌套，也支持 `nvngx_dlssnr_自定义名称.dll`。用文件夹名标注适用显卡和来源；版本号相同的原版/社区版可区分。**目录名包含 `RTX20/RTX30/RTX40/RTX50` 标记的版本才能被「自动」档按显卡代际选中**（如 `Community-SF-v2-310.8-RTX20-RTX30-Series`）；用导入脚本保留压缩包原始目录名（如 `SF-v2`）时，请重命名目录补上代际标记。发布脚本自动携带 runtime 中发现的全部 NR DLL。
 
 导入版本包（保留原默认 DLL）：
 
@@ -230,7 +230,11 @@ dotnet run --project tests/Dlss5Demo.Tests -c Release -- --nr-switch "小素材.
 dotnet run --project src/Dlss5Demo.Cli -c Release -- input.mp4 output.mp4 --nr-runtime 'runtime/nr/NVIDIA-Original-310.9.16-RTX50-Series-Only/nvngx_dlssnr.dll'
 ```
 
-DLSS NR 运行库必须与 NVIDIA RTX 显卡代际匹配。「自动」保留原有策略：`DLSS5_NR_RUNTIME_DLL` → `mods` 覆盖 → `DLSS5_GPU_SERIES` → `runtime\nvngx_dlssnr.dll`。明确的界面/CLI 选择优先于自动策略；关闭 NR 时不解析或加载所选 DLL。
+DLSS NR 运行库必须与 NVIDIA RTX 显卡代际匹配。「自动」策略为：`DLSS5_NR_RUNTIME_DLL` → `mods` 覆盖 → `DLSS5_GPU_SERIES` → **根目录激活版** `runtime\nvngx_dlssnr.dll` → **按显卡代际自动匹配** `nr\` 变体（仅当根目录未放置）→ `nr\` 版本最低变体。明确的界面/CLI 选择优先于自动策略；关闭 NR 时不解析或加载所选 DLL。
+
+**全部版本均可完整转码。** 曾存在的一个驱动层死锁（同一调用线程先跑 EvaluateFeature 再做 NGX teardown 时挂起，表现为进程不退出、输出未收尾）已在宿主 `dlssnr_host_v2.dll` 修复：teardown 移到工作线程执行并带 3 秒看门狗；极少数情况下看门狗放弃清理时，同进程后续 NR 会话会明确报错（重启应用即可），不影响已完成的输出。
+
+代际自动匹配（根目录未放置时启用）：按显存最大的 NVIDIA 适配器识别 RTX 代际（20/30/40/50，依 PCI 设备号段），在 `runtime\nr\` 下挑选目录名声明支持该代际的变体，**版本低者优先**（保守的已验证版本胜出，版本未知排最后）。
 
 需要并存多个版本时，可使用以下布局，并设置 `DLSS5_GPU_SERIES` 为 `30`、`40` 或 `50`：
 
@@ -240,7 +244,7 @@ runtime\40\nvngx_dlssnr.dll
 runtime\50\nvngx_dlssnr.dll
 ```
 
-也可以直接设置 `DLSS5_NR_RUNTIME_DLL` 指向匹配的 DLL。本次提供的 310.9.16 包含 RTX 50 原版及 RTX 20/30/40 社区适配版；本机只验证了 RTX 50 原版，社区版兼容性取决于具体显卡和驱动。AMD/Intel 的 OpenDLSS-NR 后端当前未接入；本项目的 AMD/Intel 支持仅限 FFmpeg AMF/QSV 编码，DLSS NR 与 RTX Video VSR 仍要求 NVIDIA。
+也可以直接设置 `DLSS5_NR_RUNTIME_DLL` 指向匹配的 DLL（但注意上文：`nr\` 路径的完整转码在当前驱动下会在 teardown 挂起）。当前布局：根目录为 NVIDIA 原版 310.8.0（RTX 50 激活版）；`runtime\nr\` 每份文件只存一份、目录名均标注代际：310.8.0 社区适配版 RTX 40/50、SF-v2 FP16 兼容版 RTX 20/30（性能有限，适合图片/视频场景）、310.9.16 原版 RTX 50、310.9.16 社区适配版 RTX 20/30/40。文件校验值见 `runtime\NR_OPTIONS_README.txt`。本机（RTX 5070 Ti）完整转码验证了 310.8.0 原版；社区版仅通过小帧初始化验证，完整转码受上述 teardown 问题限制。AMD/Intel 的 OpenDLSS-NR 后端当前未接入；本项目的 AMD/Intel 支持仅限 FFmpeg AMF/QSV 编码，DLSS NR 与 RTX Video VSR 仍要求 NVIDIA。
 
 ## 发布打包
 

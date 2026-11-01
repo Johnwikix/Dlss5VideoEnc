@@ -9,8 +9,11 @@ public static class DemoPaths
     /// <summary>
     /// 解析当前使用的 DLSS NR 运行库。
     ///
-    /// 运行库按显卡代际分发，不能把 RTX 30/40/50 的 DLL 混用。优先级为：
-    /// 显式路径、mods 覆盖、DLSS5_GPU_SERIES 对应子目录、runtime 根目录默认文件。
+    /// 运行库按显卡代际分发，不能把 RTX 20/30/40/50 的 DLL 混用。优先级为：
+    /// 显式路径、mods 覆盖、DLSS5_GPU_SERIES 对应子目录、runtime 根目录激活版、
+    /// 按显卡代际自动匹配 nr\ 变体（版本低者优先）、nr\ 最低版本。
+    /// 完整转码必须从根目录加载（驱动 617.14 下 nr\ 深层路径在会话 teardown 会挂起），
+    /// 根目录应放置本机适配版本；nr\ 仅作版本库与显式手动选择。
     /// </summary>
     public static string RuntimeDllPath => FindDlssRuntimeDll();
     public static string? RuntimeProfile => ReadOptionalEnvironment("DLSS5_GPU_SERIES");
@@ -75,9 +78,21 @@ public static class DemoPaths
                 return Path.GetFullPath(suffixedCandidate);
         }
 
-        // 根目录是"当前默认"位：放本机显卡适配的最新版本（NrRuntimeCatalog 里
-        // nr\ 下的历史/其他系列版本仍可经下拉框或 DLSS5_GPU_SERIES 选用）。
-        return Path.Combine(RuntimeDir, "nvngx_dlssnr.dll");
+        // 根目录是激活位：放本机显卡适配的版本，优先于代际匹配（nr\ 深层路径
+        // 在完整转码的会话 teardown 会挂起，见类注释）。
+        var rootDefault = Path.Combine(RuntimeDir, "nvngx_dlssnr.dll");
+        if (File.Exists(rootDefault))
+            return Path.GetFullPath(rootDefault);
+
+        // 根目录未放置时的兜底：按本机 RTX 代际在 nr\ 下挑选能跑的变体（版本
+        // 低者优先），再退回 nr\ 全场最低版本；都没有则交由加载方报缺文件。
+        if (NrGpuAutoSelect.DetectSeries() is { } series &&
+            NrGpuAutoSelect.SelectForSeries(series, RuntimeDir) is { } matched)
+        {
+            PipelineLog.Info($"NR 自动匹配 RTX {series}：{Path.GetFullPath(matched)}");
+            return Path.GetFullPath(matched);
+        }
+        return NrGpuAutoSelect.SelectLowestVariant(RuntimeDir) ?? rootDefault;
     }
 
     internal static IEnumerable<string> EnumerateOverrideDirectories()

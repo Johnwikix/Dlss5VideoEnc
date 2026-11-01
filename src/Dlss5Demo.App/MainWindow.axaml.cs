@@ -213,7 +213,7 @@ public partial class MainWindow : Window
 
     private void RefreshNrRuntimes(string? selectedId)
     {
-        var entries = new List<NrRuntimeInfo> { new("", DemoPaths.RuntimeDllPath, "自动 · 环境变量 / mods / 默认版本") };
+        var entries = new List<NrRuntimeInfo> { new("", DemoPaths.RuntimeDllPath, "自动 · 环境变量 / mods / 根目录激活版 / 按显卡代际匹配") };
         entries.AddRange(NrRuntimeCatalog.Discover());
         var selected = entries.Find(item => string.Equals(item.Id, selectedId ?? "", StringComparison.OrdinalIgnoreCase));
         if (selected == null)
@@ -515,7 +515,7 @@ public partial class MainWindow : Window
         RuntimeBadge.Text = !nrEnabled ? "DLSS NR · 已关闭"
             : runtimeExists ? "DLSS Runtime · ready" : "DLSS Runtime · missing";
         NrRuntimeHint.Text = runtimeExists
-            ? "将 DLL 放入 runtime 下独立的版本文件夹，点击刷新即可选择。请选择匹配显卡的版本。"
+            ? "「自动」优先用根目录激活版；未放置时按本机 RTX 代际（20-50 系）匹配 runtime\\nr\\ 下的版本。完整转码建议把适配版本放到 runtime 根目录。"
             : "所选 NR DLL 不存在。请放回文件后刷新，或选择其他版本。";
         ProcessingOrderHint.Text = !nrEnabled ? enabled ? "仅 RTX Video 超分 → 编码。NR、光流和历史累积已跳过。"
                 : "NR 与超分均已关闭：直接转码，可使用下方输出滤镜。"

@@ -4,9 +4,21 @@ using System.Diagnostics;
 
 if (RtxVideoWorker.TryServe(args)) return;
 
+var detectOnly = Array.IndexOf(args, "--detect");
+if (detectOnly >= 0)
+{
+    foreach (var adapter in DlssNrHost.EnumerateAdapters(DemoPaths.HostDllPath))
+        Console.WriteLine($"Adapter: {adapter.Description} device=0x{adapter.DeviceId:X4} vram={adapter.DedicatedVideoMemory / (1024 * 1024)}MiB");
+    Console.WriteLine($"Detected RTX series: {NrGpuAutoSelect.DetectSeries()?.ToString() ?? "unknown"}");
+    Console.WriteLine($"Auto runtime: {DemoPaths.RuntimeDllPath}");
+    return;
+}
+
 var tests = new (string Name, Action Run)[]
 {
     ("NR versions are discovered recursively and keep stable IDs on refresh", NrRuntimeCatalogTests.Discovery),
+    ("GPU series detection maps consumer device IDs and RTX folder tokens", NrGpuAutoSelectTests.SeriesMapping),
+    ("Auto NR selection picks the lowest version supporting the GPU series", NrGpuAutoSelectTests.AutoSelection),
     ("Identity output scaling keeps GPU paths without changing real resize/crop requests", OutputScaleTests.Identity),
     ("Driver HDR maps SDR only; native HDR and RIFE bypass mapping", DriverHdrIntegration.Policy),
     ("NR controls reject model-extrapolating and nonfinite strengths", StrengthBoundaries),
