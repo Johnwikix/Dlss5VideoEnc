@@ -7,6 +7,7 @@ using Avalonia.Platform;
 using Avalonia.Platform.Storage;
 using Avalonia.Threading;
 using Dlss5Demo.Core;
+using System.Collections.ObjectModel;
 using System.Diagnostics;
 using System.Globalization;
 using System.Runtime.InteropServices;
@@ -15,10 +16,8 @@ namespace Dlss5Demo.App;
 
 public partial class MainWindow : Window
 {
-    private VideoInfo? _video;
     private CancellationTokenSource? _cancellationTokenSource;
     private string? _lastOutputPath;
-    private string? _suggestedOutputPath;
     private TranscodePreviewBuffer? _previewBuffer;
     private VideoInfo? _activeVideo;
     /// <summary>内层管线任务：清理（NGX shutdown、ffmpeg 回收）完成即结束，不依赖 UI 线程。</summary>
@@ -29,11 +28,15 @@ public partial class MainWindow : Window
     private readonly LatestProgress _latestProgress = new();
     private readonly Stopwatch _previewRate = new();
     private int _renderedPreviewFrames;
-    private int _probeGeneration;
     private bool _closed;
     private readonly PreviewSurface _sourceSurface;
     private readonly PreviewSurface _outputSurface;
     private readonly DispatcherTimer _previewRenderTimer;
+    /// <summary>批量队列：顺序逐项转码，设置对整批共用。</summary>
+    private readonly ObservableCollection<QueueItem> _queue = [];
+    private QueueItem? _runningItem;
+    /// <summary>程序化写详情卡（OutputBox 等）期间抑制其 TextChanged 回写队列项。</summary>
+    private bool _updatingDetail;
 
     /// <summary>当前管线任务；窗口关闭后用于等待 native 清理完成再退进程。</summary>
     public Task PipelineTask => _pipelineTask ?? Task.CompletedTask;
@@ -42,11 +45,9 @@ public partial class MainWindow : Window
     {
         InitializeComponent();
         DragDrop.SetAllowDrop(this, true);
-        DragDrop.SetAllowDrop(InputBox, true);
         DragDrop.AddDragOverHandler(this, OnDragOver);
         DragDrop.AddDropHandler(this, OnDrop);
-        DragDrop.AddDragOverHandler(InputBox, OnDragOver);
-        DragDrop.AddDropHandler(InputBox, OnDrop);
+        QueueList.ItemsSource = _queue;
         _sourceSurface = new PreviewSurface(OriginalImage);
         _outputSurface = new PreviewSurface(ProcessedImage);
         _previewRenderTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(16) };
@@ -85,9 +86,9 @@ public partial class MainWindow : Window
             if (args.Property.Name == nameof(Slider.Value)) QualityValue.Text = ((int)QualitySlider.Value).ToString(CultureInfo.InvariantCulture);
         };
         ApplySettings();
-        // 环境变量优先于持久化设置（自动化覆盖手工配置）。
+        // 环境变量优先于持久化设置（自动化覆盖手工配置）：直接入队一个文件。
         var inputOverride = Environment.GetEnvironmentVariable("DLSS5_INPUT");
-        if (!string.IsNullOrWhiteSpace(inputOverride)) InputBox.Text = inputOverride;
+        if (!string.IsNullOrWhiteSpace(inputOverride)) AddFiles([inputOverride]);
         Log("就绪。DLSS 宿主: " + DemoPaths.HostDllPath);
         Log($"DLSS 运行库: {(NrRuntimeBox.SelectedItem as NrRuntimeInfo)?.DllPath ?? DemoPaths.RuntimeDllPath}" +
             (DemoPaths.RuntimeProfile is { } profile ? $" · GPU profile {profile}" : ""));
@@ -257,6 +258,7 @@ public partial class MainWindow : Window
         StatusText.Text = $"{update.FramesDone}/{update.TotalFrames} 帧 · {update.Fps:0.0} fps · {update.Elapsed.TotalSeconds:0.0}s";
         FramesText.Text = $"{update.FramesDone} 帧";
         SpeedText.Text = $"处理 {update.Fps:0.0} fps";
+        _runningItem?.SetProgress(update.FramesDone, update.TotalFrames, update.Fps);
     }
 
     private void ResetPreview()
@@ -298,25 +300,26 @@ public partial class MainWindow : Window
         ".mp4", ".mkv", ".mov", ".m4v", ".avi", ".ts", ".webm",
     };
 
-    private static string? GetDroppedVideoPath(DragEventArgs e)
+    private static List<string> GetDroppedVideoPaths(DragEventArgs e)
     {
+        var paths = new List<string>();
         var files = e.DataTransfer.TryGetFiles();
         if (files is null)
-            return null;
+            return paths;
 
         foreach (var file in files)
         {
             var path = file.TryGetLocalPath();
             if (!string.IsNullOrWhiteSpace(path) &&
                 VideoExtensions.Contains(Path.GetExtension(path)))
-                return path;
+                paths.Add(path);
         }
-        return null;
+        return paths;
     }
 
     private void OnDragOver(object? sender, DragEventArgs e)
     {
-        e.DragEffects = GetDroppedVideoPath(e) is not null
+        e.DragEffects = GetDroppedVideoPaths(e).Count > 0
             ? DragDropEffects.Copy
             : DragDropEffects.None;
         e.Handled = true;
@@ -324,8 +327,8 @@ public partial class MainWindow : Window
 
     private void OnDrop(object? sender, DragEventArgs e)
     {
-        var path = GetDroppedVideoPath(e);
-        if (path is null)
+        var paths = GetDroppedVideoPaths(e);
+        if (paths.Count == 0)
         {
             StatusText.Text = "请拖入视频文件（MP4 / MKV / MOV / TS / WebM）。";
             Log("拖入内容不是受支持的视频文件。");
@@ -333,71 +336,140 @@ public partial class MainWindow : Window
             return;
         }
 
-        InputBox.Text = path;
-        StatusText.Text = "已载入拖入的视频，正在探测…";
-        Log("已通过拖放载入: " + Path.GetFileName(path));
+        AddFiles(paths);
+        StatusText.Text = $"已接收 {paths.Count} 个拖入文件。";
         e.Handled = true;
     }
 
-    private async void OnInputTextChanged(object? sender, TextChangedEventArgs e)
+    /// <summary>入队新文件：去重后异步探测规格；运行中也可追加（队列会顺序捡到）。</summary>
+    private void AddFiles(IEnumerable<string> paths)
     {
-        var generation = ++_probeGeneration;
-        var path = InputBox.Text?.Trim().Trim('"') ?? "";
-        if (OpenVideoFolderButton != null) OpenVideoFolderButton.IsEnabled = File.Exists(path);
-        _suggestedOutputPath = null;
-        if (OutputBox != null) OutputBox.Text = "";
-        _video = null;
-        if (StartButton?.IsEnabled == true)
+        var added = 0;
+        var firstAdded = (QueueItem?)null;
+        foreach (var raw in paths)
         {
-            ResetPreview();
-            _lastOutputPath = null;
-            CompareButton.IsEnabled = false;
-            LivePreviewText.Text = "等待转码 · 同帧对比";
+            var path = raw.Trim().Trim('"');
+            if (!File.Exists(path) || !VideoExtensions.Contains(Path.GetExtension(path))) continue;
+            if (_queue.Any(item => string.Equals(item.InputPath, path, StringComparison.OrdinalIgnoreCase))) continue;
+            var item = new QueueItem(path);
+            _queue.Add(item);
+            firstAdded ??= item;
+            added++;
+            ProbeItem(item);
         }
-        if (!File.Exists(path))
+        if (added > 0)
         {
-            _video = null;
-            InfoText.Text = "文件不存在。";
-            HdrSourceText.Text = "";
-            return;
+            Log($"已加入队列: {added} 个文件（共 {_queue.Count} 项）。");
+            if (QueueList.SelectedItem is null) QueueList.SelectedItem = firstAdded;
         }
+        UpdateQueueSummary();
+    }
+
+    private async void ProbeItem(QueueItem item)
+    {
         try
         {
-            _suggestedOutputPath = OutputFileNames.ForInput(path, ContainerExtension(CollectVideoOptions().Container));
-            OutputBox!.Text = _suggestedOutputPath;
-            var video = await Task.Run(() => MediaProbe.Probe(path));
-            if (generation != _probeGeneration || _closed) return;
-            _video = video;
-            InfoText.Text = $"{_video.Codec} · {_video.Width}×{_video.Height} · {_video.Fps:0.##} fps · {_video.PixelFormat}\n" +
-                             $"{_video.FrameCount} 帧 / {_video.DurationSeconds:0.0}s · 音频 {(_video.HasAudio ? _video.AudioCodec : "无")}";
-            HdrSourceText.Text = _video.IsHdr
-                ? $"HDR 源 · {_video.ColorPrimaries} / {_video.ColorTransfer} / {_video.ColorSpace} · 将保留色彩元数据"
-                : "SDR 源 · 输出会使用 SDR 色彩标记";
+            var video = await Task.Run(() => MediaProbe.Probe(item.InputPath));
+            if (_closed) return;
+            item.SetProbe(video);
         }
         catch (Exception error)
         {
-            if (generation != _probeGeneration || _closed) return;
-            _video = null;
-            InfoText.Text = "探测失败: " + error.Message;
-            Log("探测失败: " + error.Message);
+            if (_closed) return;
+            item.SetProbeFailed(error.Message);
+            Log($"探测失败 {item.FileName}: {error.Message}");
         }
+        if (!_closed && QueueList.SelectedItem == item) ShowItemDetail();
+    }
+
+    /// <summary>队列摘要行 + 空态提示 + 清空按钮可用性。</summary>
+    private void UpdateQueueSummary()
+    {
+        var pending = _queue.Count(item => item.State == QueueItemState.Waiting);
+        var finished = _queue.Count(item => item.State is QueueItemState.Done or QueueItemState.Failed or QueueItemState.Cancelled or QueueItemState.Skipped);
+        QueueSummaryText.Text = _queue.Count == 0
+            ? "队列 0 项"
+            : finished > 0 ? $"队列 {_queue.Count} 项 · 待处理 {pending} · 已结束 {finished}" : $"队列 {_queue.Count} 项 · 待处理 {pending}";
+        QueueEmptyHint.IsVisible = _queue.Count == 0;
+        ClearFinishedButton.IsEnabled = finished > 0;
+    }
+
+    private void QueueList_SelectionChanged(object? sender, SelectionChangedEventArgs e)
+        => ShowItemDetail();
+
+    /// <summary>详情卡显示选中队列项：探测规格、HDR 说明与输出路径（实际输出优先，其次手动指定）。</summary>
+    private void ShowItemDetail()
+    {
+        var item = QueueList.SelectedItem as QueueItem;
+        _updatingDetail = true;
+        try
+        {
+            if (item is null)
+            {
+                InfoText.Text = "从队列中选择一项查看详情。";
+                HdrSourceText.Text = "";
+                OutputBox.Text = "";
+                OpenVideoFolderButton.IsEnabled = false;
+                return;
+            }
+            OpenVideoFolderButton.IsEnabled = File.Exists(item.InputPath);
+            InfoText.Text = item.Detail;
+            HdrSourceText.Text = item.Video?.IsHdr == true
+                ? $"HDR 源 · {item.Video.ColorPrimaries} / {item.Video.ColorTransfer} / {item.Video.ColorSpace} · 将保留色彩元数据"
+                : item.Video is null ? "" : "SDR 源 · 输出会使用 SDR 色彩标记";
+            OutputBox.Text = item.ActualOutput ?? item.OutputOverride ?? "";
+        }
+        finally
+        {
+            _updatingDetail = false;
+            if (OpenOutputFolderButton != null)
+                OpenOutputFolderButton.IsEnabled = ExistingVideoDirectory(OutputBox.Text) != null;
+        }
+    }
+
+    private void RemoveItem_Click(object? sender, RoutedEventArgs e)
+    {
+        if ((sender as Button)?.DataContext is not QueueItem item) return;
+        if (item.State == QueueItemState.Running)
+        {
+            Log($"正在处理，无法移除: {item.FileName}（可点「取消」停止队列）");
+            return;
+        }
+        var selected = QueueList.SelectedItem == item;
+        _queue.Remove(item);
+        if (selected) QueueList.SelectedItem = null;
+        UpdateQueueSummary();
+    }
+
+    private void ClearFinished_Click(object? sender, RoutedEventArgs e)
+    {
+        var finished = _queue.Where(item => item.State is QueueItemState.Done or QueueItemState.Failed or QueueItemState.Cancelled or QueueItemState.Skipped).ToList();
+        var selectedRemoved = QueueList.SelectedItem is QueueItem selected && finished.Contains(selected);
+        foreach (var item in finished) _queue.Remove(item);
+        if (selectedRemoved) QueueList.SelectedItem = null;
+        if (finished.Count > 0) Log($"已清空 {finished.Count} 个已结束的队列项。");
+        UpdateQueueSummary();
     }
 
     private async void Browse_Click(object? sender, RoutedEventArgs e)
     {
         var files = await StorageProvider.OpenFilePickerAsync(new FilePickerOpenOptions
         {
-            Title = "选择输入视频",
-            AllowMultiple = false,
+            Title = "选择输入视频（可多选）",
+            AllowMultiple = true,
             FileTypeFilter = [new FilePickerFileType("视频文件") { Patterns = ["*.mp4", "*.mkv", "*.mov", "*.m4v", "*.avi", "*.ts", "*.webm"] }],
         });
-        if (files.Count > 0) InputBox.Text = files[0].TryGetLocalPath();
+        AddFiles(files.Select(file => file.TryGetLocalPath()).Where(path => path is { Length: > 0 })!);
     }
 
     private void OnOutputTextChanged(object? sender, TextChangedEventArgs e)
     {
         if (OpenOutputFolderButton != null)
             OpenOutputFolderButton.IsEnabled = ExistingVideoDirectory(OutputBox.Text) != null;
+        if (_updatingDetail) return;
+        // 手动编辑输出路径 = 为选中项指定自定义输出；清空 = 恢复自动命名。运行中项的路径已定，不再生效。
+        if (QueueList.SelectedItem is QueueItem { State: QueueItemState.Waiting } item)
+            item.OutputOverride = string.IsNullOrWhiteSpace(OutputBox.Text) ? null : OutputBox.Text!.Trim().Trim('"');
     }
 
     private static string? ExistingVideoDirectory(string? path)
@@ -411,7 +483,7 @@ public partial class MainWindow : Window
         catch (Exception error) when (error is ArgumentException or NotSupportedException or IOException) { return null; }
     }
 
-    private void OpenVideoFolder_Click(object? sender, RoutedEventArgs e) => OpenVideoDirectory(InputBox.Text);
+    private void OpenVideoFolder_Click(object? sender, RoutedEventArgs e) => OpenVideoDirectory((QueueList.SelectedItem as QueueItem)?.InputPath);
     private void OpenOutputFolder_Click(object? sender, RoutedEventArgs e) => OpenVideoDirectory(OutputBox.Text);
 
     private void OpenVideoDirectory(string? path)
@@ -446,7 +518,9 @@ public partial class MainWindow : Window
         {
             Title = "选择输出视频",
             ShowOverwritePrompt = false,
-            SuggestedFileName = string.IsNullOrWhiteSpace(OutputBox.Text) ? "dlss5-output.mp4" : Path.GetFileName(OutputBox.Text),
+            SuggestedFileName = QueueList.SelectedItem is QueueItem item && File.Exists(item.InputPath)
+                ? Path.GetFileName(OutputFileNames.ForInput(item.InputPath, ContainerExtension(CollectVideoOptions().Container)))
+                : string.IsNullOrWhiteSpace(OutputBox.Text) ? "dlss5-output.mp4" : Path.GetFileName(OutputBox.Text),
             FileTypeChoices = [new FilePickerFileType("MP4 视频") { Patterns = ["*.mp4"] }, new FilePickerFileType("MKV 视频") { Patterns = ["*.mkv"] }],
         });
         if (file?.TryGetLocalPath() is { Length: > 0 } path) OutputBox.Text = OutputFileNames.Available(path);
@@ -549,11 +623,11 @@ public partial class MainWindow : Window
 
     private async void Start_Click(object? sender, RoutedEventArgs e)
     {
-        var input = InputBox.Text?.Trim().Trim('"') ?? "";
-        if (!File.Exists(input)) { StatusText.Text = "输入文件不存在。"; return; }
-        if (_video == null) { StatusText.Text = "视频尚未成功探测。"; return; }
-        var output = OutputBox.Text?.Trim().Trim('"') ?? "";
-        var automaticOutput = string.IsNullOrWhiteSpace(output) || output == _suggestedOutputPath;
+        if (!_queue.Any(item => item.State == QueueItemState.Waiting))
+        {
+            StatusText.Text = _queue.Count == 0 ? "队列为空，请先添加视频。" : "没有待处理项（已结束的项不会重跑）。";
+            return;
+        }
         var videoOptions = CollectVideoOptions();
         string runtimeDllPath;
         try { runtimeDllPath = EnableNrBox.IsChecked == true ? NrRuntimeCatalog.Resolve((NrRuntimeBox.SelectedItem as NrRuntimeInfo)?.Id) : ""; }
@@ -561,20 +635,6 @@ public partial class MainWindow : Window
         {
             StatusText.Text = error.Message;
             RefreshNrRuntimes((NrRuntimeBox.SelectedItem as NrRuntimeInfo)?.Id);
-            return;
-        }
-        try
-        {
-            var extension = ContainerExtension(videoOptions.Container);
-            if (automaticOutput)
-                output = OutputFileNames.ForInput(input, extension);
-            else if (Path.GetExtension(output).Length == 0) output = Path.ChangeExtension(output, extension);
-            output = OutputFileNames.Available(output);
-            Directory.CreateDirectory(Path.GetDirectoryName(output)!);
-        }
-        catch (Exception error) when (error is IOException or UnauthorizedAccessException or ArgumentException or NotSupportedException)
-        {
-            StatusText.Text = "输出路径无效: " + error.Message.Split('\n')[0];
             return;
         }
 
@@ -592,13 +652,7 @@ public partial class MainWindow : Window
         _pipelineTask = null;
         var generation = ++_runGeneration;
 
-        ResetPreview();
-        _activeVideo = _video;
-        _previewBuffer = new TranscodePreviewBuffer(960, 540);
-        _cancellationTokenSource = new CancellationTokenSource();
-        var token = _cancellationTokenSource.Token;
-        StartButton.IsEnabled = false; CancelButton.IsEnabled = true; CompareButton.IsEnabled = false; Progress.Value = 0;
-        PipelineStatus.Text = "DLSS NR 正在处理帧…"; LivePreviewText.Text = "SYNC · 源帧与输出帧同步";
+        // 队列开始即快照全部设置：整批共用同一配置，运行中改动控件不影响本批。
         var options = new TranscodeOptions
         {
             HostDllPath = DemoPaths.HostDllPath,
@@ -616,9 +670,8 @@ public partial class MainWindow : Window
             Dlss = CollectDlssOptions(), Video = videoOptions, VideoEncoder = VideoCodecNames.Encoder(videoOptions),
             Quality = (int)QualitySlider.Value, MaxFrames = FramesLimitBox.IsChecked == true ? 60 : null,
             CopyAudio = videoOptions.AudioCodec != AudioCodec.None, EnablePreviewFrames = true,
-            PreviewFramesPerSecond = 60, PreviewSink = _previewBuffer,
+            PreviewFramesPerSecond = 60,
         };
-        _lastOutputPath = output; OutputBox.Text = output;
         // 转码定参即落盘：之后即使闪退，配置也不丢（窗口关闭时还会再存一次）。
         AppSettingsStore.Save(CaptureSettings());
         var orderLabel = !options.EnableNr ? options.SuperResolutionScale <= 1 ? "直接转码" : $"RTX Video {options.SuperResolutionScale}×"
@@ -626,47 +679,120 @@ public partial class MainWindow : Window
             : options.NrBeforeSuperResolution ? $"DLSS NR → RTX Video {options.SuperResolutionScale}×"
             : $"RTX Video {options.SuperResolutionScale}× → DLSS NR";
         if (options.EnableInterpolation) orderLabel += $" → {options.InterpolationBackend} 补帧 {options.InterpolationMultiplier}×";
-        PipelineStatus.Text = $"{orderLabel} 正在处理帧…";
-        Log($"开始转码: {Path.GetFileName(input)} → {Path.GetFileName(output)} · {options.VideoEncoder} · {orderLabel}");
+        var pendingCount = _queue.Count(item => item.State == QueueItemState.Waiting);
+        Log($"开始队列: {pendingCount} 个待处理文件 · 设置按当前快照对整批生效 · {orderLabel} · {options.VideoEncoder}");
         if (options.EnableNr)
             Log($"光流运动矢量: {(options.Dlss.MotionGuidance ? "开启" : "关闭")} · NR 连续历史: {(options.Dlss.ContinuousHistory ? "开启" : "关闭")}");
-        try
-        {
-            var progress = new Progress<TranscodeProgress>(update =>
-            {
-                _latestProgress.Publish(update);
-            });
-            var runTask = DlssVideoPipeline.RunAsync(input, output, options, progress, token);
-            _pipelineTask = runTask;
-            var result = await runTask;
-            _lastOutputPath = result.OutputPath;
-            if (InputBox.Text?.Trim().Trim('"') == input)
-            {
-                OutputBox.Text = result.OutputPath;
-                if (automaticOutput) _suggestedOutputPath = result.OutputPath;
-            }
-            Progress.Value = 100; CompareButton.IsEnabled = File.Exists(result.OutputPath); OutputText.Text = $"{result.OutputBytes / 1048576.0:0.0} MiB";
-            var frameLabel = options.EnableInterpolation
-                ? $"{result.FramesProcessed} 源帧 → {result.FramesProcessed * options.InterpolationMultiplier} 输出帧"
-                : $"{result.FramesProcessed} 帧";
-            StatusText.Text = $"完成 · {frameLabel} · {result.AverageFps:0.0} fps"; PipelineStatus.Text = "转码完成 · 输出可实时播放";
-            Log($"完成: {result.FramesProcessed} 帧，输出 {result.OutputBytes / 1048576.0:0.0} MiB");
-            LivePreviewText.Text = "完成 · 停留在最后一帧";
-        }
-        catch (OperationCanceledException)
-        {
-            if (generation == _runGeneration) { StatusText.Text = "已取消。"; PipelineStatus.Text = "任务已取消"; }
-            Log("用户取消。");
-        }
-        catch (Exception error)
-        {
-            if (generation == _runGeneration) { StatusText.Text = "失败: " + error.Message.Split('\n')[0]; PipelineStatus.Text = "转码失败"; }
-            Log("失败: " + error);
-        }
+
+        _cancellationTokenSource = new CancellationTokenSource();
+        var token = _cancellationTokenSource.Token;
+        StartButton.IsEnabled = false; CancelButton.IsEnabled = true; CompareButton.IsEnabled = false; Progress.Value = 0;
+        _pipelineTask = RunQueueAsync(options, orderLabel, generation, token);
+        try { await _pipelineTask; }
+        catch { /* 队列异常已在 RunQueueAsync 内按项消化 */ }
         finally
         {
             if (generation == _runGeneration) { StartButton.IsEnabled = true; CancelButton.IsEnabled = false; }
         }
+    }
+
+    /// <summary>批量队列主循环：顺序处理 Waiting 项（Core 的 PipelineGate 保证全局串行），
+    /// 单项失败标记后继续下一项；取消则当前项中止、剩余标「已跳过」。运行中新入队项会被顺序捡到。</summary>
+    private async Task RunQueueAsync(TranscodeOptions batchOptions, string orderLabel, int generation, CancellationToken token)
+    {
+        var extension = ContainerExtension(batchOptions.Video.Container);
+        int done = 0, failed = 0, skipped = 0, index = 0;
+        while (!token.IsCancellationRequested)
+        {
+            var item = _queue.FirstOrDefault(entry => entry.State == QueueItemState.Waiting);
+            if (item is null) break;
+            index++;
+
+            string output;
+            try
+            {
+                output = !string.IsNullOrWhiteSpace(item.OutputOverride)
+                    ? item.OutputOverride!.Trim().Trim('"')
+                    : OutputFileNames.ForInput(item.InputPath, extension);
+                if (Path.GetExtension(output).Length == 0) output = Path.ChangeExtension(output, extension);
+                output = OutputFileNames.Available(output);
+                Directory.CreateDirectory(Path.GetDirectoryName(output)!);
+            }
+            catch (Exception error) when (error is IOException or UnauthorizedAccessException or ArgumentException or NotSupportedException)
+            {
+                item.SetFailed("输出路径无效: " + error.Message);
+                failed++;
+                Log($"失败 ({index}): {item.FileName} · 输出路径无效: {error.Message.Split('\n')[0]}");
+                UpdateQueueSummary();
+                continue;
+            }
+
+            item.SetRunning(output);
+            _runningItem = item;
+            _activeVideo = item.Video;
+            ResetPreview();
+            _previewBuffer = new TranscodePreviewBuffer(960, 540);
+            if (generation == _runGeneration)
+            {
+                Progress.Value = 0;
+                PipelineStatus.Text = $"{orderLabel} 正在处理帧…";
+                LivePreviewText.Text = "SYNC · 源帧与输出帧同步";
+                var remaining = _queue.Count(entry => entry.State == QueueItemState.Waiting);
+                QueueStatusText.Text = $"队列进行中 · 第 {index} 项 · 待处理 {remaining} · 成功 {done} · 失败 {failed}";
+                if (QueueList.SelectedItem == item) ShowItemDetail();
+            }
+            Log($"开始转码 ({index}): {item.FileName} → {Path.GetFileName(output)} · {batchOptions.VideoEncoder} · {orderLabel}");
+            try
+            {
+                var progress = new Progress<TranscodeProgress>(update => _latestProgress.Publish(update));
+                var result = await DlssVideoPipeline.RunAsync(item.InputPath, output, batchOptions with { PreviewSink = _previewBuffer }, progress, token);
+                _lastOutputPath = result.OutputPath;
+                item.SetDone(result, batchOptions.EnableInterpolation, batchOptions.InterpolationMultiplier);
+                done++;
+                if (generation == _runGeneration)
+                {
+                    if (QueueList.SelectedItem == item) ShowItemDetail();
+                    Progress.Value = 100;
+                    CompareButton.IsEnabled = File.Exists(result.OutputPath);
+                    OutputText.Text = $"{result.OutputBytes / 1048576.0:0.0} MiB";
+                    StatusText.Text = $"完成 · {item.FileName} · {result.AverageFps:0.0} fps";
+                    LivePreviewText.Text = "完成 · 停留在最后一帧";
+                }
+                Log($"完成 ({index}): {item.FileName} · {result.FramesProcessed} 帧 · {result.AverageFps:0.0} fps · {result.OutputBytes / 1048576.0:0.0} MiB");
+            }
+            catch (OperationCanceledException)
+            {
+                item.SetCancelled();
+                Log($"已取消: {item.FileName} · 队列停止");
+                break;
+            }
+            catch (Exception error)
+            {
+                item.SetFailed(error.Message);
+                failed++;
+                Log($"失败 ({index}): {item.FileName} · {error.Message.Split('\n')[0]}");
+            }
+            finally
+            {
+                _runningItem = null;
+                UpdateQueueSummary();
+            }
+        }
+
+        foreach (var pending in _queue.Where(entry => entry.State == QueueItemState.Waiting).ToList())
+        {
+            pending.SetSkipped();
+            skipped++;
+            Log($"已跳过: {pending.FileName}");
+        }
+        UpdateQueueSummary();
+        if (generation == _runGeneration)
+        {
+            QueueStatusText.Text = $"队列结束 · 成功 {done} · 失败 {failed} · 跳过 {skipped}";
+            PipelineStatus.Text = failed == 0 && skipped == 0 && done > 0 ? "队列完成 · 全部成功"
+                : done + failed + skipped == 0 ? "管线就绪" : $"队列结束 · 成功 {done} / 失败 {failed} / 跳过 {skipped}";
+        }
+        Log($"队列结束: 成功 {done} · 失败 {failed} · 跳过 {skipped}");
     }
 
     private void Cancel_Click(object? sender, RoutedEventArgs e) { _cancellationTokenSource?.Cancel(); StatusText.Text = "正在取消…"; }

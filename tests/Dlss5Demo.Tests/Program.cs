@@ -76,6 +76,8 @@ var transportArgument = Array.IndexOf(args, "--vsr-transport");
 if (transportArgument >= 0) VsrTransportIntegration(args[transportArgument + 1]).GetAwaiter().GetResult();
 var nrSwitchArgument = Array.IndexOf(args, "--nr-switch");
 if (nrSwitchArgument >= 0) NrSwitchIntegration(args[nrSwitchArgument + 1]).GetAwaiter().GetResult();
+var batchArgument = Array.IndexOf(args, "--batch");
+if (batchArgument >= 0) BatchTwice(args[batchArgument + 1]).GetAwaiter().GetResult();
 var interpolationArgument = Array.IndexOf(args, "--interpolation");
 if (interpolationArgument >= 0) InterpolationIntegration.RunAsync(args[interpolationArgument + 1]).GetAwaiter().GetResult();
 var rifeGuards = Array.IndexOf(args, "--rife-guards");
@@ -116,6 +118,32 @@ DlssVideoPipeline.ReleaseGpuResources();
 static void Check(bool condition, string message)
 {
     if (!condition) throw new Exception(message);
+}
+
+static async Task BatchTwice(string input)
+{
+    // 复现 GUI 批量队列：同进程顺序两次完整转码（RunQueueAsync 的会话复用模式，
+    // 含 GUI 独有的 TranscodePreviewBuffer 预览回读；默认开 NR+超分+光流补帧组合）。
+    foreach (var round in new[] { 1, 2 })
+    {
+        var output = Path.Combine(Path.GetTempPath(), $"nrbatch-{round}.mp4");
+        if (File.Exists(output)) File.Delete(output);
+        using var preview = new TranscodePreviewBuffer(960, 540);
+        var result = await DlssVideoPipeline.RunAsync(input, output, new TranscodeOptions
+        {
+            HostDllPath = DemoPaths.HostDllPath,
+            RuntimeDllPath = DemoPaths.RuntimeDllPath,
+            LogPath = DemoPaths.LogPath,
+            EnableNr = true,
+            EnableInterpolation = true,
+            InterpolationMultiplier = 2,
+            SuperResolutionScale = 2,
+            MaxFrames = 30,
+            PreviewSink = preview,
+        }, new Progress<TranscodeProgress>(_ => { }));
+        Console.WriteLine($"BATCH round {round}: frames={result.FramesProcessed} bytes={result.OutputBytes} exists={File.Exists(output)}");
+    }
+    DlssVideoPipeline.ReleaseGpuResources();
 }
 
 static async Task NrSwitchIntegration(string input)

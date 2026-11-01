@@ -1,9 +1,17 @@
+using System.Diagnostics;
 using Dlss5Demo.Core;
 
-if (RtxVideoWorker.TryServe(args)) return;
+if (RtxVideoWorker.TryServe(args)) return 0;
 
-var input = args.Length > 0 ? args[0] : @"F:\Captures\2021.02.17-19.27.mp4";
-var output = args.Length > 1 ? args[1] : "output_dlss.mp4";
+// 位置参数全部视为输入（文件或目录；目录展开受支持扩展名的视频）。
+// 输出统一用 --output（仅单输入）或 --output-dir（多输入，默认源文件同目录）自动命名。
+// 每个 flag 都带一个值：预扫描时成对跳过，避免 flag 值被误认成输入路径。
+var positional = new List<string>();
+for (var index = 0; index < args.Length; index++)
+{
+    if (args[index].StartsWith("--", StringComparison.Ordinal)) { index++; continue; }
+    positional.Add(args[index]);
+}
 int? maxFrames = null;
 var options = new DlssNrOptions();
 var encoder = "hevc_nvenc";
@@ -25,8 +33,10 @@ var decodeMode = VideoDecodeMode.Auto;
 var decodeDevice = 0;
 var hdrMode = "auto";
 string? nrRuntime = null;
+string? outputOverride = null;
+string? outputDir = null;
 
-for (var index = 2; index < args.Length - 1; index++)
+for (var index = 0; index < args.Length; index++)
 {
     switch (args[index].ToLowerInvariant())
     {
@@ -61,16 +71,25 @@ for (var index = 2; index < args.Length - 1; index++)
         case "--decoder": decodeMode = VideoDecodeModes.Parse(args[++index]); break;
         case "--decode-device": decodeDevice = int.Parse(args[++index]); break;
         case "--hdr": hdrMode = args[++index].ToLowerInvariant(); break;
+        case "--output": outputOverride = args[++index]; break;
+        case "--output-dir": outputDir = args[++index]; break;
     }
 }
 
 if (hdrMode is not ("auto" or "force" or "sdr"))
     throw new ArgumentException("--hdr 只能是 auto、force 或 sdr。");
 
+var inputs = ExpandInputs(positional);
+if (inputs.Count == 0)
+{
+    Console.WriteLine("用法: Dlss5TestCli <输入文件|目录>... [--output 输出(单输入)] [--output-dir 输出目录] [flags]");
+    Console.WriteLine("示例: Dlss5TestCli a.mp4 b.mkv --frames 60 · Dlss5TestCli F:\\Captures --output-dir F:\\Out");
+    return 1;
+}
+
 Console.OutputEncoding = System.Text.Encoding.UTF8;
 PipelineLog.Sink = message => Console.WriteLine($"[pipeline] {message}");
-Console.WriteLine($"输入: {input}");
-Console.WriteLine($"输出: {output}");
+Console.WriteLine($"输入: {inputs.Count} 个文件（批量模式，顺序处理）");
 Console.WriteLine($"宿主: {DemoPaths.HostDllPath}");
 var runtimeDllPath = enableNr ? NrRuntimeCatalog.ResolveArgument(nrRuntime) : "";
 Console.WriteLine($"运行库: {runtimeDllPath}");
@@ -85,21 +104,18 @@ if (enableNr)
         throw new InvalidOperationException("未检测到可用于 DLSS 的 NVIDIA D3D12 GPU。");
 }
 
-var video = MediaProbe.Probe(input);
-Console.WriteLine(
-    $"视频: {video.Codec} {video.Width}x{video.Height} {video.PixelFormat} @{video.FrameRate} " +
-    $"{video.FrameCount} 帧 / {video.DurationSeconds:F2}s，音频 {(video.HasAudio ? video.AudioCodec : "无")}");
-
-var previewSink = new CountingPreviewSink();
-var progress = new Progress<TranscodeProgress>(update =>
+// Ctrl+C：取消当前文件并跳过剩余项（NGX 管线全局串行，取消后仍逐项收尾清理）。
+using var batchCancellation = new CancellationTokenSource();
+Console.CancelKeyPress += (_, eventArgs) =>
 {
-    Console.WriteLine(
-        $"  进度 {update.FramesDone}/{update.TotalFrames} " +
-        $"({update.FramesDone * 100 / Math.Max(update.TotalFrames, 1):F1}%) " +
-        $"{update.Fps:F1} fps，已用 {update.Elapsed.TotalSeconds:F1}s");
-});
+    eventArgs.Cancel = true;
+    Console.WriteLine("\n收到 Ctrl+C，正在取消当前文件并跳过剩余项…");
+    batchCancellation.Cancel();
+};
 
-var result = await DlssVideoPipeline.RunAsync(input, output, new TranscodeOptions
+var extension = encoder.Contains("gif", StringComparison.OrdinalIgnoreCase) ? ".gif" : ".mp4";
+var previewSink = new CountingPreviewSink();
+var transcodeOptions = new TranscodeOptions
 {
     HostDllPath = DemoPaths.HostDllPath,
     RuntimeDllPath = runtimeDllPath,
@@ -109,11 +125,11 @@ var result = await DlssVideoPipeline.RunAsync(input, output, new TranscodeOption
     DecodeMode = decodeMode,
     DecodeDeviceIndex = decodeDevice,
     EnableInterpolation = enableInterpolation,
-                UseGpuFramePipeline = gpuFrames,
+    UseGpuFramePipeline = gpuFrames,
     UseGpuEnhancementPipeline = gpuEnhancement,
     InterpolationMultiplier = interpolationMultiplier,
-                InterpolationBackend = interpolationBackend,
-                InterpolationModel = rifeModel,
+    InterpolationBackend = interpolationBackend,
+    InterpolationModel = rifeModel,
     VideoEncoder = encoder,
     Quality = quality,
     MaxFrames = maxFrames,
@@ -125,15 +141,106 @@ var result = await DlssVideoPipeline.RunAsync(input, output, new TranscodeOption
     EnablePreviewFrames = previewEnabled,
     PreviewSink = previewSink,
     Video = new VideoTranscodeOptions { ForceHdr = hdrMode == "force", PreserveHdr = hdrMode != "sdr" },
-}, progress);
+};
 
-Console.WriteLine(
-    $"完成: {result.FramesProcessed} 帧，平均 {result.AverageFps:F1} fps，" +
-    $"耗时 {result.Elapsed.TotalSeconds:F1}s，输出 {result.OutputBytes / (1024.0 * 1024.0):F1} MiB → {result.OutputPath}");
-if (enableInterpolation) Console.WriteLine($"补帧输出: {result.FramesProcessed * interpolationMultiplier} 帧（{interpolationMultiplier}×；处理速度按源帧统计）");
+var batchStopwatch = Stopwatch.StartNew();
+int done = 0, failed = 0, skipped = 0;
+for (var index = 0; index < inputs.Count; index++)
+{
+    var input = inputs[index];
+    var name = Path.GetFileName(input);
+    if (batchCancellation.IsCancellationRequested)
+    {
+        Console.WriteLine($"[{index + 1}/{inputs.Count}] 跳过: {name}");
+        skipped++;
+        continue;
+    }
+    Console.WriteLine($"\n[{index + 1}/{inputs.Count}] 输入: {input}");
+    var output = ResolveOutput(input);
+    Console.WriteLine($"输出: {output}");
+    try
+    {
+        var video = MediaProbe.Probe(input);
+        Console.WriteLine(
+            $"视频: {video.Codec} {video.Width}x{video.Height} {video.PixelFormat} @{video.FrameRate} " +
+            $"{video.FrameCount} 帧 / {video.DurationSeconds:F2}s，音频 {(video.HasAudio ? video.AudioCodec : "无")}");
+    }
+    catch (Exception error)
+    {
+        failed++;
+        Console.WriteLine($"[失败] {name}: 探测失败 - {error.Message.Split('\n')[0]}");
+        continue;
+    }
+
+    try
+    {
+        var progress = new Progress<TranscodeProgress>(update =>
+        {
+            Console.WriteLine(
+                $"  [{name}] 进度 {update.FramesDone}/{update.TotalFrames} " +
+                $"({update.FramesDone * 100 / Math.Max(update.TotalFrames, 1):F1}%) " +
+                $"{update.Fps:F1} fps，已用 {update.Elapsed.TotalSeconds:F1}s");
+        });
+        var result = await DlssVideoPipeline.RunAsync(input, output, transcodeOptions, progress, batchCancellation.Token);
+        done++;
+        Console.WriteLine(
+            $"完成: {result.FramesProcessed} 帧，平均 {result.AverageFps:F1} fps，" +
+            $"耗时 {result.Elapsed.TotalSeconds:F1}s，输出 {result.OutputBytes / (1024.0 * 1024.0):F1} MiB → {result.OutputPath}");
+        if (enableInterpolation)
+            Console.WriteLine($"补帧输出: {result.FramesProcessed * interpolationMultiplier} 帧（{interpolationMultiplier}×；处理速度按源帧统计）");
+    }
+    catch (OperationCanceledException)
+    {
+        Console.WriteLine($"[取消] {name} · 队列停止");
+        break;
+    }
+    catch (Exception error)
+    {
+        failed++;
+        Console.WriteLine($"[失败] {name}: {error.Message.Split('\n')[0]}");
+    }
+}
+
+batchStopwatch.Stop();
+Console.WriteLine($"\n批量结束: 成功 {done} / 失败 {failed} / 跳过 {skipped} · 总耗时 {batchStopwatch.Elapsed.TotalSeconds:F1}s");
 Console.WriteLine($"同步预览: {previewSink.Pairs} 对帧，尺寸不一致 {previewSink.MismatchedSizes} 次");
-
 DlssVideoPipeline.ReleaseGpuResources();
+return failed > 0 ? 1 : 0;
+
+static List<string> ExpandInputs(List<string> positional)
+{
+    var inputs = new List<string>();
+    foreach (var candidate in positional)
+    {
+        var path = candidate.Trim().Trim('"');
+        if (Directory.Exists(path))
+        {
+            inputs.AddRange(Directory.EnumerateFiles(path, "*", SearchOption.TopDirectoryOnly)
+                .Where(file => VideoCatalog.VideoExtensions.Contains(Path.GetExtension(file)))
+                .OrderBy(file => file, StringComparer.OrdinalIgnoreCase));
+        }
+        else
+        {
+            inputs.Add(path);
+        }
+    }
+    return inputs;
+}
+
+string ResolveOutput(string input)
+{
+    if (inputs.Count == 1 && !string.IsNullOrWhiteSpace(outputOverride))
+        return OutputFileNames.Available(outputOverride);
+    var output = inputs.Count == 1 && outputOverride is null
+        ? "output_dlss" + extension
+        : OutputFileNames.ForInput(input, extension);
+    if (!string.IsNullOrWhiteSpace(outputDir))
+    {
+        Directory.CreateDirectory(outputDir!);
+        output = Path.Combine(outputDir!, Path.GetFileName(output));
+    }
+    return OutputFileNames.Available(output);
+}
 
 sealed class CountingPreviewSink : ITranscodePreviewSink
 {
@@ -156,4 +263,12 @@ sealed class CountingPreviewSink : ITranscodePreviewSink
         int width, int height, long framesDone, long totalFrames, double sourceFps)
         => Publish(sourceRgba, width, height, processedRgba, width, height,
             framesDone, totalFrames, sourceFps);
+}
+
+file static class VideoCatalog
+{
+    public static readonly HashSet<string> VideoExtensions = new(StringComparer.OrdinalIgnoreCase)
+    {
+        ".mp4", ".mkv", ".mov", ".m4v", ".avi", ".ts", ".webm",
+    };
 }
