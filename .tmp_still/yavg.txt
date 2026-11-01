@@ -1,0 +1,6 @@
+frame:0    pts:76800   pts_time:5
+lavfi.signalstats.YAVG=65.2975
+frame:1    pts:179199  pts_time:11.666602
+lavfi.signalstats.YAVG=66.1032
+frame:2    pts:281599  pts_time:18.333268
+lavfi.signalstats.YAVG=32.1395

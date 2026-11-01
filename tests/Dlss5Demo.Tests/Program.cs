@@ -40,6 +40,8 @@ var tests = new (string Name, Action Run)[]
     ("Input preparation can run ahead without changing temporal output", PreparedHistory),
     ("Integer optical-flow luma retains exact ties-to-even rounding", GrayRounding),
     ("Small HDR previews match full conversion then nearest resizing", HdrPreviewSampling),
+    ("Still image codec round-trips PNG pixels and alpha losslessly", StillImageRoundTrip),
+    ("Still image input detection accepts images and rejects videos", StillImageDetection),
 };
 foreach (var test in tests)
 {
@@ -112,12 +114,123 @@ var nvdecArgument = Array.IndexOf(args, "--nvdec");
 if (nvdecArgument >= 0) NvdecIntegration.RunAsync(args[nvdecArgument + 1]).GetAwaiter().GetResult();
 var nvdecBenchmarkArgument = Array.IndexOf(args, "--nvdec-benchmark");
 if (nvdecBenchmarkArgument >= 0) NvdecIntegration.BenchmarkAsync(args[nvdecBenchmarkArgument + 1]).GetAwaiter().GetResult();
+var stillImageArgument = Array.IndexOf(args, "--image");
+if (stillImageArgument >= 0)
+    StillImageIntegration(args[stillImageArgument + 1],
+        stillImageArgument + 2 < args.Length && !args[stillImageArgument + 2].StartsWith("--") ? args[stillImageArgument + 2] : null)
+        .GetAwaiter().GetResult();
 
 DlssVideoPipeline.ReleaseGpuResources();
 
 static void Check(bool condition, string message)
 {
     if (!condition) throw new Exception(message);
+}
+
+static void StillImageRoundTrip()
+{
+    // 奇数尺寸覆盖非对齐行/444 路径；alpha 棋盘覆盖透明拆合。
+    var width = 61;
+    var height = 37;
+    var rgba = new byte[width * height * 4];
+    for (var y = 0; y < height; y++)
+    for (var x = 0; x < width; x++)
+    {
+        var index = (y * width + x) * 4;
+        rgba[index] = (byte)(x * 4);
+        rgba[index + 1] = (byte)(y * 7);
+        rgba[index + 2] = (byte)((x + y) * 2);
+        rgba[index + 3] = (x / 4 + y / 4) % 2 == 0 ? (byte)255 : (byte)(x * 3 % 256);
+    }
+    var path = Path.Combine(Path.GetTempPath(), "still-roundtrip.png");
+    try
+    {
+        StillImageCodec.Encode(path, rgba, width, height, keepAlpha: true, quality: 19);
+        var decoded = StillImageCodec.Decode(path);
+        Check(decoded.Width == width && decoded.Height == height, "PNG 往返尺寸改变。");
+        Check(decoded.Rgba.AsSpan().SequenceEqual(rgba), "PNG RGBA 往返应有损为 0（含 alpha）。");
+
+        // 无 alpha 输入 → RGB24 存储；RGB 无损、A 通道还原为不透明。
+        for (var i = 3; i < rgba.Length; i += 4) rgba[i] = 255;
+        StillImageCodec.Encode(path, rgba, width, height, keepAlpha: false, quality: 19);
+        decoded = StillImageCodec.Decode(path);
+        Check(decoded.Rgba.AsSpan().SequenceEqual(rgba), "PNG RGB24 往返应有损为 0。");
+
+        // JPEG 有损：只验证可编码/可解码/尺寸一致/PSNR 合理。
+        var jpegPath = Path.ChangeExtension(path, ".jpg");
+        try
+        {
+            StillImageCodec.Encode(jpegPath, rgba, width, height, keepAlpha: false, quality: 19);
+            var jpegDecoded = StillImageCodec.Decode(jpegPath);
+            Check(jpegDecoded.Width == width && jpegDecoded.Height == height, "JPEG 往返尺寸改变。");
+            Check(RgbaPsnr(jpegDecoded.Rgba, rgba) > 30, "JPEG 默认质量 PSNR 应高于 30dB。");
+        }
+        finally { if (File.Exists(jpegPath)) File.Delete(jpegPath); }
+    }
+    finally { if (File.Exists(path)) File.Delete(path); }
+}
+
+static void StillImageDetection()
+{
+    Check(StillImage.IsImageFile(@"C:\a\b\photo.PNG"), "PNG 扩展名应不区分大小写。");
+    Check(StillImage.IsImageFile("img.jpeg") && StillImage.IsImageFile("img.webp") && StillImage.IsImageFile("img.tiff"), "图片扩展名应被识别。");
+    Check(!StillImage.IsImageFile("clip.mp4") && !StillImage.IsImageFile("noext") && !StillImage.IsImageFile(""), "非图片输入不应被识别。");
+    Check(StillImage.IsWritableOutput("out.png") && StillImage.IsWritableOutput("out.JPG"), "PNG/JPEG 应为可写输出。");
+    Check(!StillImage.IsWritableOutput("out.webp") && !StillImage.IsWritableOutput("out.mp4"), "webp/mp4 不应作为图片输出。");
+}
+
+static double RgbaPsnr(byte[] left, byte[] right)
+{
+    double total = 0;
+    for (var i = 0; i < left.Length; i += 4)
+    {
+        double d0 = left[i] - right[i], d1 = left[i + 1] - right[i + 1], d2 = left[i + 2] - right[i + 2];
+        total += d0 * d0 + d1 * d1 + d2 * d2;
+    }
+    var mse = total / (left.Length / 4 * 3);
+    return mse <= 0 ? double.PositiveInfinity : 10 * Math.Log10(255 * 255 / mse);
+}
+
+static async Task StillImageIntegration(string input, string? outputOverride)
+{
+    var output = outputOverride ?? OutputFileNames.ForInput(input, ".png");
+    if (File.Exists(output)) File.Delete(output);
+    using var preview = new TranscodePreviewBuffer(960, 540);
+    var result = await DlssVideoPipeline.RunAsync(input, output, new TranscodeOptions
+    {
+        HostDllPath = DemoPaths.HostDllPath,
+        RuntimeDllPath = DemoPaths.RuntimeDllPath,
+        LogPath = DemoPaths.LogPath,
+        EnableNr = true,
+        PreviewSink = preview,
+    }, new Progress<TranscodeProgress>(_ => { }));
+    var source = StillImageCodec.Decode(input);
+    var processed = StillImageCodec.Decode(result.OutputPath);
+    Check(File.Exists(result.OutputPath), "图片输出文件不存在。");
+    Check(result.FramesProcessed == 1, "图片路径应报告 1 帧。");
+    Check(processed.Width == source.Width && processed.Height == source.Height, "图片输出尺寸与输入不一致。");
+    var psnr = RgbaPsnr(source.Rgba, processed.Rgba);
+    Console.WriteLine($"IMAGE: {source.Width}x{source.Height} psnr={psnr:0.0}dB elapsed={result.Elapsed.TotalSeconds:0.00}s bytes={result.OutputBytes}");
+    Check(psnr > 20 && psnr < 60, $"图片 NR 输出与输入的 PSNR 应在 20..60dB（实测 {psnr:0.0}）。");
+    // alpha 通道必须逐字节保留（仅当输入确实含非不透明像素时检查）。
+    var hasTransparency = false;
+    for (var i = 3; i < source.Rgba.Length; i += 4)
+    {
+        if (source.Rgba[i] == 255) continue;
+        hasTransparency = true;
+        break;
+    }
+    if (hasTransparency)
+    {
+        var alphaKept = true;
+        for (var i = 3; i < source.Rgba.Length; i += 4)
+        {
+            if (source.Rgba[i] == processed.Rgba[i]) continue;
+            alphaKept = false;
+            break;
+        }
+        Check(alphaKept, "PNG 输出应逐字节保留 alpha 通道。");
+    }
 }
 
 static async Task BatchTwice(string input)

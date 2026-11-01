@@ -300,6 +300,9 @@ public partial class MainWindow : Window
         ".mp4", ".mkv", ".mov", ".m4v", ".avi", ".ts", ".webm",
     };
 
+    /// <summary>接受的输入：视频 + 静态图（单帧 NR，输出 PNG/JPEG）。</summary>
+    private static readonly HashSet<string> InputExtensions = [.. VideoExtensions, .. StillImage.Extensions];
+
     private static List<string> GetDroppedVideoPaths(DragEventArgs e)
     {
         var paths = new List<string>();
@@ -311,7 +314,7 @@ public partial class MainWindow : Window
         {
             var path = file.TryGetLocalPath();
             if (!string.IsNullOrWhiteSpace(path) &&
-                VideoExtensions.Contains(Path.GetExtension(path)))
+                InputExtensions.Contains(Path.GetExtension(path)))
                 paths.Add(path);
         }
         return paths;
@@ -330,8 +333,8 @@ public partial class MainWindow : Window
         var paths = GetDroppedVideoPaths(e);
         if (paths.Count == 0)
         {
-            StatusText.Text = "请拖入视频文件（MP4 / MKV / MOV / TS / WebM）。";
-            Log("拖入内容不是受支持的视频文件。");
+            StatusText.Text = "请拖入视频或图片文件（MP4 / MKV / MOV / TS / WebM / PNG / JPG…）。";
+            Log("拖入内容不是受支持的视频/图片文件。");
             e.Handled = true;
             return;
         }
@@ -349,7 +352,7 @@ public partial class MainWindow : Window
         foreach (var raw in paths)
         {
             var path = raw.Trim().Trim('"');
-            if (!File.Exists(path) || !VideoExtensions.Contains(Path.GetExtension(path))) continue;
+            if (!File.Exists(path) || !InputExtensions.Contains(Path.GetExtension(path))) continue;
             if (_queue.Any(item => string.Equals(item.InputPath, path, StringComparison.OrdinalIgnoreCase))) continue;
             var item = new QueueItem(path);
             _queue.Add(item);
@@ -455,9 +458,14 @@ public partial class MainWindow : Window
     {
         var files = await StorageProvider.OpenFilePickerAsync(new FilePickerOpenOptions
         {
-            Title = "选择输入视频（可多选）",
+            Title = "选择输入视频或图片（可多选）",
             AllowMultiple = true,
-            FileTypeFilter = [new FilePickerFileType("视频文件") { Patterns = ["*.mp4", "*.mkv", "*.mov", "*.m4v", "*.avi", "*.ts", "*.webm"] }],
+            FileTypeFilter =
+            [
+                new FilePickerFileType("媒体文件") { Patterns = ["*.mp4", "*.mkv", "*.mov", "*.m4v", "*.avi", "*.ts", "*.webm", "*.png", "*.jpg", "*.jpeg", "*.webp", "*.bmp", "*.tif", "*.tiff"] },
+                new FilePickerFileType("视频文件") { Patterns = ["*.mp4", "*.mkv", "*.mov", "*.m4v", "*.avi", "*.ts", "*.webm"] },
+                new FilePickerFileType("图片文件") { Patterns = ["*.png", "*.jpg", "*.jpeg", "*.webp", "*.bmp", "*.tif", "*.tiff"] },
+            ],
         });
         AddFiles(files.Select(file => file.TryGetLocalPath()).Where(path => path is { Length: > 0 })!);
     }
@@ -491,7 +499,7 @@ public partial class MainWindow : Window
         try
         {
             var directory = ExistingVideoDirectory(path);
-            if (directory == null) { Log("目录不存在，请检查视频路径。"); return; }
+            if (directory == null) { Log("目录不存在，请检查输入路径。"); return; }
             var fullPath = Path.GetFullPath(path!.Trim().Trim('"'));
             if (File.Exists(fullPath))
             {
@@ -514,14 +522,23 @@ public partial class MainWindow : Window
 
     private async void PickOutput_Click(object? sender, RoutedEventArgs e)
     {
+        var selectedItem = QueueList.SelectedItem as QueueItem;
+        var suggestedExtension = selectedItem is { } candidate && candidate.IsImage ? ".png"
+            : ContainerExtension(CollectVideoOptions().Container);
         var file = await StorageProvider.SaveFilePickerAsync(new FilePickerSaveOptions
         {
-            Title = "选择输出视频",
+            Title = "选择输出文件",
             ShowOverwritePrompt = false,
-            SuggestedFileName = QueueList.SelectedItem is QueueItem item && File.Exists(item.InputPath)
-                ? Path.GetFileName(OutputFileNames.ForInput(item.InputPath, ContainerExtension(CollectVideoOptions().Container)))
+            SuggestedFileName = selectedItem is { } item && File.Exists(item.InputPath)
+                ? Path.GetFileName(OutputFileNames.ForInput(item.InputPath, suggestedExtension))
                 : string.IsNullOrWhiteSpace(OutputBox.Text) ? "dlss5-output.mp4" : Path.GetFileName(OutputBox.Text),
-            FileTypeChoices = [new FilePickerFileType("MP4 视频") { Patterns = ["*.mp4"] }, new FilePickerFileType("MKV 视频") { Patterns = ["*.mkv"] }],
+            FileTypeChoices =
+            [
+                new FilePickerFileType("MP4 视频") { Patterns = ["*.mp4"] },
+                new FilePickerFileType("MKV 视频") { Patterns = ["*.mkv"] },
+                new FilePickerFileType("PNG 图片") { Patterns = ["*.png"] },
+                new FilePickerFileType("JPEG 图片") { Patterns = ["*.jpg"] },
+            ],
         });
         if (file?.TryGetLocalPath() is { Length: > 0 } path) OutputBox.Text = OutputFileNames.Available(path);
     }
@@ -625,7 +642,7 @@ public partial class MainWindow : Window
     {
         if (!_queue.Any(item => item.State == QueueItemState.Waiting))
         {
-            StatusText.Text = _queue.Count == 0 ? "队列为空，请先添加视频。" : "没有待处理项（已结束的项不会重跑）。";
+            StatusText.Text = _queue.Count == 0 ? "队列为空，请先添加视频或图片。" : "没有待处理项（已结束的项不会重跑）。";
             return;
         }
         var videoOptions = CollectVideoOptions();
@@ -711,10 +728,11 @@ public partial class MainWindow : Window
             string output;
             try
             {
+                var itemExtension = item.IsImage ? ".png" : extension;
                 output = !string.IsNullOrWhiteSpace(item.OutputOverride)
                     ? item.OutputOverride!.Trim().Trim('"')
-                    : OutputFileNames.ForInput(item.InputPath, extension);
-                if (Path.GetExtension(output).Length == 0) output = Path.ChangeExtension(output, extension);
+                    : OutputFileNames.ForInput(item.InputPath, itemExtension);
+                if (Path.GetExtension(output).Length == 0) output = Path.ChangeExtension(output, itemExtension);
                 output = OutputFileNames.Available(output);
                 Directory.CreateDirectory(Path.GetDirectoryName(output)!);
             }

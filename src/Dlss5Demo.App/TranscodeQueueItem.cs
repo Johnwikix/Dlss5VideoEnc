@@ -29,6 +29,9 @@ internal sealed class QueueItem : INotifyPropertyChanged
     public string InputPath { get; }
     public string FileName => Path.GetFileName(InputPath);
 
+    /// <summary>静态图输入：走单帧 NR 路径，输出 PNG/JPEG。</summary>
+    public bool IsImage => StillImage.IsImageFile(InputPath);
+
     /// <summary>详情卡手动指定的输出路径；空 = 自动按「原名_dlss5.ext」命名。</summary>
     public string? OutputOverride { get; set; }
 
@@ -69,8 +72,10 @@ internal sealed class QueueItem : INotifyPropertyChanged
     public void SetProbe(VideoInfo video)
     {
         Video = video;
-        Detail = $"{video.Codec} · {video.Width}×{video.Height} · {video.Fps:0.##} fps · {video.PixelFormat}\n" +
-                 $"{video.FrameCount} 帧 / {video.DurationSeconds:0.0}s · 音频 {(video.HasAudio ? video.AudioCodec : "无")}";
+        Detail = IsImage
+            ? $"{video.Codec} · {video.Width}×{video.Height} · 静态图\n单帧 NR → PNG"
+            : $"{video.Codec} · {video.Width}×{video.Height} · {video.Fps:0.##} fps · {video.PixelFormat}\n" +
+              $"{video.FrameCount} 帧 / {video.DurationSeconds:0.0}s · 音频 {(video.HasAudio ? video.AudioCodec : "无")}";
         Raise(nameof(Video), nameof(Detail));
     }
 
@@ -95,6 +100,12 @@ internal sealed class QueueItem : INotifyPropertyChanged
 
     public void SetDone(TranscodeResult result, bool interpolated, int multiplier)
     {
+        if (IsImage)
+        {
+            SetState(QueueItemState.Done,
+                $"完成 · 图片增强 · {result.Elapsed.TotalSeconds:0.0}s · {result.OutputBytes / 1048576.0:0.0} MiB");
+            return;
+        }
         var frameLabel = interpolated
             ? $"{result.FramesProcessed}→{result.FramesProcessed * multiplier} 帧"
             : $"{result.FramesProcessed} 帧";

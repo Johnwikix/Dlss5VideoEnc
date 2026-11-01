@@ -89,7 +89,13 @@ public static partial class DlssVideoPipeline
         try
         {
             TranscodeResult result;
-            try { result = await RunCoreAsync(inputPath, outputPath, options, progress, cancellationToken).ConfigureAwait(false); }
+            try
+            {
+                // 静态图走独立单帧路径；视频仍走原管线。图片无需 RIFE 会话，此处一并复位。
+                result = StillImage.IsImageFile(inputPath)
+                    ? await RunStillImageAsync(inputPath, outputPath, options, progress, cancellationToken).ConfigureAwait(false)
+                    : await RunCoreAsync(inputPath, outputPath, options, progress, cancellationToken).ConfigureAwait(false);
+            }
             catch { ResetRifeSession(); throw; }
             PipelineLog.Info($"管线完成: {result.FramesProcessed} 帧 · {result.AverageFps:0.0} fps → {result.OutputPath}");
             return result;

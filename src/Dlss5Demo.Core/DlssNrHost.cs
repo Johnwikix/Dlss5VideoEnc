@@ -98,6 +98,9 @@ public sealed class DlssNrHost : IDisposable
     private static extern void dlssnr_configure_format(int formatId, int profileId);
 
     [DllImport(DllName, CallingConvention = CallingConvention.Cdecl)]
+    private static extern void dlssnr_configure_tiling(int enabled, int tileWidth, int tileHeight);
+
+    [DllImport(DllName, CallingConvention = CallingConvention.Cdecl)]
     private static extern void dlssnr_configure(int zeroGuidanceFastPath, int persistentBuffers,
         int mergedSubmission, int inFlight, int autoFallback);
 
@@ -201,9 +204,11 @@ public sealed class DlssNrHost : IDisposable
 
     /// <summary>
     /// 初始化 NGX 会话。runtimeDllPath 为 nvngx_dlssnr.dll 的完整路径（须与本机显卡系列匹配）。
+    /// tiling=true 时启用分块评估（每块独立 reset，为静态图设计；小于 tile 的帧自动退化为单块全帧）。
     /// </summary>
     public static DlssNrHost Create(string hostDllPath, string runtimeDllPath, string logPath,
-        int width, int height, DlssNrOptions options, bool hdr = false, string colorTransfer = "")
+        int width, int height, DlssNrOptions options, bool hdr = false, string colorTransfer = "",
+        bool tiling = false, int tileWidth = 6000, int tileHeight = 3000)
     {
         if (width <= 0 || height <= 0)
             throw new ArgumentOutOfRangeException(nameof(width), "帧尺寸无效。");
@@ -224,6 +229,8 @@ public sealed class DlssNrHost : IDisposable
             // job following an HDR job cannot be interpreted as RGBA16F.
             dlssnr_configure_format(hdr ? 1 : 0,
                 hdr ? (colorTransfer.Equals("arib-std-b67", StringComparison.OrdinalIgnoreCase) ? 3 : 2) : 0);
+            // Tiling state is also native-global: set both branches explicitly.
+            dlssnr_configure_tiling(tiling ? 1 : 0, tileWidth, tileHeight);
             dlssnr_configure(1, 1, 1, 2, 1);
             // 运行库要求在 create 之前推送默认 hint；NR 不暴露 SR preset 选择。
             dlssnr_set_options(DefaultRuntimeHint, options.Style, options.Intensity,
@@ -240,7 +247,7 @@ public sealed class DlssNrHost : IDisposable
                 var tail = ReadLogTail(logPath, 1200);
                 throw new InvalidOperationException("创建 Feature 18 失败。dlss_run.log 末尾：\n" + tail);
             }
-            PipelineLog.Info($"NGX NR 会话已创建: {width}×{height} hdr={hdr}");
+            PipelineLog.Info($"NGX NR 会话已创建: {width}×{height} hdr={hdr} tiling={tiling}");
             PipelineLog.Info($"NR 连续历史: {options.ContinuousHistory}; 光流运动矢量: {options.MotionGuidance}; 修正量累积: {options.TemporalStabilization}");
             return new DlssNrHost(library, width, height) { _options = options };
         }

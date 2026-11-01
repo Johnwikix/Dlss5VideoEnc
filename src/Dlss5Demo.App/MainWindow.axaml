@@ -58,20 +58,20 @@
     <Grid Grid.Row="0" ColumnDefinitions="*,Auto" VerticalAlignment="Center">
       <StackPanel Spacing="4">
         <StackPanel Orientation="Horizontal" Spacing="10"><TextBlock Text="DLSS5" FontSize="26" FontWeight="Bold" Foreground="#5CE1E6" /><TextBlock Text="VIDEO ENC" FontSize="26" FontWeight="Bold" Foreground="#F3F7FA" /></StackPanel>
-        <TextBlock Text="DLSS NR / RTX Video 视频转码工作台 · 实时预览 · HDR 保真输出" Foreground="#8C9AA7" FontSize="13" />
+        <TextBlock Text="DLSS NR / RTX Video 视频·图片增强工作台 · 实时预览 · HDR 保真输出" Foreground="#8C9AA7" FontSize="13" />
       </StackPanel>
       <Border Grid.Column="1" Background="#14242A" BorderBrush="#27535A" BorderThickness="1" CornerRadius="18" Padding="16,10" MinWidth="190" VerticalAlignment="Center"><StackPanel Orientation="Horizontal" Spacing="9" VerticalAlignment="Center"><Ellipse Width="8" Height="8" Fill="#5CE1E6" VerticalAlignment="Center"/><TextBlock x:Name="RuntimeBadge" Text="DLSS Runtime · ready" Foreground="#B8F4F0" FontSize="12" VerticalAlignment="Center" /></StackPanel></Border>
     </Grid>
     <Border Grid.Row="1" Classes="settingsSection" Padding="12,10">
       <Grid RowDefinitions="Auto,Auto" RowSpacing="8">
         <Grid Grid.Row="0" ColumnDefinitions="Auto,Auto,*,Auto,Auto" ColumnSpacing="10">
-          <Button x:Name="AddButton" Content="添加视频" Click="Browse_Click" Padding="18,9"/>
+          <Button x:Name="AddButton" Content="添加视频/图片" Click="Browse_Click" Padding="18,9"/>
           <Button Grid.Column="1" x:Name="ClearFinishedButton" Content="清空已完成" Click="ClearFinished_Click" Padding="14,9" IsEnabled="False"
                   ToolTip.Tip="移除队列中已完成、失败与跳过的项"/>
           <TextBlock Grid.Column="2" x:Name="QueueSummaryText" Text="队列 0 项" Foreground="#8C9AA7" FontSize="12"
                      VerticalAlignment="Center" TextAlignment="Right"/>
           <Button Grid.Column="3" x:Name="OpenVideoFolderButton" Click="OpenVideoFolder_Click" IsEnabled="False"
-                  Padding="14,9" ToolTip.Tip="在资源管理器中定位选中的源视频" AutomationProperties.Name="打开视频目录">
+                  Padding="14,9" ToolTip.Tip="在资源管理器中定位选中的源文件" AutomationProperties.Name="打开源文件目录">
             <StackPanel Orientation="Horizontal" Spacing="8">
               <Path Width="18" Height="18" Stretch="Uniform" Stroke="{Binding $parent[Button].Foreground}" StrokeThickness="1.7"
                     Data="M 3,6 L 9,6 L 11,8 L 21,8 L 21,19 L 3,19 Z M 3,11 L 21,11"/>
@@ -98,7 +98,7 @@
                 </DataTemplate>
               </ListBox.ItemTemplate>
             </ListBox>
-            <TextBlock x:Name="QueueEmptyHint" Text="拖入视频文件或点击「添加视频」建立队列 · 支持多选与批量拖放"
+            <TextBlock x:Name="QueueEmptyHint" Text="拖入视频或图片文件，或点击「添加视频/图片」建立队列 · 支持多选与批量拖放"
                        Foreground="#A4B3BF" FontSize="13" IsHitTestVisible="False"
                        HorizontalAlignment="Center" VerticalAlignment="Center"/>
           </Grid>
@@ -162,7 +162,7 @@
                 <StackPanel Spacing="4">
                   <CheckBox x:Name="MotionGuidanceBox" Content="光流运动矢量" IsChecked="True"
                             ToolTip.Tip="估计当前帧到上一帧的运动，提供给 NR；关闭后不计算光流。"/>
-                  <TextBlock Classes="hint" Text="对齐运动中的画面；启用后转码耗时增加。" Margin="28,0,0,0"/>
+                  <TextBlock Classes="hint" Text="对齐运动中的画面；启用后处理耗时增加（仅视频）。" Margin="28,0,0,0"/>
                   <CheckBox x:Name="FineMotionBox" Content="精细光流匹配（更慢）" Margin="28,2,0,0"
                             ToolTip.Tip="细化运动边缘的匹配；显卡不支持时自动回退到标准匹配。"/>
                   <CheckBox x:Name="ContinuousHistoryBox" Content="NR 连续历史" IsChecked="True"
@@ -387,7 +387,7 @@
           <StackPanel Spacing="8">
             <CheckBox x:Name="FramesLimitBox" Content="仅处理前 60 帧（冒烟测试）"/>
             <Grid ColumnDefinitions="*,Auto" ColumnSpacing="8">
-              <Button x:Name="StartButton" Content="开始转码" Click="Start_Click" Padding="18,9"
+              <Button x:Name="StartButton" Content="开始处理" Click="Start_Click" Padding="18,9"
                       HorizontalAlignment="Stretch" HorizontalContentAlignment="Center"
                       Background="#2A9FA9" Foreground="#071014"/>
               <Button Grid.Column="1" x:Name="CancelButton" Content="取消" Click="Cancel_Click" IsEnabled="False" Padding="18,9"/>
@@ -405,9 +405,9 @@
             <Grid Grid.Row="0" ColumnDefinitions="*,Auto">
               <StackPanel Spacing="2">
                 <TextBlock Text="LIVE PREVIEW" Foreground="#5CE1E6" FontSize="12" FontWeight="SemiBold"/>
-                <TextBlock Text="双路实时帧 · 源视频与处理结果" Foreground="#A4B3BF" FontSize="11" TextWrapping="Wrap"/>
+                <TextBlock Text="双路实时帧 · 源帧与处理结果（视频/图片通用）" Foreground="#A4B3BF" FontSize="11" TextWrapping="Wrap"/>
               </StackPanel>
-              <TextBlock x:Name="LivePreviewText" Grid.Column="1" Text="等待源视频" Foreground="#91A2AF" FontSize="12" VerticalAlignment="Center"/>
+              <TextBlock x:Name="LivePreviewText" Grid.Column="1" Text="等待输入" Foreground="#91A2AF" FontSize="12" VerticalAlignment="Center"/>
             </Grid>
             <Grid Grid.Row="1" ColumnDefinitions="*,*" ColumnSpacing="12" MinHeight="160">
               <Border Background="#0A1016" BorderBrush="#182630" BorderThickness="1" CornerRadius="8" Padding="8">
@@ -415,11 +415,11 @@
                   <Viewbox Grid.Row="0" Stretch="Uniform" HorizontalAlignment="Center" VerticalAlignment="Center">
                     <Grid Width="640" Height="360" Background="#05080B">
                       <Image x:Name="OriginalImage" Stretch="Uniform"/>
-                      <TextBlock x:Name="SourcePlaceholder" Text="等待转码帧" Foreground="#A4B3BF" FontSize="16" HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                      <TextBlock x:Name="SourcePlaceholder" Text="等待输入帧" Foreground="#A4B3BF" FontSize="16" HorizontalAlignment="Center" VerticalAlignment="Center"/>
                       <TextBlock Text="SOURCE" Foreground="#B8F4F0" FontSize="11" HorizontalAlignment="Left" VerticalAlignment="Bottom" Margin="10,0,0,10"/>
                     </Grid>
                   </Viewbox>
-                  <TextBlock Grid.Row="1" Text="SOURCE · 原始视频" Foreground="#91A2AF" FontSize="11" Margin="2,8,2,0"/>
+                  <TextBlock Grid.Row="1" Text="SOURCE · 原始帧" Foreground="#91A2AF" FontSize="11" Margin="2,8,2,0"/>
                 </Grid>
               </Border>
               <Border Grid.Column="1" Background="#0A1016" BorderBrush="#182630" BorderThickness="1" CornerRadius="8" Padding="8">
@@ -438,7 +438,7 @@
             <Grid Grid.Row="2" ColumnDefinitions="*,Auto" ColumnSpacing="12">
               <StackPanel Spacing="4">
                 <TextBlock Text="同步预览 · SOURCE ↔ OUTPUT" Foreground="#5CE1E6" TextWrapping="Wrap"/>
-                <TextBlock x:Name="PreviewFrameText" Text="等待转码" Foreground="#A4B3BF" FontSize="12" TextWrapping="Wrap"/>
+                <TextBlock x:Name="PreviewFrameText" Text="等待处理" Foreground="#A4B3BF" FontSize="12" TextWrapping="Wrap"/>
               </StackPanel>
               <TextBlock Grid.Column="1" x:Name="PreviewTimeText" Text="00:00:00 / 00:00:00" Foreground="#A4B3BF" FontSize="12" VerticalAlignment="Center"/>
             </Grid>

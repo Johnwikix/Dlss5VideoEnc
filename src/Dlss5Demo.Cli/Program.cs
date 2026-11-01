@@ -32,6 +32,7 @@ var gpuVsrEncoding = true;
 var decodeMode = VideoDecodeMode.Auto;
 var decodeDevice = 0;
 var hdrMode = "auto";
+var imageFormat = "png";
 string? nrRuntime = null;
 string? outputOverride = null;
 string? outputDir = null;
@@ -71,6 +72,7 @@ for (var index = 0; index < args.Length; index++)
         case "--decoder": decodeMode = VideoDecodeModes.Parse(args[++index]); break;
         case "--decode-device": decodeDevice = int.Parse(args[++index]); break;
         case "--hdr": hdrMode = args[++index].ToLowerInvariant(); break;
+        case "--image-format": imageFormat = args[++index].ToLowerInvariant(); break;
         case "--output": outputOverride = args[++index]; break;
         case "--output-dir": outputDir = args[++index]; break;
     }
@@ -78,6 +80,8 @@ for (var index = 0; index < args.Length; index++)
 
 if (hdrMode is not ("auto" or "force" or "sdr"))
     throw new ArgumentException("--hdr 只能是 auto、force 或 sdr。");
+if (imageFormat is not ("png" or "jpg" or "jpeg"))
+    throw new ArgumentException("--image-format 只能是 png 或 jpg。");
 
 var inputs = ExpandInputs(positional);
 if (inputs.Count == 0)
@@ -161,9 +165,12 @@ for (var index = 0; index < inputs.Count; index++)
     try
     {
         var video = MediaProbe.Probe(input);
-        Console.WriteLine(
-            $"视频: {video.Codec} {video.Width}x{video.Height} {video.PixelFormat} @{video.FrameRate} " +
-            $"{video.FrameCount} 帧 / {video.DurationSeconds:F2}s，音频 {(video.HasAudio ? video.AudioCodec : "无")}");
+        if (StillImage.IsImageFile(input))
+            Console.WriteLine($"图片: {video.Codec} {video.Width}x{video.Height}（静态图，单帧 NR）");
+        else
+            Console.WriteLine(
+                $"视频: {video.Codec} {video.Width}x{video.Height} {video.PixelFormat} @{video.FrameRate} " +
+                $"{video.FrameCount} 帧 / {video.DurationSeconds:F2}s，音频 {(video.HasAudio ? video.AudioCodec : "无")}");
     }
     catch (Exception error)
     {
@@ -216,7 +223,7 @@ static List<string> ExpandInputs(List<string> positional)
         if (Directory.Exists(path))
         {
             inputs.AddRange(Directory.EnumerateFiles(path, "*", SearchOption.TopDirectoryOnly)
-                .Where(file => VideoCatalog.VideoExtensions.Contains(Path.GetExtension(file)))
+                .Where(file => VideoCatalog.InputExtensions.Contains(Path.GetExtension(file)))
                 .OrderBy(file => file, StringComparer.OrdinalIgnoreCase));
         }
         else
@@ -231,9 +238,12 @@ string ResolveOutput(string input)
 {
     if (inputs.Count == 1 && !string.IsNullOrWhiteSpace(outputOverride))
         return OutputFileNames.Available(outputOverride);
+    var outputExtension = StillImage.IsImageFile(input)
+        ? (imageFormat is "jpg" or "jpeg" ? ".jpg" : ".png")
+        : extension;
     var output = inputs.Count == 1 && outputOverride is null
-        ? "output_dlss" + extension
-        : OutputFileNames.ForInput(input, extension);
+        ? "output_dlss" + outputExtension
+        : OutputFileNames.ForInput(input, outputExtension);
     if (!string.IsNullOrWhiteSpace(outputDir))
     {
         Directory.CreateDirectory(outputDir!);
@@ -271,4 +281,8 @@ file static class VideoCatalog
     {
         ".mp4", ".mkv", ".mov", ".m4v", ".avi", ".ts", ".webm",
     };
+
+    /// <summary>目录展开接受的全部输入：视频 + 静态图（单帧 NR，输出 PNG/JPEG）。</summary>
+    public static readonly HashSet<string> InputExtensions =
+        [.. VideoExtensions, .. StillImage.Extensions];
 }
