@@ -17,6 +17,7 @@ if (detectOnly >= 0)
 var tests = new (string Name, Action Run)[]
 {
     ("NR versions are discovered recursively and keep stable IDs on refresh", NrRuntimeCatalogTests.Discovery),
+    ("NR model presets parse aliases and reject invalid choices", NrPresetTests.Options),
     ("GPU series detection maps consumer device IDs and RTX folder tokens", NrGpuAutoSelectTests.SeriesMapping),
     ("Auto NR selection picks the lowest version supporting the GPU series", NrGpuAutoSelectTests.AutoSelection),
     ("Identity output scaling keeps GPU paths without changing real resize/crop requests", OutputScaleTests.Identity),
@@ -49,6 +50,10 @@ foreach (var test in tests)
     Console.WriteLine($"PASS {test.Name}");
 }
 Console.WriteLine($"{tests.Length} regression checks passed.");
+var decodeCounts = Array.IndexOf(args, "--decode-counts");
+if (decodeCounts >= 0) await DecoderFrameCountTests.RunAsync(decodeCounts + 1 < args.Length && !args[decodeCounts + 1].StartsWith("--") ? args[decodeCounts + 1] : null);
+var nrPresets = Array.IndexOf(args, "--nr-presets");
+if (nrPresets >= 0) NrPresetTests.Native(args[nrPresets + 1], args[nrPresets + 2]);
 var nrVersions = Array.IndexOf(args, "--nr-versions");
 if (nrVersions >= 0) NrRuntimeCatalogTests.Switch(args[nrVersions + 1]);
 var nrVersionBenchmark = Array.IndexOf(args, "--nr-version-benchmark");

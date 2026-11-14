@@ -24,6 +24,7 @@ internal static class Autorun
         var decodeDevice = 0;
         var hdrMode = "auto";
         string? nrRuntime = null;
+        var nrPreset = DlssNrPreset.Auto;
         for (var index = 3; index < args.Length; index++)
         {
             if (args[index] == "--frames" && index + 1 < args.Length)
@@ -34,6 +35,8 @@ internal static class Autorun
                 enableNr = args[++index] != "0";
             else if (args[index] == "--nr-runtime" && index + 1 < args.Length)
                 nrRuntime = args[++index];
+            else if (args[index] == "--nr-preset" && index + 1 < args.Length)
+                nrPreset = DlssNrPresets.Parse(args[++index]);
             else if (args[index] == "--sr" && index + 1 < args.Length)
                 scale = RtxVideoSuperResolutionHost.NormalizeScale(int.Parse(args[++index]));
             else if (args[index] == "--interpolation-backend" && index + 1 < args.Length)
@@ -88,7 +91,7 @@ internal static class Autorun
                 EnableInterpolation = enableInterpolation,
                 UseGpuFramePipeline = gpuFrames,
                 UseGpuEnhancementPipeline = gpuEnhancement,
-                Dlss = new DlssNrOptions { UseGpuTemporalProcessing = gpuTemporal },
+                Dlss = new DlssNrOptions { Preset = nrPreset, UseGpuTemporalProcessing = gpuTemporal },
                 InterpolationMultiplier = interpolationMultiplier,
                 InterpolationBackend = interpolationBackend,
                 InterpolationModel = rifeModel,

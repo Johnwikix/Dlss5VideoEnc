@@ -61,6 +61,7 @@ for (var index = 0; index < args.Length; index++)
         case "--nr-before-sr": nrFirst = args[++index] != "0"; break;
         case "--nr": enableNr = args[++index] != "0"; break;
         case "--nr-runtime": nrRuntime = args[++index]; break;
+        case "--nr-preset": options = options with { Preset = DlssNrPresets.Parse(args[++index]) }; break;
         case "--interpolation-backend": interpolationBackend = FrameInterpolationBackends.Parse(args[++index]); break;
         case "--rife-model": rifeModel = Enum.Parse<RifeModel>(args[++index], true); break;
         case "--gpu-frames": gpuFrames = args[++index] != "0"; break;
@@ -87,6 +88,7 @@ var inputs = ExpandInputs(positional);
 if (inputs.Count == 0)
 {
     Console.WriteLine("用法: Dlss5TestCli <输入文件|目录>... [--output 输出(单输入)] [--output-dir 输出目录] [flags]");
+    Console.WriteLine("NR 模型: --nr-preset auto|a|b（a=310.8 旧模型，b=310.9.16 轻量模型）");
     Console.WriteLine("示例: Dlss5TestCli a.mp4 b.mkv --frames 60 · Dlss5TestCli F:\\Captures --output-dir F:\\Out");
     return 1;
 }

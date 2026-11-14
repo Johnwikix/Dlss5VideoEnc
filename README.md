@@ -218,6 +218,12 @@ dotnet run --project tests/Dlss5Demo.Tests -c Release -- --nr-switch "小素材.
 
 ## DLSS NR 运行库选择
 
+「NR 模型预设（Preset）」独立于 DLL 版本与风格，可选择自动、A（旧模型）或 B（轻量模型），随设置保存，在下次开始队列时应用。310.9.16 的自动档选择 B；需要保留 310.8 的模型效果时选择 A。310.8 只有旧模型，不会因为选择 B 而新增模型。CLI 和应用 `--autorun` 均支持 `--nr-preset auto|a|b`，例如：
+
+```powershell
+dotnet run --project src/Dlss5Demo.Cli -c Release -- input.mp4 --output output.mp4 --nr-runtime 'runtime/nr/NVIDIA-Original-310.9.16-RTX50-Series-Only/nvngx_dlssnr.dll' --nr-preset a
+```
+
 界面的「NR 版本」从实际安装目录递归发现 `nvngx_dlssnr*.dll`，显示 DLL 文件版本及目录标签，版本列表没有写死。明确选择的 DLL 用于下一次转码，并按相对路径保存；刷新、重启、移动整个发布目录不会因选项排序变化而选错版本。文件缺失时提示重新选择，不静默替换。
 
 用户自行添加版本：把 DLL 放入 `runtime\任意版本名称\nvngx_dlssnr.dll`，在界面点击「刷新」。可以多层嵌套，也支持 `nvngx_dlssnr_自定义名称.dll`。用文件夹名标注适用显卡和来源；版本号相同的原版/社区版可区分。**目录名包含 `RTX20/RTX30/RTX40/RTX50` 标记的版本才能被「自动」档按显卡代际选中**（如 `Community-SF-v2-310.8-RTX20-RTX30-Series`）；用导入脚本保留压缩包原始目录名（如 `SF-v2`）时，请重命名目录补上代际标记。发布脚本自动携带 runtime 中发现的全部 NR DLL。

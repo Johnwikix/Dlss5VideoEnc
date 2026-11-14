@@ -150,6 +150,7 @@ SDR NR 的光流前后处理和历史累积优先留在显存，使用 NVOFA 专
 补帧在 NR/RTX Video 之后运行，HDR 颜色使用 16-bit 路径；进度与预览计数源帧。
 SDR 强制 HDR10 使用驱动 RTX Video HDR 在 Vulkan 补帧后映射为 BT.2020/PQ 并进行 10-bit 编码；RIFE 保持 SDR，跳过该映射。HDR 源保留原路径。
 在「NR 版本」中选择发布包包含的 DLL。后续可将 nvngx_dlssnr.dll 放入 runtime\任意版本名称\，点击刷新即可选择，无需更新程序。目录名可标注适用显卡；DLL 必须匹配 RTX 代际。
+「NR 模型预设」可选自动、A 旧模型和 B 轻量模型。310.9.16 的自动档使用 B；选择 A 可恢复旧模型效果。310.8 仅有旧模型。预设随设置保存，下次开始队列时生效；CLI/autorun 使用 --nr-preset auto|a|b。
 「自动」保留 DLSS5_NR_RUNTIME_DLL、mods\nvngx_dlssnr.dll、DLSS5_GPU_SERIES 与默认 DLL 的原有优先级。明确选择的版本优先于自动策略。
 选择视频旁的“打开目录”定位源视频；输出路径旁的目录按钮定位产物，未生成时打开输出目录。
 AMD/Intel 的 OpenDLSS-NR 后端当前未接入，AMD/Intel 仅用于 FFmpeg AMF/QSV 编码。

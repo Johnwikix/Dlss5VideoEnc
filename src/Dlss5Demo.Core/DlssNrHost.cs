@@ -5,6 +5,8 @@ namespace Dlss5Demo.Core;
 /// <summary>DLSS NR 外观参数（对应上游 dlss5tool 的公开设置）。</summary>
 public sealed record DlssNrOptions
 {
+    /// <summary>NR model selected at feature creation. Auto follows the runtime; Legacy restores the 310.8 model on 310.9.16.</summary>
+    public DlssNrPreset Preset { get; init; } = DlssNrPreset.Auto;
     /// <summary>Keep SDR motion validation and correction history on the GPU when the host supports shared frames.</summary>
     public bool UseGpuTemporalProcessing { get; init; } = true;
     public const double MaximumStrength = 5;
@@ -54,7 +56,6 @@ public sealed class DlssNrHost : IDisposable
 {
     private const string DllName = "dlssnr_host_v2.dll";
     private const int NvidiaVendorId = 0x10DE;
-    private const int DefaultRuntimeHint = 0;
     private const uint AdapterSoftware = 1u;
     private const uint AdapterD3D12Level11 = 2u;
 
@@ -232,22 +233,24 @@ public sealed class DlssNrHost : IDisposable
             // Tiling state is also native-global: set both branches explicitly.
             dlssnr_configure_tiling(tiling ? 1 : 0, tileWidth, tileHeight);
             dlssnr_configure(1, 1, 1, 2, 1);
-            // 运行库要求在 create 之前推送默认 hint；NR 不暴露 SR preset 选择。
-            dlssnr_set_options(DefaultRuntimeHint, options.Style, options.Intensity,
+            // The model hint must be set before feature creation and retained
+            // when motion guidance causes the native resources to be recreated.
+            dlssnr_set_options((int)options.Preset, options.Style, options.Intensity,
                 options.LocalTone, options.LocalStructure, options.SkinStructure,
                 options.UseAutoMask ? 1 : 0, 0, 0, 2, 1.0f, 1.0f);
-            if (dlssnr_init(width, height, DefaultRuntimeHint, runtimeDllPath, logPath) == 0)
+            if (dlssnr_init(width, height, (int)options.Preset, runtimeDllPath, logPath) == 0)
             {
                 var tail = ReadLogTail(logPath, 1200);
                 throw new InvalidOperationException(
                     "dlssnr_init 失败（D3D12 / NGX 初始化被拒绝）。dlss_run.log 末尾：\n" + tail);
             }
-            if (dlssnr_create_feature(width, height, DefaultRuntimeHint) == 0)
+            if (dlssnr_create_feature(width, height, (int)options.Preset) == 0)
             {
                 var tail = ReadLogTail(logPath, 1200);
                 throw new InvalidOperationException("创建 Feature 18 失败。dlss_run.log 末尾：\n" + tail);
             }
             PipelineLog.Info($"NGX NR 会话已创建: {width}×{height} hdr={hdr} tiling={tiling}");
+            PipelineLog.Info($"NR 模型预设: {options.Preset} ({(int)options.Preset})");
             PipelineLog.Info($"NR 连续历史: {options.ContinuousHistory}; 光流运动矢量: {options.MotionGuidance}; 修正量累积: {options.TemporalStabilization}");
             return new DlssNrHost(library, width, height) { _options = options };
         }
@@ -266,8 +269,10 @@ public sealed class DlssNrHost : IDisposable
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
         options = NormalizeOptions(options);
+        if (options.Preset != _options.Preset)
+            throw new InvalidOperationException("更改 NR 模型预设需要重新创建 NR 会话。");
         _options = options;
-        dlssnr_set_options(DefaultRuntimeHint, options.Style, options.Intensity,
+        dlssnr_set_options((int)options.Preset, options.Style, options.Intensity,
             options.LocalTone, options.LocalStructure, options.SkinStructure,
             options.UseAutoMask ? 1 : 0, 0, _motionGuidance ? 1 : 0, 2, 1.0f, 1.0f);
     }
@@ -314,6 +319,7 @@ public sealed class DlssNrHost : IDisposable
 
     internal static DlssNrOptions NormalizeOptions(DlssNrOptions options) => options with
     {
+        Preset = Enum.IsDefined(options.Preset) ? options.Preset : DlssNrPreset.Auto,
         Intensity = NormalizeStrength(options.Intensity, 1),
         LocalTone = NormalizeStrength(options.LocalTone, 1),
         LocalStructure = NormalizeStrength(options.LocalStructure, 1),

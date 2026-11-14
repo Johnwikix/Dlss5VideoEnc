@@ -197,8 +197,6 @@ public static partial class DlssVideoPipeline
                 decoder, Stream.Null, host, vsr, plan, totalFrames, options.LogPath, progress,
                 options.EnablePreviewFrames ? options.PreviewSink : null, options.PreviewFramesPerSecond,
                 video.Fps, options.UseAsyncNrQueue, cancellationToken)).ConfigureAwait(false);
-            if (totalFrames > 0 && outcome.Frames < totalFrames)
-                throw new InvalidOperationException($"解码提前结束：期望 {totalFrames} 帧，只读到 {outcome.Frames} 帧。");
             var finalize = Stopwatch.StartNew();
             vsr.FinishEncoding();
             await Task.Run(() => RemuxEncoded(inputPath, outputPath, options, video,
@@ -219,8 +217,6 @@ public static partial class DlssVideoPipeline
                     options.PreviewFramesPerSecond, video.Fps, options.UseAsyncNrQueue, cancellationToken)).ConfigureAwait(false);
                 var finalize = Stopwatch.StartNew();
                 encoder.Complete();
-                if (totalFrames > 0 && outcome.Frames < totalFrames)
-                    throw new InvalidOperationException($"解码提前结束：期望 {totalFrames} 帧，只读到 {outcome.Frames} 帧。");
                 await Task.Run(() => RemuxEncoded(inputPath, outputPath, options, video, cache, encoder.OutputFrames), cancellationToken).ConfigureAwait(false);
                 outcome.Elapsed += finalize.Elapsed;
             }
@@ -435,13 +431,10 @@ public static partial class DlssVideoPipeline
         interpolation?.Complete();
         hdr?.Complete();
         encoder.Complete();
-        if (totalFrames > 0 && result.Frames < totalFrames)
-            throw new InvalidOperationException(
-                $"解码提前结束：期望 {totalFrames} 帧，只读到 {result.Frames} 帧。");
         // Interpolation/encoding may still be draining on the GPU after the raw
         // producer reaches EOF. Include that work in final elapsed time and FPS.
         stopwatch.Stop();
-        progress?.Report(new TranscodeProgress(result.Frames, totalFrames,
+        progress?.Report(new TranscodeProgress(result.Frames, result.Frames,
             result.Frames / Math.Max(stopwatch.Elapsed.TotalSeconds, .001), stopwatch.Elapsed));
         return (result.Frames, stopwatch.Elapsed);
     }
@@ -498,7 +491,8 @@ public static partial class DlssVideoPipeline
             var metrics = new PipelineStageMetrics("管线", "read", "vsr", "flow", "prepare", "nr", "history", "write", "preview", "nr_submit", "nr_readback");
             bool Read(VideoFrameSlot frame, long index)
             {
-                if (totalFrames > 0 && index >= totalFrames) return false;
+                // nb_frames counts stored samples, including samples excluded by
+                // MP4 edit lists. Only the decoder's explicit MaxFrames limits reads.
                 var started = metrics.Start();
                 if (!decoder.ReadFrame(new Span<byte>(frame.Source, checked((int)plan.SourceBytes)))) return false;
                 if (plan.Hdr) NormalizeHdrFrame((ushort*)frame.Source, plan.SourceWidth * plan.SourceHeight * 4);
@@ -626,17 +620,18 @@ public static partial class DlssVideoPipeline
             if (vsr != null && plan.NrFirst) stages.Add(BoundedFramePipeline.PerFrame<VideoFrameSlot>(SuperResolution));
             var processed = BoundedFramePipeline.RunStages(slots, Read, stages.ToArray(), Write,
                 () => { vsr?.Abort(); abort(); }, cancellationToken);
+            CheckDecodedFrameCount(processed, totalFrames);
             // EOF/limit reads never overwrite a slot. The final written frame is
             // still valid here after all workers have joined.
             if (preview != null && processed > 0 && lastPreviewFrame != processed && lastOutput != null)
                 PublishPreview(preview, lastOutput.Source, plan.SourceWidth, plan.SourceHeight,
-                    lastOutput.FinalOutput, previewWidth, previewHeight, plan.Hdr, processed, totalFrames, sourceFps);
+                    lastOutput.FinalOutput, previewWidth, previewHeight, plan.Hdr, processed, processed, sourceFps);
             destination.Flush();
             stopwatch.Stop();
             metrics.Report(processed);
             flow?.ReportMetrics(processed);
             gpuNr?.ReportMetrics(processed);
-            progress?.Report(new TranscodeProgress(processed, totalFrames,
+            progress?.Report(new TranscodeProgress(processed, processed,
                 processed / Math.Max(stopwatch.Elapsed.TotalSeconds, 0.001), stopwatch.Elapsed));
             return (processed, stopwatch.Elapsed);
         }
@@ -644,6 +639,13 @@ public static partial class DlssVideoPipeline
         {
             foreach (var slot in slots) slot?.Dispose();
         }
+    }
+
+    private static void CheckDecodedFrameCount(long actual, long estimated)
+    {
+        if (actual == 0) throw new InvalidDataException("输入视频未解码出任何画面。");
+        if (estimated > 0 && actual != estimated)
+            PipelineLog.Info($"帧数校正：预计 {estimated} 帧，实际解码 {actual} 帧；解码器正常结束，以实际帧数为准。");
     }
 
     private static unsafe void NormalizeHdrFrame(ushort* buffer, int values)

@@ -114,6 +114,7 @@ public partial class MainWindow : Window
     {
         EnableNr = EnableNrBox.IsChecked == true,
         NrRuntimeId = (NrRuntimeBox.SelectedItem as NrRuntimeInfo)?.Id ?? "",
+        DlssNrPreset = NrPresetBox.SelectedIndex,
         DlssStyle = StyleBox.SelectedIndex,
         DlssIntensity = IntensitySlider.Value,
         DlssLocalTone = LocalToneSlider.Value,
@@ -161,6 +162,7 @@ public partial class MainWindow : Window
     private void ApplySettings()
     {
         EnableNrBox.IsChecked = _settings.EnableNr;
+        Select(NrPresetBox, _settings.DlssNrPreset);
         Select(StyleBox, _settings.DlssStyle);
         IntensitySlider.Value = _settings.DlssIntensity;
         LocalToneSlider.Value = _settings.DlssLocalTone;
@@ -547,6 +549,7 @@ public partial class MainWindow : Window
     {
         return new DlssNrOptions
         {
+            Preset = (DlssNrPreset)Math.Clamp(NrPresetBox.SelectedIndex, 0, 2),
             Style = StyleBox.SelectedIndex,
             Intensity = (float)IntensitySlider.Value,
             LocalTone = (float)LocalToneSlider.Value,

@@ -152,6 +152,16 @@
                   <TextBlock x:Name="NrRuntimeHint" Classes="hint" Text="将 DLL 放入 runtime 下独立的版本文件夹，点击刷新即可选择。请选择匹配显卡的版本。"/>
                 </StackPanel>
                 <StackPanel Spacing="4">
+                  <TextBlock Classes="fieldLabel" Text="NR 模型预设（Preset）"/>
+                  <ComboBox x:Name="NrPresetBox" SelectedIndex="0" HorizontalAlignment="Stretch"
+                            AutomationProperties.AutomationId="NrPreset" AutomationProperties.Name="NR 模型预设">
+                    <ComboBoxItem Content="自动 · 使用运行库默认模型"/>
+                    <ComboBoxItem Content="A · 旧模型（310.8 效果）"/>
+                    <ComboBoxItem Content="B · 轻量模型（310.9.16）"/>
+                  </ComboBox>
+                  <TextBlock Classes="hint" Text="310.9.16 自动使用 B；选择 A 恢复旧模型效果。310.8 仅有旧模型。下次开始队列时生效。"/>
+                </StackPanel>
+                <StackPanel Spacing="4">
                   <TextBlock Classes="fieldLabel" Text="风格"/>
                   <ComboBox x:Name="StyleBox" SelectedIndex="0">
                     <ComboBoxItem Content="Default · 默认"/>

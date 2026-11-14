@@ -12,6 +12,7 @@ public sealed record VideoInfo
     /// <summary>有理数帧率，例如 "60/1"。</summary>
     public required string FrameRate { get; init; }
     public double Fps => ParseFraction(FrameRate);
+    /// <summary>Container sample count for progress estimates; edit lists may change the number of decoded frames. Zero means unknown.</summary>
     public long FrameCount { get; init; }
     public double DurationSeconds { get; init; }
     public bool HasAudio { get; init; }

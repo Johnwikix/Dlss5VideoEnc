@@ -9,6 +9,7 @@ public sealed class AppSettings
     public bool EnableNr { get; set; } = true;
     /// <summary>Catalog path ID; empty retains the automatic environment/mods/default policy.</summary>
     public string NrRuntimeId { get; set; } = "";
+    public int DlssNrPreset { get; set; }
     public int DlssStyle { get; set; }
     public double DlssIntensity { get; set; } = 1;
     public double DlssLocalTone { get; set; } = 1;

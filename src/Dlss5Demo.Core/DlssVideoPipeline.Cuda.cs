@@ -33,7 +33,7 @@ public static partial class DlssVideoPipeline
             await Task.Run(() => RemuxEncoded(input, output, options, video, temporary,
                 frames * options.InterpolationMultiplier), ct).ConfigureAwait(false);
             var elapsed = outcome.Elapsed + finalize.Elapsed;
-            progress?.Report(new TranscodeProgress(frames, totalFrames, frames / elapsed.TotalSeconds, elapsed));
+            progress?.Report(new TranscodeProgress(frames, frames, frames / elapsed.TotalSeconds, elapsed));
             return new TranscodeResult { OutputPath = output, FramesProcessed = frames, Elapsed = elapsed,
                 AverageFps = frames / elapsed.TotalSeconds, OutputBytes = new FileInfo(output).Length };
         }
@@ -147,7 +147,7 @@ public static partial class DlssVideoPipeline
                         }
                     }, () => { decoder.Abort(); enhancement.Abort(); }, ct);
                 encoder.Complete(); clock.Stop(); metrics.Report(written); enhancement.ReportMetrics(written);
-                if (written == 0 || totalFrames > 0 && written < totalFrames) throw new InvalidDataException("NVDEC 视频提前结束。");
+                CheckDecodedFrameCount(written, totalFrames);
                 return (written, clock.Elapsed);
 
                 void Process(BoundedFramePipeline.Frame<Slot> first, BoundedFramePipeline.Frame<Slot> second, CancellationToken token)
