@@ -310,6 +310,26 @@ VS 构建时 `StageMsixPayload` 会调用 `tools/package.ps1`：**清空并重�
 （此包仅供本地调试，补帧功能不可用）；正式出包请指定 `-p:MsixFfmpegDirectory=<定制FFmpeg目录>`
 或 `-p:MsixRequireFrucVulkan=true`。`tools/package.ps1` 自身默认仍严格校验，不影响 ZIP 发布。
 
+**部署排错：`DEP1000` 复制已删除的 NR DLL**。舞台每次都会清空重建 `artifacts\msix\payload`，
+但 VS 的增量部署会复用上次的 `build.appxrecipe` / `AppX` 布局清单。若从 `runtime` 删除或移动了
+某个 `nvngx_dlssnr.dll`（例如精简运行库），旧清单仍记录
+`payload\runtime\nr\<旧目录>\nvngx_dlssnr.dll`，部署阶段按该源复制就会报
+`DirectoryNotFoundException (0x80070003)`。删除以下可再生缓存后，在 VS 里执行「清理 → 重新生成 → 部署」
+（路径按活动配置替换 Release/x64）：
+
+```powershell
+Remove-Item -Recurse -Force -ErrorAction SilentlyContinue `
+  'packaging\Dlss5VideoEnc.Msix\bin\x64\Release\AppX',
+  'packaging\Dlss5VideoEnc.Msix\bin\x64\Release\Dlss5VideoEnc.Msix.build.appxrecipe',
+  'packaging\Dlss5VideoEnc.Msix\obj\x64\Release\PackageLayout',
+  'packaging\Dlss5VideoEnc.Msix\obj\x64\Release\Dlss5VideoEnc.Msix.wapproj.FileListAbsolute.txt'
+```
+
+命令行出包不受此缓存影响：`tools\package-msix.ps1 -SkipStage` 会清空重建 `artifacts\msix\layout`
+并生成 MSIX，可用它先验证负载内 `runtime\` 只含现存 NR DLL。精简运行库后，MSIX 应用私有
+`settings.json` 里保存的 `NrRuntimeId` 也可能指向已不存在的子目录，界面会显示「已缺失 · …」，
+在「NR 版本」下拉重新选择「自动」或 `runtime`（当前默认）即可。
+
 `tools/*.ps1` 含中文注释与字符串，被 WinPS 5.1 调用时必须保存为 **UTF-8 with BOM**：5.1 会把无 BOM
 的 UTF-8 脚本按 GBK 解码并产生语法错误，脚本一行都未执行就退出 1。若舞台命令报「已退出，代码为 1」
 且 `artifacts\msix\payload` 没有变化，先检查 `tools/package.ps1` 与 `tools/package-msix.ps1` 的 BOM。
