@@ -218,7 +218,7 @@ dotnet run --project tests/Dlss5Demo.Tests -c Release -- --nr-switch "小素材.
 
 ## DLSS NR 运行库选择
 
-「NR 模型预设（Preset）」独立于 DLL 版本与风格，可选择自动、A（旧模型）或 B（轻量模型），随设置保存，在下次开始队列时应用。310.9.16 的自动档选择 B；需要保留 310.8 的模型效果时选择 A。310.8 只有旧模型，不会因为选择 B 而新增模型。CLI 和应用 `--autorun` 均支持 `--nr-preset auto|a|b`，例如：
+「NR 模型预设（Preset）」独立于 DLL 版本与风格，默认 **A（旧模型）**，可选择自动或 B（轻量模型），随设置保存，在下次开始队列时应用。升级时旧配置的自动档一次性迁移为 A；已保存的 B 和升级后主动选择的自动档继续保留。310.9.16 的自动档选择 B；A 保留 310.8 的模型效果。310.8 只有旧模型，不会因为选择 B 而新增模型。CLI 和应用 `--autorun` 均支持 `--nr-preset auto|a|b`，未指定时使用 A，例如：
 
 ```powershell
 dotnet run --project src/Dlss5Demo.Cli -c Release -- input.mp4 --output output.mp4 --nr-runtime 'runtime/nr/NVIDIA-Original-310.9.16-RTX50-Series-Only/nvngx_dlssnr.dll' --nr-preset a

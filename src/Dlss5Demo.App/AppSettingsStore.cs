@@ -15,7 +15,9 @@ internal static class AppSettingsStore
                 return new AppSettings();
             var settings = JsonSerializer.Deserialize(
                 File.ReadAllText(SettingsPath), AppSettingsContext.Default.AppSettings);
-            return settings ?? new AppSettings();
+            settings ??= new AppSettings();
+            settings.UpgradeNrPresetDefault();
+            return settings;
         }
         catch (Exception error)
         {

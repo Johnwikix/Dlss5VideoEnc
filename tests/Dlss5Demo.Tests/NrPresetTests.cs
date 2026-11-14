@@ -1,15 +1,41 @@
 using Dlss5Demo.Core;
+using Dlss5Demo.App;
+using System.Text.Json;
 
 internal static class NrPresetTests
 {
     internal static void Options()
     {
+        Require(new DlssNrOptions().Preset == DlssNrPreset.Legacy, "New NR sessions must default to A.");
         Require(DlssNrPresets.Parse("A") == DlssNrPreset.Legacy && DlssNrPresets.Parse("1") == DlssNrPreset.Legacy, "Legacy aliases failed.");
         Require(DlssNrPresets.Parse("b") == DlssNrPreset.Lightweight && DlssNrPresets.Parse("auto") == DlssNrPreset.Auto, "Preset aliases failed.");
         try { DlssNrPresets.Parse("c"); throw new Exception("Invalid preset accepted."); }
         catch (ArgumentException) { }
-        Require(DlssNrHost.NormalizeOptions(new DlssNrOptions { Preset = (DlssNrPreset)99 }).Preset == DlssNrPreset.Auto,
-            "Invalid persisted/model values must use Auto.");
+        Require(DlssNrHost.NormalizeOptions(new DlssNrOptions { Preset = (DlssNrPreset)99 }).Preset == DlssNrPreset.Legacy,
+            "Invalid model values must use A.");
+    }
+
+    internal static void SettingsDefaults()
+    {
+        Require(new AppSettings().DlssNrPreset == 1, "A fresh install must default to A.");
+        foreach (var test in new[]
+        {
+            (Json: "{}", Expected: 1),
+            (Json: "{\"DlssNrPreset\":0,\"Quality\":23}", Expected: 1),
+            (Json: "{\"DlssNrPreset\":2}", Expected: 2),
+            (Json: "{\"DlssNrPreset\":0,\"NrPresetSettingsVersion\":1}", Expected: 0),
+            (Json: "{\"DlssNrPreset\":99,\"NrPresetSettingsVersion\":1}", Expected: 1),
+        })
+        {
+            var settings = JsonSerializer.Deserialize(test.Json, AppSettingsContext.Default.AppSettings)!;
+            int quality = settings.Quality;
+            settings.UpgradeNrPresetDefault();
+            Require(settings.DlssNrPreset == test.Expected && settings.Quality == quality, "Default migration changed an explicit choice or unrelated settings.");
+            string saved = JsonSerializer.Serialize(settings, AppSettingsContext.Default.AppSettings);
+            var restored = JsonSerializer.Deserialize(saved, AppSettingsContext.Default.AppSettings)!;
+            restored.UpgradeNrPresetDefault();
+            Require(restored.DlssNrPreset == test.Expected && restored.NrPresetSettingsVersion == 1, "The migrated or explicit choice did not survive a reload.");
+        }
     }
 
     internal static unsafe void Native(string oldRuntime, string newRuntime)

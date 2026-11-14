@@ -5,11 +5,14 @@ namespace Dlss5Demo.App;
 /// <summary>需跨会话保留的界面设置（与 MainWindow 控件一一对应；ComboBox 存选中索引）。</summary>
 public sealed class AppSettings
 {
+    internal const int CurrentNrPresetSettingsVersion = 1;
     // DLSS NR
     public bool EnableNr { get; set; } = true;
     /// <summary>Catalog path ID; empty retains the automatic environment/mods/default policy.</summary>
     public string NrRuntimeId { get; set; } = "";
-    public int DlssNrPreset { get; set; }
+    public int DlssNrPreset { get; set; } = 1;
+    /// <summary>Distinguishes the old automatic default from future explicit Auto selections.</summary>
+    public int NrPresetSettingsVersion { get; set; }
     public int DlssStyle { get; set; }
     public double DlssIntensity { get; set; } = 1;
     public double DlssLocalTone { get; set; } = 1;
@@ -55,6 +58,16 @@ public sealed class AppSettings
 
     // 任务
     public bool FramesLimit { get; set; }
+
+    internal void UpgradeNrPresetDefault()
+    {
+        // Earlier builds saved Auto even when the user never chose a model.
+        // Migrate it once; later explicit Auto/B selections remain persistent.
+        if (DlssNrPreset is < 0 or > 2 ||
+            (NrPresetSettingsVersion < CurrentNrPresetSettingsVersion && DlssNrPreset == 0))
+            DlssNrPreset = 1;
+        NrPresetSettingsVersion = Math.Max(NrPresetSettingsVersion, CurrentNrPresetSettingsVersion);
+    }
 }
 
 /// <summary>System.Text.Json 源生成器上下文：序列化在编译期生成，无运行时反射。</summary>

@@ -24,7 +24,7 @@ internal static class Autorun
         var decodeDevice = 0;
         var hdrMode = "auto";
         string? nrRuntime = null;
-        var nrPreset = DlssNrPreset.Auto;
+        var nrPreset = DlssNrPreset.Legacy;
         for (var index = 3; index < args.Length; index++)
         {
             if (args[index] == "--frames" && index + 1 < args.Length)

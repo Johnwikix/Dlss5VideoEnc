@@ -10,5 +10,6 @@
   </PropertyGroup>
   <ItemGroup>
     <ProjectReference Include="../../src/Dlss5Demo.Core/Dlss5Demo.Core.csproj" />
+    <Compile Include="../../src/Dlss5Demo.App/AppSettings.cs" Link="AppSettings.cs" />
   </ItemGroup>
 </Project>

@@ -5,8 +5,8 @@ namespace Dlss5Demo.Core;
 /// <summary>DLSS NR 外观参数（对应上游 dlss5tool 的公开设置）。</summary>
 public sealed record DlssNrOptions
 {
-    /// <summary>NR model selected at feature creation. Auto follows the runtime; Legacy restores the 310.8 model on 310.9.16.</summary>
-    public DlssNrPreset Preset { get; init; } = DlssNrPreset.Auto;
+    /// <summary>NR model selected at feature creation. Defaults to the 310.8 legacy model; Auto follows the runtime.</summary>
+    public DlssNrPreset Preset { get; init; } = DlssNrPreset.Legacy;
     /// <summary>Keep SDR motion validation and correction history on the GPU when the host supports shared frames.</summary>
     public bool UseGpuTemporalProcessing { get; init; } = true;
     public const double MaximumStrength = 5;
@@ -319,7 +319,7 @@ public sealed class DlssNrHost : IDisposable
 
     internal static DlssNrOptions NormalizeOptions(DlssNrOptions options) => options with
     {
-        Preset = Enum.IsDefined(options.Preset) ? options.Preset : DlssNrPreset.Auto,
+        Preset = Enum.IsDefined(options.Preset) ? options.Preset : DlssNrPreset.Legacy,
         Intensity = NormalizeStrength(options.Intensity, 1),
         LocalTone = NormalizeStrength(options.LocalTone, 1),
         LocalStructure = NormalizeStrength(options.LocalStructure, 1),

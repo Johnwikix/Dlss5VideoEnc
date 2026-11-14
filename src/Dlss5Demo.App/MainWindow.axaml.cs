@@ -112,6 +112,7 @@ public partial class MainWindow : Window
     /// <summary>把控件状态写回设置模型（保存于开始转码与窗口关闭时）。</summary>
     private AppSettings CaptureSettings() => new()
     {
+        NrPresetSettingsVersion = AppSettings.CurrentNrPresetSettingsVersion,
         EnableNr = EnableNrBox.IsChecked == true,
         NrRuntimeId = (NrRuntimeBox.SelectedItem as NrRuntimeInfo)?.Id ?? "",
         DlssNrPreset = NrPresetBox.SelectedIndex,
@@ -549,7 +550,7 @@ public partial class MainWindow : Window
     {
         return new DlssNrOptions
         {
-            Preset = (DlssNrPreset)Math.Clamp(NrPresetBox.SelectedIndex, 0, 2),
+            Preset = NrPresetBox.SelectedIndex is >= 0 and <= 2 ? (DlssNrPreset)NrPresetBox.SelectedIndex : DlssNrPreset.Legacy,
             Style = StyleBox.SelectedIndex,
             Intensity = (float)IntensitySlider.Value,
             LocalTone = (float)LocalToneSlider.Value,

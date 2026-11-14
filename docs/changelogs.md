@@ -2,6 +2,7 @@
 
 ## 2026-11-14
 
+- NR 模型默认改为 A（旧模型），覆盖 GUI、Core、CLI/autorun 及无效值回退。旧版保存的自动档首次升级迁移为 A；B 和后续主动选择的自动档保持。配置源生成序列化回归覆盖缺字段、一次迁移、显式 Auto/B 与重复加载。
 - 修复 MP4 编辑列表排除存储样本时的“解码提前结束”误报：容器帧数仅作进度估算，处理至正常 EOF 或显式帧数上限，编码和最终进度采用实际解码帧数。主机、VSR 编码、双遍和 CUDA RIFE 路径共用该规则，解码错误和零帧输入仍失败。原片登记 2100 帧、实际可播放 2099 帧，软件解码与 NVDEC 均完整输出 2099 帧。
 - 增加 NR 模型预设选择与持久化：自动／A 旧模型／B 轻量模型，GUI、CLI 和 autorun 均将预设传到原生 Feature 创建及光流资源重建。310.9.16 的 A 使用旧模型，自动与 B 使用轻量模型；310.8 只有旧模型。CLI 参数为 `--nr-preset auto|a|b`。
 - 回归命令：`dotnet run --project tests/Dlss5Demo.Tests -c Release -- --decode-counts [原片路径] --nr-presets runtime/nvngx_dlssnr.dll runtime/nr/NVIDIA-Original-310.9.16-RTX50-Series-Only/nvngx_dlssnr.dll`。覆盖 MP4 编辑列表、B 帧排空、两种解码器、帧数限制及 NR A/B 模型和资源重建。

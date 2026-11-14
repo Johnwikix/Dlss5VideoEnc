@@ -18,6 +18,7 @@ var tests = new (string Name, Action Run)[]
 {
     ("NR versions are discovered recursively and keep stable IDs on refresh", NrRuntimeCatalogTests.Discovery),
     ("NR model presets parse aliases and reject invalid choices", NrPresetTests.Options),
+    ("NR defaults migrate once to A and preserve later Auto/B selections", NrPresetTests.SettingsDefaults),
     ("GPU series detection maps consumer device IDs and RTX folder tokens", NrGpuAutoSelectTests.SeriesMapping),
     ("Auto NR selection picks the lowest version supporting the GPU series", NrGpuAutoSelectTests.AutoSelection),
     ("Identity output scaling keeps GPU paths without changing real resize/crop requests", OutputScaleTests.Identity),
