@@ -1,5 +1,7 @@
 # RIFE 组合的显存衔接与界面更新
 
+> 注：文中 `runtime/nr/NVIDIA-Original-310.9.16-RTX50-Series-Only/nvngx_dlssnr.dll` 已于 2026-11-14 从项目移除，该路径不再可用。报告中的数值仅对当时的 DLL 有效；复现请改用 `runtime/nr/Community-Patched-310.9.16-RTX20-RTX30-RTX40-Series/nvngx_dlssnr.dll` 等现存社区版，结果可能不同。
+
 ## 数据路径
 
 兼容的 SDR 任务现在使用：

@@ -31,6 +31,9 @@ build/
 dist/
 # MSIX 打包中间产物（dist/ 已在上面忽略，包内文件不入库）
 artifacts/
+# VS「创建应用程序包」生成的旁加载包目录（不要用 *.msix：会误伤
+# packaging/Dlss5VideoEnc.Msix 目录名，Windows 大小写不敏感）
+AppPackages/
 *.assets.cache
 
 # 上游参考源码（只读克隆）

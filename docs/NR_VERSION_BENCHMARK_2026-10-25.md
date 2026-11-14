@@ -1,5 +1,7 @@
 # NR 310.8.0 与 310.9.16 实测
 
+> 注：文中 `runtime/nvngx_dlssnr.dll` 当时指 NVIDIA 原版 310.8.0.0，`runtime/nr/NVIDIA-Original-310.9.16-RTX50-Series-Only/nvngx_dlssnr.dll` 已于 2026-11-14 移除；两处路径现在分别对应 310.8.2.0 社区版与已失效路径。表内数值仅对当时的 DLL 有效；复现请改用 `runtime/nr/Community-Patched-310.9.16-RTX20-RTX30-RTX40-Series/nvngx_dlssnr.dll` 等现存社区版，结果可能不同。
+
 ## 环境与口径
 
 RTX 5070 Ti，驱动 617.14，.NET 10.0.13，20 个逻辑 CPU。比较 NVIDIA 原版 310.8.0.0 与 310.9.16.0；社区补丁 DLL 没有参与本表。使用同一份应用/宿主二进制，仅替换 NR DLL。

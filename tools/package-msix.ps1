@@ -15,6 +15,8 @@ param(
     [switch]$CreateTestCertificate,
     # 复用 artifacts\msix\payload 上次产物，跳过完整发布。
     [switch]$SkipStage,
+    # 指定其它已舞台化的负载目录（例如单独验证修复后的负载）。
+    [string]$PayloadDirectory = '',
     [switch]$NoRestore
 )
 
@@ -27,6 +29,9 @@ $manifestSource = Join-Path $packaging 'Package.appxmanifest'
 $assetsSource = Join-Path $packaging 'Assets'
 $stageRoot = Join-Path $repoRoot 'artifacts\msix'
 $payloadDir = Join-Path $stageRoot 'payload'
+if (-not [string]::IsNullOrWhiteSpace($PayloadDirectory)) {
+    $payloadDir = [IO.Path]::GetFullPath($PayloadDirectory)
+}
 $layoutDir = Join-Path $stageRoot 'layout'
 if ([string]::IsNullOrWhiteSpace($OutputRoot)) { $OutputRoot = Join-Path $repoRoot 'dist' }
 $OutputRoot = [IO.Path]::GetFullPath($OutputRoot)
@@ -137,8 +142,14 @@ if ($LASTEXITCODE -ne 0) { throw "makeappx 失败（$LASTEXITCODE）；未生成
 
 # 5. 可选签名。未签名包只能按松散布局注册，可安装分发应使用签名包。
 if ($CreateTestCertificate) {
-    $certificate = Get-ChildItem -Path 'Cert:\CurrentUser\My' -ErrorAction SilentlyContinue |
-        Where-Object { $_.Subject -eq $publisher } | Select-Object -First 1
+    $now = Get-Date
+    # 本机证书存储里可能有大量同 Subject 的测试证书（含已过期/无私钥的），
+    # 直接取第一个会随机挑到过期证书并让签名失败。
+    $certificate = @(Get-ChildItem -Path 'Cert:\CurrentUser\My' -ErrorAction SilentlyContinue |
+        Where-Object {
+            $_.Subject -eq $publisher -and $_.HasPrivateKey -and
+            $_.NotBefore -le $now -and $_.NotAfter -gt $now
+        } | Sort-Object NotAfter -Descending | Select-Object -First 1)[0]
     if ($null -eq $certificate) {
         $certificate = New-SelfSignedCertificate -Type Custom -Subject $publisher `
             -KeyUsage DigitalSignature -KeyExportPolicy Exportable `

@@ -1,5 +1,7 @@
 # 光流前后处理与 NR 历史累积迁移到 GPU
 
+> 注：文中 `runtime/nr/NVIDIA-Original-310.9.16-RTX50-Series-Only/nvngx_dlssnr.dll` 已于 2026-11-14 从项目移除，该路径不再可用。报告中的数值仅对当时的 DLL 有效；复现请改用 `runtime/nr/Community-Patched-310.9.16-RTX20-RTX30-RTX40-Series/nvngx_dlssnr.dll` 等现存社区版，结果可能不同。
+
 ## 处理路径
 
 光流估计原本就使用 NVIDIA 专用 NVOFA 单元。本次迁移的是原来在 CPU 上执行的灰度转换、网格展开、置信度过滤、运动补偿、输入验证、切镜判定和修正量历史混合。NVOFA 保留原来的 SLOW 质量和标准/精细网格选择。

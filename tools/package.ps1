@@ -28,6 +28,68 @@ function Assert-File([string]$Path) {
     }
 }
 
+# MSIX/APPX 签名时 AppxSip 会为包内每个 PE 生成代码完整性目录；若某个第三方 DLL
+# 的 Authenticode 证书目录被裁剪（指向文件末尾之外），signtool 会报
+# 0x800700C1 / ERROR_BAD_EXE_FORMAT 并拒绝签名，且不会指出是哪个文件。
+# 这里只清除「已损坏」的 8 字节 Security Directory 目录项，等价于把该 DLL 视为
+# 未签名；合法签名的文件一律不动，且只修改发布负载副本，runtime\ 源文件不变。
+function Clear-BadPeCertificateDirectory([string]$Path) {
+    $stream = $null
+    try {
+        $stream = [IO.File]::Open($Path, [IO.FileMode]::Open, [IO.FileAccess]::ReadWrite, [IO.FileShare]::Read)
+        if ($stream.Length -lt 0x100) { return $false }
+        $reader = New-Object System.IO.BinaryReader($stream)
+        $stream.Position = 0x3C
+        $peOffset = $reader.ReadInt32()
+        if ($peOffset -le 0 -or ($peOffset + 24) -gt $stream.Length) { return $false }
+        $stream.Position = $peOffset
+        if ($reader.ReadUInt32() -ne 0x00004550) { return $false }
+        # Optional Header: PE32 的数据目录从 +96 开始，PE32+ 从 +112 开始。
+        $stream.Position = $peOffset + 24
+        $magic = $reader.ReadUInt16()
+        if ($magic -eq 0x10B) { $directoryBase = $peOffset + 24 + 96 }
+        elseif ($magic -eq 0x20B) { $directoryBase = $peOffset + 24 + 112 }
+        else { return $false }
+        # Security Directory 是第 4 项（索引 4），值是文件偏移而非 RVA。
+        $securityEntry = $directoryBase + 4 * 8
+        if (($securityEntry + 8) -gt $stream.Length) { return $false }
+        $stream.Position = $securityEntry
+        $certOffset = [int64]$reader.ReadUInt32()
+        $certSize = [int64]$reader.ReadUInt32()
+        if ($certOffset -eq 0 -and $certSize -eq 0) { return $false }
+        $bad = ($certOffset -eq 0) -or ($certSize -eq 0) -or
+               (($certOffset % 8) -ne 0) -or ($certOffset -lt ($securityEntry + 8)) -or
+               (($certOffset + $certSize) -gt $stream.Length)
+        if (-not $bad -and $certSize -ge 8 -and ($certOffset + 8) -le $stream.Length) {
+            $stream.Position = $certOffset
+            $dwLength = [int64]$reader.ReadUInt32()
+            if ($dwLength -lt 8 -or $dwLength -gt $certSize) { $bad = $true }
+        }
+        if (-not $bad) { return $false }
+        $stream.Position = $securityEntry
+        $stream.Write([byte[]]@(0, 0, 0, 0, 0, 0, 0, 0), 0, 8)
+        return $true
+    } finally {
+        if ($null -ne $stream) { $stream.Dispose() }
+    }
+}
+
+function Repair-MalformedPeCertificates([string]$Root) {
+    $count = 0
+    $extensions = @('.dll', '.exe', '.sys', '.ocx')
+    foreach ($file in @(Get-ChildItem -LiteralPath $Root -Recurse -File)) {
+        if ($extensions -notcontains $file.Extension.ToLowerInvariant()) { continue }
+        if (Clear-BadPeCertificateDirectory $file.FullName) {
+            $count++
+            Write-Host "[package] 清除损坏的 PE 证书目录：$($file.FullName.Substring($Root.Length + 1))"
+        }
+    }
+    if ($count -gt 0) {
+        Write-Host "[package] 共修复 $count 个 PE 文件（仅负载副本，runtime\ 源文件不变）。"
+    }
+    return $count
+}
+
 Assert-File $project
 foreach ($name in $nativeNames) { Assert-File (Join-Path $runtimeSource $name) }
 $nrVariants = @(Get-ChildItem -LiteralPath $runtimeSource -Filter 'nvngx_dlssnr*.dll' -File -Recurse)
@@ -165,6 +227,10 @@ foreach ($candidate in @(
         break
     }
 }
+
+# 必须在生成 SHA256SUMS.txt / PACKAGE_NOTES.txt 之前完成：清单哈希要反映修复后的文件。
+# 仅影响 MSIX 签名可用性；ZIP 解压运行完全不受影响。
+Repair-MalformedPeCertificates $packageDirectory | Out-Null
 
 # Verify that the copied tools can load their dependencies before creating the ZIP.
 foreach ($name in @('ffmpeg.exe', 'ffprobe.exe')) {

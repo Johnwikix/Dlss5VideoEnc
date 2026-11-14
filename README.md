@@ -221,24 +221,24 @@ dotnet run --project tests/Dlss5Demo.Tests -c Release -- --nr-switch "小素材.
 「NR 模型预设（Preset）」独立于 DLL 版本与风格，默认 **A（旧模型）**，可选择自动或 B（轻量模型），随设置保存，在下次开始队列时应用。升级时旧配置的自动档一次性迁移为 A；已保存的 B 和升级后主动选择的自动档继续保留。310.9.16 的自动档选择 B；A 保留 310.8 的模型效果。310.8 只有旧模型，不会因为选择 B 而新增模型。CLI 和应用 `--autorun` 均支持 `--nr-preset auto|a|b`，未指定时使用 A，例如：
 
 ```powershell
-dotnet run --project src/Dlss5Demo.Cli -c Release -- input.mp4 --output output.mp4 --nr-runtime 'runtime/nr/NVIDIA-Original-310.9.16-RTX50-Series-Only/nvngx_dlssnr.dll' --nr-preset a
+dotnet run --project src/Dlss5Demo.Cli -c Release -- input.mp4 --output output.mp4 --nr-runtime 'runtime/nr/Community-Patched-310.9.16-RTX20-RTX30-RTX40-Series/nvngx_dlssnr.dll' --nr-preset a
 ```
 
 界面的「NR 版本」从实际安装目录递归发现 `nvngx_dlssnr*.dll`，显示 DLL 文件版本及目录标签，版本列表没有写死。明确选择的 DLL 用于下一次转码，并按相对路径保存；刷新、重启、移动整个发布目录不会因选项排序变化而选错版本。文件缺失时提示重新选择，不静默替换。
 
-用户自行添加版本：把 DLL 放入 `runtime\任意版本名称\nvngx_dlssnr.dll`，在界面点击「刷新」。可以多层嵌套，也支持 `nvngx_dlssnr_自定义名称.dll`。用文件夹名标注适用显卡和来源；版本号相同的原版/社区版可区分。**目录名包含 `RTX20/RTX30/RTX40/RTX50` 标记的版本才能被「自动」档按显卡代际选中**（如 `Community-SF-v2-310.8-RTX20-RTX30-Series`）；用导入脚本保留压缩包原始目录名（如 `SF-v2`）时，请重命名目录补上代际标记。发布脚本自动携带 runtime 中发现的全部 NR DLL。
+用户自行添加版本：把 DLL 放入 `runtime\nr\任意版本名称\nvngx_dlssnr.dll`，在界面点击「刷新」。可以多层嵌套，也支持 `nvngx_dlssnr_自定义名称.dll`。用文件夹名标注适用显卡和来源；版本号相同的原版/社区版可区分。**目录名包含 `RTX20/RTX30/RTX40/RTX50` 标记的版本才能被「自动」档按显卡代际选中**（如 `Community-Patched-310.9.16-RTX20-RTX30-RTX40-Series`）；用导入脚本保留压缩包原始目录名（如 `SF-v2`）时，请重命名目录补上代际标记。发布脚本自动携带 runtime 中发现的全部 NR DLL。
 
-导入版本包（保留原默认 DLL）：
+导入版本包（保留根目录激活版）：
 
 ```powershell
 .\tools\import-nr-runtimes.ps1 -ArchivePath 'H:\download\DLSSNR-DLL-Options.zip'
 # CLI 与应用 --autorun 都接受绝对路径、相对路径或列表中的 runtime/... 路径。
-dotnet run --project src/Dlss5Demo.Cli -c Release -- input.mp4 output.mp4 --nr-runtime 'runtime/nr/NVIDIA-Original-310.9.16-RTX50-Series-Only/nvngx_dlssnr.dll'
+dotnet run --project src/Dlss5Demo.Cli -c Release -- input.mp4 output.mp4 --nr-runtime 'runtime/nr/Community-Patched-310.9.16-RTX20-RTX30-RTX40-Series/nvngx_dlssnr.dll'
 ```
 
-DLSS NR 运行库必须与 NVIDIA RTX 显卡代际匹配。「自动」策略为：`DLSS5_NR_RUNTIME_DLL` → `mods` 覆盖 → `DLSS5_GPU_SERIES` → **根目录激活版** `runtime\nvngx_dlssnr.dll` → **按显卡代际自动匹配** `nr\` 变体（仅当根目录未放置）→ `nr\` 版本最低变体。明确的界面/CLI 选择优先于自动策略；关闭 NR 时不解析或加载所选 DLL。
+DLSS NR 运行库需与 NVIDIA RTX 显卡代际兼容；社区补丁版已放宽原版的代际限制（本机实测 RTX 50 可运行原标注 RTX 20/30 的社区版）。「自动」策略为：`DLSS5_NR_RUNTIME_DLL` → `mods` 覆盖 → `DLSS5_GPU_SERIES` → **根目录激活版** `runtime\nvngx_dlssnr.dll` → **按显卡代际自动匹配** `nr\` 变体（仅当根目录未放置）→ `nr\` 版本最低变体。明确的界面/CLI 选择优先于自动策略；关闭 NR 时不解析或加载所选 DLL。
 
-**全部版本均可完整转码。** 曾存在的一个驱动层死锁（同一调用线程先跑 EvaluateFeature 再做 NGX teardown 时挂起，表现为进程不退出、输出未收尾）已在宿主 `dlssnr_host_v2.dll` 修复：teardown 移到工作线程执行并带 3 秒看门狗；极少数情况下看门狗放弃清理时，同进程后续 NR 会话会明确报错（重启应用即可），不影响已完成的输出。
+**全部版本均可完整转码。** 曾存在的一个驱动层死锁（同一调用线程先跑 EvaluateFeature 再做 NGX teardown 时挂起，表现为进程不退出、输出未收尾）已在宿主 `dlssnr_host_v2.dll` 修复：teardown 移到工作线程执行并带 3 秒看门狗；极少数情况下看门狗放弃清理时，同进程后续 NR 会话会明确报错（重启应用即可），不影响已完成的输出。因此 `nr\` 深层路径也不再受 teardown 挂起的限制。
 
 代际自动匹配（根目录未放置时启用）：按显存最大的 NVIDIA 适配器识别 RTX 代际（20/30/40/50，依 PCI 设备号段），在 `runtime\nr\` 下挑选目录名声明支持该代际的变体，**版本低者优先**（保守的已验证版本胜出，版本未知排最后）。
 
@@ -250,7 +250,16 @@ runtime\40\nvngx_dlssnr.dll
 runtime\50\nvngx_dlssnr.dll
 ```
 
-也可以直接设置 `DLSS5_NR_RUNTIME_DLL` 指向匹配的 DLL（但注意上文：`nr\` 路径的完整转码在当前驱动下会在 teardown 挂起）。当前布局：根目录为 NVIDIA 原版 310.8.0（RTX 50 激活版）；`runtime\nr\` 每份文件只存一份、目录名均标注代际：310.8.0 社区适配版 RTX 40/50、SF-v2 FP16 兼容版 RTX 20/30（性能有限，适合图片/视频场景）、310.9.16 原版 RTX 50、310.9.16 社区适配版 RTX 20/30/40。文件校验值见 `runtime\NR_OPTIONS_README.txt`。本机（RTX 5070 Ti）完整转码验证了 310.8.0 原版；社区版仅通过小帧初始化验证，完整转码受上述 teardown 问题限制。AMD/Intel 的 OpenDLSS-NR 后端当前未接入；本项目的 AMD/Intel 支持仅限 FFmpeg AMF/QSV 编码，DLSS NR 与 RTX Video VSR 仍要求 NVIDIA。
+也可以直接设置 `DLSS5_NR_RUNTIME_DLL` 指向匹配的 DLL。
+
+**当前布局（2026-11-14 精简）**：本机实测 RTX 50 可运行面向 RTX 20/30 的社区补丁版，因此不再保留 NVIDIA 原版及 RTX 50 专用 DLL，`runtime` 只留两个社区版：
+
+| 位置 | 版本与来源 | 字节数 | SHA-256 |
+| --- | --- | ---: | --- |
+| 根目录激活版 `runtime\nvngx_dlssnr.dll` | 310.8.2.0（版本串 `310.8.SF.0`），SF-v2 FP16 兼容社区版，原标注 RTX 20/30 | 165,830,144 | `6EB209E764F39872625DEBD6ABAF45E2BB6322F6F270F781F70C059AE30B3927` |
+| `runtime\nr\Community-Patched-310.9.16-RTX20-RTX30-RTX40-Series\nvngx_dlssnr.dll` | 310.9.16.0 社区补丁版，原标注 RTX 20/30/40 | 276,162,560 | `A8A237A967469C455A84654932B513AB656FBAA1E0C44504B1E1BF0890F902B8` |
+
+`runtime\NR_OPTIONS_README.txt` 是 310.8 选项包的原始说明，仅作来源留存，描述的三个目录已不再对应当前布局。被移除的 310.9.16 RTX 50 专用原版仍可从 `H:\download\DLSSNR-DLL-Options.zip` 重新解压；310.8.0.0 NVIDIA 原版与 310.8.0 社区 RTX 40/50 版的本地备份（含 `download\50.zip`）已一并删除，如需只能重新下载。`dist/`、`.qa/`、`artifacts/`、`src/**/bin`、`packaging/` 等历史构建产物中的旧版本 DLL 副本也已按哈希清理，这些旧包不再自带可用的根目录激活位 DLL，需要时请重新执行发布脚本生成新包。旧验证文档中出现的 `NVIDIA-Original-310.9.16-RTX50-Series-Only/...` 路径已失效，其中测量数值仅对当时的 DLL 有效，复现时请替换为上表的社区版，输出与性能可能不同。AMD/Intel 的 OpenDLSS-NR 后端当前未接入；本项目的 AMD/Intel 支持仅限 FFmpeg AMF/QSV 编码，DLSS NR 与 RTX Video VSR 仍要求 NVIDIA。
 
 ## 发布打包
 
@@ -272,17 +281,15 @@ MSIX 负载与 ZIP 发布完全一致：由 `tools/package.ps1` 先产出完整�
 再注入包布局的 `Dlss5Demo.App\` 子目录；清单 `Executable` 由 DesktopBridge 展开为该目录下的
 `Dlss5VideoEnc.exe`。因此前面的 FFmpeg 前置条件同样适用。
 
-命令行一键出包（推荐用于 CI 与无 Visual Studio 环境）：
-
-```powershell
-# 需要 PowerShell 7；makeappx.exe 由 Microsoft.Windows.SDK.BuildTools 或 Windows SDK 提供。
+命令行一键出包（PowerShell 5.1 / 7 均可；`makeappx.exe` 由 `Microsoft.Windows.SDK.BuildTools` 或 Windows SDK 提供）：
 pwsh -NoProfile -File .\tools\package-msix.ps1 -FfmpegDirectory G:\Tool\ffmpeg\bin -Version 0.1.0.0
 # 创建与清单 Publisher 匹配的本地测试证书并签名（证书仅在本机有效）。
 pwsh -NoProfile -File .\tools\package-msix.ps1 -FfmpegDirectory G:\Tool\ffmpeg\bin -CreateTestCertificate
 ```
 
 产物为 `dist\Dlss5VideoEnc_<版本>_x64.msix`，布局与负载位于 `artifacts\msix\`（已忽略）。
-`-SkipStage` 可复用上次的 `artifacts\msix\payload`；`-MakeAppx` 可手工指定工具路径。
+`-SkipStage` 可复用上次的 `artifacts\msix\payload`；`-PayloadDirectory <dir>` 可改用其它已舞台化的负载；
+`-MakeAppx` 可手工指定工具路径。
 
 Visual Studio 内打包：打开 `Dlss5VideoEnc.sln`，活动配置选 `Release|x64`（或 `Debug|x64`），
 右键 `packaging/Dlss5VideoEnc.Msix` → 生成，再 → 部署；设为启动项目可直接 F5 部署并启动。
@@ -315,6 +322,35 @@ VS 构建时 `StageMsixPayload` 会调用 `tools/package.ps1`：**清空并重�
 签名与安装：清单 `Publisher` 为 `CN=CF259542-70C0-4852-9523-066A80212473`，证书 Subject 必须与之完全一致。
 未签名包不能直接安装；使用 `-CreateTestCertificate` 生成证书后，按脚本提示把 `.cer` 导入
 「受信任的根证书颁发机构」，再执行 `Add-AppxPackage -Path <包路径>`。
+
+**签名排错：`0x800700C1` / `Done Adding Additional Store`**。VS 报「未能对 … 签名」且输出里出现
+`Done Adding Additional Store` 时，先看后续错误码。`SignedCode::Sign returned error: 0x800700C1`
+（`ERROR_BAD_EXE_FORMAT`）**不是证书问题**，而是 AppxSip 在生成代码完整性目录时发现包内某个 PE
+（exe/dll）的 Authenticode 证书目录损坏——常见于被裁剪过的第三方 DLL。定位方法：
+
+```powershell
+$env:APPXSIP_LOG = '1'
+signtool.exe sign /fd SHA256 /sha1 <证书指纹> <包路径>.msix
+# 输出中的 "File has malformed certificate: ..." 就是问题文件
+```
+
+本项目命中的是 310.8.2.0 社区 SF-v2 DLL（原先位于 `runtime\nr\Community-SF-v2-310.8-RTX20-RTX30-Series\nvngx_dlssnr.dll`，
+2026-11-14 精简后已移至根目录 `runtime\nvngx_dlssnr.dll`）：
+其 Security Directory 指向文件末尾之外（偏移 = 文件长度，仍有 10352 字节长度）。`tools/package.ps1`
+现在会在负载舞台完成后扫描所有 PE，只清除**确实损坏**的 8 字节证书目录项（等价于视其为未签名），
+合法签名不动，且只修改发布负载副本，`runtime\` 源文件保持不变。该步骤在生成 `SHA256SUMS.txt`
+之前执行，ZIP 解压运行不受影响。若使用 `-SkipStage` 复用旧负载，需重新跑一次 `package.ps1`。
+
+**包体异常翻倍**：早期版本从 `WapProjPackageFile` 推导入口前缀时把多个 item transform 结果用 `;`
+连接后传给 `GetDirectoryName`，导致入口工程的托管负载没被移除、同时又注入一批带 `%3B` 的乱码路径，
+每个文件被打包两份（536 个条目 / 1.95 GB）。现在只取第一个 `.exe` 项并对含分号的前缀直接报错；
+正常包应为约 281 个条目 / 约 1 GB。若仍看到 `%3B` 或体积翻倍，先清理 WAP 工程的
+`bin\`、`obj\`、`AppPackages\` 后重新生成。
+
+`PackageCertificateThumbprint` 是**本机证书指纹**，换机器后需在 VS 的「创建应用程序包」向导中重新选择
+证书（或用 `-p:PackageCertificateThumbprint=<指纹>` 覆盖）。已把 `GenerateTemporaryStoreCertificate`
+置为 `false`，避免每次打包往 `Cert:\CurrentUser\My` 追加一次性证书；本机该发布者名下已积累约 2100 张
+测试证书，如需清理请自行在证书管理器中确认后操作。
 
 MSIX 安装目录只读，因此打包运行时应用会把日志、`settings.json`、ONNX / TensorRT 缓存重定向到
 `%LOCALAPPDATA%\Dlss5VideoEnc`（MSIX 自动映射到包的私有 LocalCache）；ZIP / 开发运行仍写程序与 `runtime\`

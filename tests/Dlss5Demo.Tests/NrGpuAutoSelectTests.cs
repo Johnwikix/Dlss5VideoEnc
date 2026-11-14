@@ -43,8 +43,9 @@ internal static class NrGpuAutoSelectTests
         var versions = new Dictionary<string, Version>(StringComparer.OrdinalIgnoreCase);
         try
         {
-            // 镜像真实 runtime 布局：根目录是激活版（DemoPaths 层优先，SelectForSeries 不读它），
-            // nr\ 下变体含社区/原版混排（保留原版 310.8.0 覆盖同版本平局按路径升序的分支）。
+            // 合成的多版本夹具，不代表当前 runtime 布局：故意保留原版 / 310.8.0 / SF-v2
+            // 目录名以覆盖同版本平局按路径升序、代际匹配与低版本优先等分支。
+            // 根目录是激活版（DemoPaths 层优先，SelectForSeries 不读它）。
             Put("runtime/nvngx_dlssnr.dll", new Version(310, 8, 0, 0));
             Put("runtime/nr/NVIDIA-Original-310.9.16-RTX50-Series-Only/nvngx_dlssnr.dll", new Version(310, 9, 16, 0));
             Put("runtime/nr/Community-Patched-310.9.16-RTX20-RTX30-RTX40-Series/nvngx_dlssnr.dll", new Version(310, 9, 16, 0));

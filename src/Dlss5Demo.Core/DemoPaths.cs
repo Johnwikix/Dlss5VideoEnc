@@ -25,11 +25,12 @@ public static class DemoPaths
     /// <summary>
     /// 解析当前使用的 DLSS NR 运行库。
     ///
-    /// 运行库按显卡代际分发，不能把 RTX 20/30/40/50 的 DLL 混用。优先级为：
-    /// 显式路径、mods 覆盖、DLSS5_GPU_SERIES 对应子目录、runtime 根目录激活版、
+    /// 优先级为：显式路径、mods 覆盖、DLSS5_GPU_SERIES 对应子目录、runtime 根目录激活版、
     /// 按显卡代际自动匹配 nr\ 变体（版本低者优先）、nr\ 最低版本。
-    /// 完整转码必须从根目录加载（驱动 617.14 下 nr\ 深层路径在会话 teardown 会挂起），
-    /// 根目录应放置本机适配版本；nr\ 仅作版本库与显式手动选择。
+    /// 当前只保留两个社区补丁版：根目录 310.8.2.0（SF-v2，原标注 RTX 20/30，本机
+    /// 实测可在 RTX 50 运行），nr\ 下 310.9.16.0（原标注 RTX 20/30/40）。
+    /// 早期驱动 617.14 的 NGX teardown 死锁已由宿主的工作线程 + 3 秒看门狗修复，
+    /// 因此 nr\ 深层路径也可用于完整转码；根目录仍优先，作为稳定的激活位。
     /// </summary>
     public static string RuntimeDllPath => FindDlssRuntimeDll();
     public static string? RuntimeProfile => ReadOptionalEnvironment("DLSS5_GPU_SERIES");
@@ -153,8 +154,8 @@ public static class DemoPaths
                 return Path.GetFullPath(suffixedCandidate);
         }
 
-        // 根目录是激活位：放本机显卡适配的版本，优先于代际匹配（nr\ 深层路径
-        // 在完整转码的会话 teardown 会挂起，见类注释）。
+        // 根目录是激活位：放本机显卡适配的版本，优先于代际匹配。驱动层 teardown
+        // 死锁已由宿主修复，nr\ 深层路径同样可用于完整转码（见类注释）。
         var rootDefault = Path.Combine(RuntimeDir, "nvngx_dlssnr.dll");
         if (File.Exists(rootDefault))
             return Path.GetFullPath(rootDefault);

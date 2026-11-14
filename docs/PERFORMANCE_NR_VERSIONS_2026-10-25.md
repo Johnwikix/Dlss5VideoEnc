@@ -1,5 +1,7 @@
 # 组合性能与 NR 版本选择验证
 
+> 注：文中 `runtime/nr/NVIDIA-Original-310.9.16-RTX50-Series-Only/nvngx_dlssnr.dll` 已于 2026-11-14 从项目移除，该路径不再可用。报告中的数值与哈希记录仅对当时的 DLL 有效；复现请改用 `runtime/nr/Community-Patched-310.9.16-RTX20-RTX30-RTX40-Series/nvngx_dlssnr.dll` 等现存社区版，结果可能不同。
+
 ## 变更与适用范围
 
 RIFE 原先在每个中间时刻重新转换整对输入。现在每对只准备一次六个 RGB 平面，后续只更新时间平面；重用 RunOptions，取消后仍等待在途推理完成。兼容路径使用 CUDA 上传/像素内核并交换上一帧缓冲，移除两个额外的 ONNX 像素转换会话。GPU 直通任务不再分配三份主机 RGBA 帧（4K 约 95 MiB，按分配大小计算，不是进程 RSS 测量）。
