@@ -2,6 +2,11 @@
 
 ## 2026-11-14
 
+- 新增 MSIX 发布：`packaging/Dlss5VideoEnc.Msix`（WAP 工程、清单、6 个磁贴图标）与 `tools/package-msix.ps1`（MakeAppx 命令行出包 + 可选测试证书签名）。两条路径共用 `tools/package.ps1` 的完整发布负载，注入 `Dlss5Demo.App\` 子目录并保留 `runtime\` 层级；`package.ps1` 新增 `-OutputName` / `-ReuseOutputDirectory` / `-NoZip`，默认时间戳目录 + ZIP 行为不变。
+- 适配 MSIX 只读安装目录：`DemoPaths` 通过包标识检测，把 Serilog 日志、`settings.json`、原生宿主日志及 ONNX / TensorRT 缓存重定向到 `%LOCALAPPDATA%\Dlss5VideoEnc`（可由 `DLSS5_DATA_DIR` 覆盖）；ZIP / 开发运行路径保持不变。日志目录不可写不再阻断启动。
+- WAP 工程在解决方案中补齐 `Build.0` 并配套 `Msix.NoDesktopBridge.targets`：VS 部署必需 `Build.0`（否则报 DEP1700 缺 `build.appxrecipe`），而检测不到 DesktopBridge targets 时由空目标接管，使 `dotnet build Dlss5VideoEnc.sln` 仍能成功（命令行会出现一条预期内的 NU1503 还原提示）。
+- 修复 VS 部署时舞台命令「"powershell.exe" ... 已退出，代码为 1」：根因是 `tools/package.ps1` / `package-msix.ps1` 为 UTF-8 **无 BOM**，Windows PowerShell 5.1 按 GBK 解码产生 6 / 7 处语法错误，脚本一行都未执行（现象是 `artifacts/msix/payload` 时间戳与内容完全不变）。两脚本改为 UTF-8 with BOM；并把 `OutputRoot.TrimEnd(char[])` 换成纯字符串 `-replace '[\\/]+$', ''`，消除 5.1 的方法重载风险。用真正的 WinPS 5.1 端到端复现：退出码 0、中文警告正常、产出含 FFmpeg / 5 份许可证的完整负载。PowerShell 7 默认按 UTF-8 读无 BOM 脚本，所以此前命令行验证未暴露该问题。
+- 修复 VS 部署链路：`tools/package.ps1` 的 `-ReuseOutputDirectory` 改为直接删除并重建目录（原管道 `Remove-Item` 绑定失败），移除 `Path.GetRelativePath` 以兼容 Windows PowerShell 5.1，新增 `-AllowGenericFfmpeg` 供 MSIX 本地调试；WAP 舞台默认改用系统自带 `powershell.exe`，并按显式 `MsixFfmpegDirectory` / `MsixRequireFrucVulkan` 决定是否严格校验 `fruc_vulkan`。
 - NR 模型默认改为 A（旧模型），覆盖 GUI、Core、CLI/autorun 及无效值回退。旧版保存的自动档首次升级迁移为 A；B 和后续主动选择的自动档保持。配置源生成序列化回归覆盖缺字段、一次迁移、显式 Auto/B 与重复加载。
 - 修复 MP4 编辑列表排除存储样本时的“解码提前结束”误报：容器帧数仅作进度估算，处理至正常 EOF 或显式帧数上限，编码和最终进度采用实际解码帧数。主机、VSR 编码、双遍和 CUDA RIFE 路径共用该规则，解码错误和零帧输入仍失败。原片登记 2100 帧、实际可播放 2099 帧，软件解码与 NVDEC 均完整输出 2099 帧。
 - 增加 NR 模型预设选择与持久化：自动／A 旧模型／B 轻量模型，GUI、CLI 和 autorun 均将预设传到原生 Feature 创建及光流资源重建。310.9.16 的 A 使用旧模型，自动与 B 使用轻量模型；310.8 只有旧模型。CLI 参数为 `--nr-preset auto|a|b`。

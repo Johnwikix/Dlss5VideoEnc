@@ -1,11 +1,15 @@
 using System.Text.Json;
+using Dlss5Demo.Core;
 
 namespace Dlss5Demo.App;
 
-/// <summary>settings.json 持久化：文件在程序根目录，损坏时回退默认值而不是崩溃。</summary>
+/// <summary>
+/// settings.json 持久化：默认在程序根目录；MSIX 打包运行时由 DemoPaths
+/// 重定向到可写数据目录。损坏或不可写时回退默认值而不是崩溃。
+/// </summary>
 internal static class AppSettingsStore
 {
-    private static readonly string SettingsPath = Path.Combine(AppContext.BaseDirectory, "settings.json");
+    private static readonly string SettingsPath = DemoPaths.SettingsPath;
 
     public static AppSettings Load()
     {

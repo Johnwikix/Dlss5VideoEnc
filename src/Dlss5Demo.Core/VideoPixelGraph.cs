@@ -29,7 +29,7 @@ internal static class VideoPixelGraph
     private static string Save(byte[] bytes, CancellationToken ct)
     {
         ct.ThrowIfCancellationRequested();
-        string directory = Path.Combine(DemoPaths.RuntimeDir, "Cache", "RifePixels");
+        string directory = Path.Combine(DemoPaths.CacheDir, "RifePixels");
         Directory.CreateDirectory(directory);
         string hash = Convert.ToHexString(SHA256.HashData(bytes));
         string path = Path.Combine(directory, hash + ".onnx");

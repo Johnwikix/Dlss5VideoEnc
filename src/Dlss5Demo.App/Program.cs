@@ -43,22 +43,34 @@ internal static class Program
             .WithInterFont()
             .LogToTrace();
 
-    /// <summary>Serilog 落到程序根目录 logs/（按天滚动），并接住 Core 管线日志。</summary>
+    /// <summary>
+    /// Serilog 落到日志目录（按天滚动），并接住 Core 管线日志。MSIX 安装目录
+    /// 只读，DemoPaths.LogsDir 在打包运行时指向可写数据目录；即使该目录不可写，
+    /// 也不能让日志配置异常阻断启动。
+    /// </summary>
     private static void ConfigureLogging()
     {
-        var logDirectory = Path.Combine(AppContext.BaseDirectory, "logs");
-        Directory.CreateDirectory(logDirectory);
-        Log.Logger = new LoggerConfiguration()
-            .MinimumLevel.Debug()
-            .WriteTo.File(
-                Path.Combine(logDirectory, "app-.log"),
-                rollingInterval: RollingInterval.Day,
-                retainedFileCountLimit: 31,
-                fileSizeLimitBytes: 20 * 1024 * 1024,
-                rollOnFileSizeLimit: true,
-                shared: true,
-                outputTemplate: "{Timestamp:yyyy-MM-dd HH:mm:ss.fff} [{Level:u3}] {Message:lj}{NewLine}{Exception}")
-            .CreateLogger();
+        var logDirectory = DemoPaths.LogsDir;
+        try
+        {
+            Directory.CreateDirectory(logDirectory);
+            Log.Logger = new LoggerConfiguration()
+                .MinimumLevel.Debug()
+                .WriteTo.File(
+                    Path.Combine(logDirectory, "app-.log"),
+                    rollingInterval: RollingInterval.Day,
+                    retainedFileCountLimit: 31,
+                    fileSizeLimitBytes: 20 * 1024 * 1024,
+                    rollOnFileSizeLimit: true,
+                    shared: true,
+                    outputTemplate: "{Timestamp:yyyy-MM-dd HH:mm:ss.fff} [{Level:u3}] {Message:lj}{NewLine}{Exception}")
+                .CreateLogger();
+        }
+        catch (Exception error)
+        {
+            Log.Logger = new LoggerConfiguration().MinimumLevel.Warning().CreateLogger();
+            System.Diagnostics.Trace.WriteLine($"日志目录不可写 {logDirectory}: {error}");
+        }
         PipelineLog.Sink = message => Log.Information("{PipelineMessage}", message);
         Log.Information("进程启动: {Version}", typeof(Program).Assembly.GetName().Version?.ToString() ?? "unknown");
     }

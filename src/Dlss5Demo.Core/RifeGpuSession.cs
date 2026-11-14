@@ -104,7 +104,7 @@ internal sealed class RifeGpuSession : IDisposable
             var device = env.GetEpDevices().FirstOrDefault(d => d.HardwareDevice.Type == OrtHardwareDeviceType.GPU
                 && d.EpName.Equals("NvTensorRTRTXExecutionProvider", StringComparison.OrdinalIgnoreCase))
                 ?? throw new NotSupportedException("未找到 Windows ML NVIDIA TensorRT RTX GPU 提供程序。请先安装该硬件提供程序；不会回退 CPU 推理。");
-            var cache = Path.Combine(DemoPaths.RuntimeDir, "Cache", "TensorRT-RTX");
+            var cache = Path.Combine(DemoPaths.CacheDir, "TensorRT-RTX");
             Directory.CreateDirectory(cache);
             InferenceSession Session(string model, CancellationToken token)
             {

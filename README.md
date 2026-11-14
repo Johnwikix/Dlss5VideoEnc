@@ -254,6 +254,8 @@ runtime\50\nvngx_dlssnr.dll
 
 ## 发布打包
 
+### ZIP / 目录发布
+
 运行以下脚本会生成自带 .NET、FFmpeg、DLSS NR 和 RTX Video VSR 运行文件的 `win-x64` 目录和 ZIP。脚本读取本机 `runtime\`，这些 DLL 已被 Git 忽略：
 
 ```powershell
@@ -261,3 +263,63 @@ runtime\50\nvngx_dlssnr.dll
 ```
 
 输出位于 `dist\`，每次使用时间戳目录。若已经为 `win-x64` 还原过依赖，可追加 `-NoRestore`。
+脚本要求 FFmpeg 提供 `fruc_vulkan` 滤镜，并校验 RIFE 模型哈希、FFmpeg 共享库唯一性及许可证文件。
+
+### MSIX 发布
+
+新增 `packaging/Dlss5VideoEnc.Msix/`（Windows 应用程序打包工程，`.wapproj`）与 `tools/package-msix.ps1`。
+MSIX 负载与 ZIP 发布完全一致：由 `tools/package.ps1` 先产出完整发布目录（含 `runtime\`、FFmpeg、模型与许可证），
+再注入包布局的 `Dlss5Demo.App\` 子目录；清单 `Executable` 由 DesktopBridge 展开为该目录下的
+`Dlss5VideoEnc.exe`。因此前面的 FFmpeg 前置条件同样适用。
+
+命令行一键出包（推荐用于 CI 与无 Visual Studio 环境）：
+
+```powershell
+# 需要 PowerShell 7；makeappx.exe 由 Microsoft.Windows.SDK.BuildTools 或 Windows SDK 提供。
+pwsh -NoProfile -File .\tools\package-msix.ps1 -FfmpegDirectory G:\Tool\ffmpeg\bin -Version 0.1.0.0
+# 创建与清单 Publisher 匹配的本地测试证书并签名（证书仅在本机有效）。
+pwsh -NoProfile -File .\tools\package-msix.ps1 -FfmpegDirectory G:\Tool\ffmpeg\bin -CreateTestCertificate
+```
+
+产物为 `dist\Dlss5VideoEnc_<版本>_x64.msix`，布局与负载位于 `artifacts\msix\`（已忽略）。
+`-SkipStage` 可复用上次的 `artifacts\msix\payload`；`-MakeAppx` 可手工指定工具路径。
+
+Visual Studio 内打包：打开 `Dlss5VideoEnc.sln`，活动配置选 `Release|x64`（或 `Debug|x64`），
+右键 `packaging/Dlss5VideoEnc.Msix` → 生成，再 → 部署；设为启动项目可直接 F5 部署并启动。
+解决方案已为该工程同时配置 `Build.0` 与 `Deploy.0`。**缺少 `Build.0` 时「生成解决方案」会跳过
+WAP 工程**，部署就会因找不到 `bin\x64\Release\Dlss5VideoEnc.Msix.build.appxrecipe` 报
+`DEP1700`；若仍遇到该错误，先单独生成 WAP 工程，并在「配置管理器」确认它的「生成」已勾选、
+活动平台为 x64。
+
+`dotnet build Dlss5VideoEnc.sln` 仍可用：检测不到 VS 的 DesktopBridge targets 时，打包工程
+导入 `Msix.NoDesktopBridge.targets` 提供空目标并跳过打包，同时输出一条 `NU1503`
+（NuGet 跳过 WAP 还原）——这是命令行构建的预期提示，VS 构建不会出现。真正出包请用
+`tools/package-msix.ps1`；`dotnet build` 不能替代 VS 的 `MSBuild.exe` 构建 `.wapproj`。
+
+VS 构建时 `StageMsixPayload` 会调用 `tools/package.ps1`：**清空并重建**
+`artifacts\msix\payload`，执行 self-contained publish，再复制 `runtime\`、FFmpeg 与许可证，
+因此每次生成都能带上最新代码。默认使用系统自带的 Windows PowerShell 5.1，不依赖 PATH 中的
+`pwsh`。本机若没有带 `fruc_vulkan` 的定制 FFmpeg，VS 部署会放宽该校验并在输出中给出警告
+（此包仅供本地调试，补帧功能不可用）；正式出包请指定 `-p:MsixFfmpegDirectory=<定制FFmpeg目录>`
+或 `-p:MsixRequireFrucVulkan=true`。`tools/package.ps1` 自身默认仍严格校验，不影响 ZIP 发布。
+
+`tools/*.ps1` 含中文注释与字符串，被 WinPS 5.1 调用时必须保存为 **UTF-8 with BOM**：5.1 会把无 BOM
+的 UTF-8 脚本按 GBK 解码并产生语法错误，脚本一行都未执行就退出 1。若舞台命令报「已退出，代码为 1」
+且 `artifacts\msix\payload` 没有变化，先检查 `tools/package.ps1` 与 `tools/package-msix.ps1` 的 BOM。
+
+可用属性（用于命令行 `MSBuild.exe <wapproj> -p:...`；VS 内可直接改 wapproj 顶部默认值）：
+`-p:SkipMsixPayloadStage=true`（复用上次负载，跳过舞台）、`-p:MsixFfmpegDirectory=<dir>`、
+`-p:MsixRequireFrucVulkan=true`、`-p:MsixPowerShell=pwsh`、
+`-p:MsixEntryPayloadPrefix=<dir>`（VS 升级后入口子目录变化时覆盖）。
+
+签名与安装：清单 `Publisher` 为 `CN=CF259542-70C0-4852-9523-066A80212473`，证书 Subject 必须与之完全一致。
+未签名包不能直接安装；使用 `-CreateTestCertificate` 生成证书后，按脚本提示把 `.cer` 导入
+「受信任的根证书颁发机构」，再执行 `Add-AppxPackage -Path <包路径>`。
+
+MSIX 安装目录只读，因此打包运行时应用会把日志、`settings.json`、ONNX / TensorRT 缓存重定向到
+`%LOCALAPPDATA%\Dlss5VideoEnc`（MSIX 自动映射到包的私有 LocalCache）；ZIP / 开发运行仍写程序与 `runtime\`
+目录，行为不变。可用 `DLSS5_DATA_DIR` 显式指定数据目录。图标由
+`tools/generate-msix-assets.py` 从 `Assets/dlss5-video-enc.svg` 生成（需要 Pillow）。
+
+> 已知边界：MSIX 含全部 NVIDIA 运行库与 RIFE 模型，完整发布负载约 1.5 GB，压缩后 MSIX 约 1 GB 量级；
+> 第三方组件的许可条款仍以 `licenses\` 与 `runtime\LICENSE.txt` 为准。

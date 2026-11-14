@@ -29,6 +29,9 @@ third_party/
 download/
 build/
 dist/
+# MSIX 打包中间产物（dist/ 已在上面忽略，包内文件不入库）
+artifacts/
+*.assets.cache
 
 # 上游参考源码（只读克隆）
 _ref/

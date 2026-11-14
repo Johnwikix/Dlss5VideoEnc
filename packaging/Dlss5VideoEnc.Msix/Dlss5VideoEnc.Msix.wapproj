@@ -1,0 +1,222 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  MSIX 打包工程（Windows Application Packaging Project）。结构与
+  G:\SoftwareProject\Avalonia\EhviewerDownloadReader 的 WAP 工程一致。
+
+  与参考工程的差别：本应用不是 NativeAOT，且发布负载不仅是 exe，还包含
+  runtime\（DLSS NR / RTX Video / RIFE / FFmpeg 原生库）、licenses\ 与
+  FFmpeg EXE。因此：
+
+    StageMsixPayload   在 DesktopBridge 组装负载（_ConvertItems）之前调用
+                       tools/package.ps1 产出完整发布目录 artifacts/msix/payload
+    InjectMsixPayload  在 _ConvertItems 之后移除入口工程的托管构建负载，
+                       把发布目录按原有相对层级（%(RecursiveDir)）注入同一个
+                       子目录。清单生成步骤会把入口应用的 Executable 展开为
+                       <入口工程名>\Dlss5VideoEnc.exe，注入位置必须与它对齐。
+
+  DesktopBridge 契约（已在 VS 18 的 Microsoft.DesktopBridge.targets 与
+  参考工程真实 PackageLayout 产物上核对）：
+    - 布局根 = obj\<platform>\<config>\PackageLayout
+    - WapProjPackageFile / UploadWapProjPackageFile 驱动清单生成与打包
+    - _FileToCopy / _UploadFileToCopy 驱动布局拷贝：ItemSpec = 源绝对路径，
+      TargetPath = 包内相对路径，CopyToTargetPath = 布局内绝对路径
+    - _ConvertItems -> _CopyPackageFiles，注入必须落在两者之间
+
+  VS 中右键本工程"生成/部署"或设为启动项目 F5 部署并启动打包后的应用。
+  命令行构建必须使用 VS 自带 MSBuild.exe（DesktopBridge targets 只随 VS 安装），
+  dotnet build 无法真正构建 .wapproj；命令行出包请用 tools/package-msix.ps1。
+
+  重要：Dlss5VideoEnc.sln 中本工程必须带 Build.0。缺少它时 VS 的"生成解决
+  方案"会跳过 WAP 工程，部署时找不到 bin\<platform>\<config>\*.build.appxrecipe
+  并报 DEP1700。为避免这份 sln 同时被 `dotnet build` 使用时出现 MSB4019，
+  检测不到 DesktopBridge targets 会导入 Msix.NoDesktopBridge.targets 空目标。
+
+  常用开关：
+    -p:SkipMsixPayloadStage=true     复用 artifacts/msix/payload 上次产物
+    -p:MsixFfmpegDirectory=<dir>     指定带 fruc_vulkan 的 FFmpeg 目录（同时恢复严格校验）
+    -p:MsixRequireFrucVulkan=true    即使未指定目录也强制校验 fruc_vulkan
+    -p:MsixPowerShell=pwsh           改用 PowerShell 7（默认用系统自带 5.1）
+    -p:MsixEntryPayloadPrefix=<dir>  覆盖入口负载子目录（清单展开变化时）
+-->
+<Project ToolsVersion="15.0" DefaultTargets="Build" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <PropertyGroup Condition="'$(VisualStudioVersion)' == '' or '$(VisualStudioVersion)' &lt; '15.0'">
+    <VisualStudioVersion>15.0</VisualStudioVersion>
+  </PropertyGroup>
+
+  <ItemGroup Label="ProjectConfigurations">
+    <ProjectConfiguration Include="Debug|AnyCPU">
+      <Configuration>Debug</Configuration>
+      <Platform>AnyCPU</Platform>
+    </ProjectConfiguration>
+    <ProjectConfiguration Include="Release|AnyCPU">
+      <Configuration>Release</Configuration>
+      <Platform>AnyCPU</Platform>
+    </ProjectConfiguration>
+    <ProjectConfiguration Include="Debug|x64">
+      <Configuration>Debug</Configuration>
+      <Platform>x64</Platform>
+    </ProjectConfiguration>
+    <ProjectConfiguration Include="Release|x64">
+      <Configuration>Release</Configuration>
+      <Platform>x64</Platform>
+    </ProjectConfiguration>
+  </ItemGroup>
+
+  <PropertyGroup>
+    <WapProjPath Condition="'$(WapProjPath)'==''">$(MSBuildExtensionsPath)\Microsoft\DesktopBridge\</WapProjPath>
+    <!-- 显式传 -p:WapProjPath=... 时可能不带尾斜杠，统一补齐后用无额外
+         反斜杠的形式拼接，避免 Exists() / Import 依赖双反斜杠规范化。 -->
+    <WapProjPath Condition="!HasTrailingSlash('$(WapProjPath)')">$(WapProjPath)\</WapProjPath>
+    <!-- DesktopBridge targets 只随 Visual Studio 安装。sln 里 WAP 工程必须有
+         Build.0 才能被 VS 部署（否则 DEP1700：找不到 build.appxrecipe），但
+         `dotnet build Dlss5VideoEnc.sln` 也会因此尝试构建本工程。检测不到
+         targets 时导入空目标文件，让命令行构建优雅跳过打包，而不是 MSB4019。 -->
+    <MsixDesktopBridgeAvailable Condition="Exists('$(WapProjPath)Microsoft.DesktopBridge.props') And Exists('$(WapProjPath)Microsoft.DesktopBridge.targets')">true</MsixDesktopBridgeAvailable>
+  </PropertyGroup>
+  <Import Project="$(WapProjPath)Microsoft.DesktopBridge.props" Condition="'$(MsixDesktopBridgeAvailable)' == 'true'" />
+
+  <PropertyGroup>
+    <ProjectGuid>b7f0d2c4-3a91-4e6b-9f27-5c8e1d4a6b02</ProjectGuid>
+    <TargetPlatformVersion>10.0.26100.0</TargetPlatformVersion>
+    <TargetPlatformMinVersion>10.0.17763.0</TargetPlatformMinVersion>
+    <DefaultLanguage>zh-CN</DefaultLanguage>
+    <!-- 参考工程使用同一测试证书主体；未签名包需开发者模式旁加载。 -->
+    <AppxPackageSigningEnabled>False</AppxPackageSigningEnabled>
+    <GenerateTemporaryStoreCertificate>$(AppxPackageSigningEnabled)</GenerateTemporaryStoreCertificate>
+    <!-- NU1503：dotnet CLI 下没有 DesktopBridge targets，NuGet 会跳过本工程的
+         还原并警告。VS 走真实 targets 时不会出现；命令行由
+         Msix.NoDesktopBridge.targets 提供空目标，故该提示是预期行为。 -->
+    <NoWarn>$(NoWarn);NU1702;NU1701;NU1503</NoWarn>
+    <GenerateAppInstallerFile>false</GenerateAppInstallerFile>
+    <AppxPackageSigningTimestampDigestAlgorithm>SHA256</AppxPackageSigningTimestampDigestAlgorithm>
+    <AppxAutoIncrementPackageRevision>True</AppxAutoIncrementPackageRevision>
+    <GenerateTestArtifacts>true</GenerateTestArtifacts>
+    <AppxBundlePlatforms>x64</AppxBundlePlatforms>
+    <HoursBetweenUpdateChecks>0</HoursBetweenUpdateChecks>
+    <EntryPointProjectUniqueName>..\..\src\Dlss5Demo.App\Dlss5Demo.App.csproj</EntryPointProjectUniqueName>
+    <WapAlwaysBuildDependentProjects>true</WapAlwaysBuildDependentProjects>
+  </PropertyGroup>
+
+  <!-- 负载约 1 GB 量级，旁加载只需单个 .msix；Always 会额外复制出 .msixbundle。 -->
+  <PropertyGroup>
+    <AppxBundle>Never</AppxBundle>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <AppxManifest Include="Package.appxmanifest">
+      <SubType>Designer</SubType>
+    </AppxManifest>
+  </ItemGroup>
+  <ItemGroup>
+    <Content Include="Assets\*.png" />
+  </ItemGroup>
+
+  <Import Project="$(WapProjPath)Microsoft.DesktopBridge.targets" Condition="'$(MsixDesktopBridgeAvailable)' == 'true'" />
+  <Import Project="$(MSBuildThisFileDirectory)Msix.NoDesktopBridge.targets" Condition="'$(MsixDesktopBridgeAvailable)' != 'true'" />
+
+  <!-- 本仓库没有 Directory.Packages.props（CPM），因此必须写显式版本。
+       参考工程启用 CPM，其 wapproj 不能写 Version；移植时注意该差异。 -->
+  <ItemGroup>
+    <PackageReference Include="Microsoft.Windows.SDK.BuildTools" Version="10.0.28000.2957" PrivateAssets="all" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\Dlss5Demo.App\Dlss5Demo.App.csproj">
+      <!-- 托管构建产物会被 InjectMsixPayload 移除；保留此引用是为了维持 VS
+           标准的依赖顺序与部署语义。 -->
+      <AdditionalProperties>BuildingInsideVisualStudio=false;BuildProjectReferences=true</AdditionalProperties>
+    </ProjectReference>
+  </ItemGroup>
+
+  <Target Name="RestoreMsixProjectReferences"
+          BeforeTargets="SetProjectReferenceProperties"
+          Condition="'$(DesignTimeBuild)' != 'true' and '$(MsixDesktopBridgeAvailable)' == 'true'">
+    <MSBuild Projects="@(ProjectReference)" Targets="Restore"
+             Properties="Configuration=$(Configuration);Platform=$(Platform);RuntimeIdentifier=win-x64;SelfContained=true;MSBuildIsRestoring=true" />
+  </Target>
+
+  <PropertyGroup>
+    <MsixRepoRoot>$([System.IO.Path]::GetFullPath('$(MSBuildThisFileDirectory)..\..'))</MsixRepoRoot>
+    <PayloadDir>$([System.IO.Path]::Combine($(MsixRepoRoot), 'artifacts', 'msix', 'payload'))</PayloadDir>
+    <PayloadLayoutRoot>$([System.IO.Path]::Combine($(MSBuildProjectDirectory), 'obj', '$(Platform)', '$(Configuration)', 'PackageLayout'))</PayloadLayoutRoot>
+    <!-- DesktopBridge 把入口负载放进以入口工程命名的子目录。当前工程名是
+         Dlss5Demo.App（AssemblyName 为 Dlss5VideoEnc）；运行时会用
+         $(EntryPointExe) 的目录部分覆盖这个默认值。 -->
+    <MsixEntryPayloadPrefix>Dlss5Demo.App\</MsixEntryPayloadPrefix>
+    <MsixStageScript>$([System.IO.Path]::Combine($(MsixRepoRoot), 'tools', 'package.ps1'))</MsixStageScript>
+    <MsixStageOutputRoot>$([System.IO.Path]::Combine($(MsixRepoRoot), 'artifacts', 'msix'))</MsixStageOutputRoot>
+    <!-- VS 的 Exec 走 cmd.exe；Windows PowerShell 5.1 一定在 System32，不依赖
+         额外安装的 PowerShell 7（pwsh）是否在 PATH。若已安装并希望使用 PS7，
+         可传 -p:MsixPowerShell=pwsh。
+         注意：tools/package.ps1 与 package-msix.ps1 必须保存为 UTF-8 with BOM。
+         WinPS 5.1 会按 GBK 解码无 BOM 的 UTF-8 脚本，中文注释/字符串会产生
+         语法错误并直接退出 1（表现为舞台命令失败、artifacts/msix/payload 完全未更新）。 -->
+    <MsixPowerShell Condition="'$(MsixPowerShell)' == ''">powershell.exe</MsixPowerShell>
+    <_MsixFfmpegArgument Condition="'$(MsixFfmpegDirectory)' != ''"> -FfmpegDirectory &quot;$(MsixFfmpegDirectory)&quot;</_MsixFfmpegArgument>
+    <!-- 本机尚无带 fruc_vulkan 的定制 FFmpeg。未显式指定 MsixFfmpegDirectory 时，
+         VS 本地部署允许通用 FFmpeg 并在构建输出中警告（补帧功能不可用）；
+         指定目录或设 -p:MsixRequireFrucVulkan=true 即恢复严格校验。 -->
+    <MsixRequireFrucVulkan Condition="'$(MsixRequireFrucVulkan)' == '' and '$(MsixFfmpegDirectory)' != ''">true</MsixRequireFrucVulkan>
+    <MsixRequireFrucVulkan Condition="'$(MsixRequireFrucVulkan)' == ''">false</MsixRequireFrucVulkan>
+    <_MsixGenericFfmpegArgument Condition="'$(MsixRequireFrucVulkan)' != 'true'"> -AllowGenericFfmpeg</_MsixGenericFfmpegArgument>
+  </PropertyGroup>
+
+  <!-- 完整发布：tools/package.ps1 会校验并携带 runtime、FFmpeg、模型与许可证。
+       -NoZip 只跳过压缩，MSIX 本身就是分发容器；-ReuseOutputDirectory 让
+       固定负载目录可重复构建。 -->
+  <Target Name="StageMsixPayload"
+          BeforeTargets="_ConvertItems"
+          Condition="'$(DesignTimeBuild)' != 'true' and '$(MsixDesktopBridgeAvailable)' == 'true' and '$(SkipMsixPayloadStage)' != 'true'">
+    <Message Importance="high" Text="MSIX: staging full publish payload -&gt; $(PayloadDir) (Configuration=$(Configuration))" />
+    <Exec WorkingDirectory="$(MsixRepoRoot)"
+          Command="&quot;$(MsixPowerShell)&quot; -NoProfile -ExecutionPolicy Bypass -File &quot;$(MsixStageScript)&quot; -Configuration $(Configuration) -OutputRoot &quot;$(MsixStageOutputRoot)&quot; -OutputName payload -ReuseOutputDirectory -NoZip$(_MsixFfmpegArgument)$(_MsixGenericFfmpegArgument)" />
+  </Target>
+
+  <!-- 替换入口负载。%(RecursiveDir) 保留 runtime\nr\... 等子目录，清单
+       Executable 展开后的路径与之保持一致。 -->
+  <Target Name="InjectMsixPayload"
+          AfterTargets="_ConvertItems"
+          Condition="'$(DesignTimeBuild)' != 'true' and '$(MsixDesktopBridgeAvailable)' == 'true'">
+    <PropertyGroup>
+      <!-- 优先从 DesktopBridge 实际生成的入口负载集合推导前缀，避免依赖
+           $(EntryPointExe) 是否只带文件名；随后回退到 EntryPointExe，
+           最后回退到可覆盖的 MsixEntryPayloadPrefix。 -->
+      <_MsixEntryExeTargetPath>@(WapProjPackageFile->WithMetadataValue('Filename','Dlss5VideoEnc')->'%(TargetPath)')</_MsixEntryExeTargetPath>
+      <_MsixEntryExeDirectory>$([System.IO.Path]::GetDirectoryName('$(_MsixEntryExeTargetPath)'))</_MsixEntryExeDirectory>
+      <_MsixEntryExeDirectory Condition="'$(_MsixEntryExeDirectory)' == ''">$([System.IO.Path]::GetDirectoryName('$(EntryPointExe)'))</_MsixEntryExeDirectory>
+      <EntryPayloadPrefix Condition="'$(EntryPayloadPrefix)' == '' and '$(_MsixEntryExeDirectory)' != ''">$(_MsixEntryExeDirectory)\</EntryPayloadPrefix>
+      <EntryPayloadPrefix Condition="'$(EntryPayloadPrefix)' == ''">$(MsixEntryPayloadPrefix)</EntryPayloadPrefix>
+    </PropertyGroup>
+    <Message Importance="high" Text="MSIX: EntryPointExe=$(EntryPointExe), entry exe target=$(_MsixEntryExeTargetPath), payload prefix=$(EntryPayloadPrefix)" />
+
+    <ItemGroup>
+      <_MsixPayloadFile Include="$(PayloadDir)\**\*" Exclude="$(PayloadDir)\**\*.pdb" />
+      <_MsixEntryManagedPayload Include="@(WapProjPackageFile)"
+                                Condition="$([System.String]::Copy('%(WapProjPackageFile.TargetPath)').StartsWith('$(EntryPayloadPrefix)'))" />
+    </ItemGroup>
+
+    <ItemGroup Condition="'@(_MsixPayloadFile)' != '' and '$(EntryPayloadPrefix)' != ''">
+      <WapProjPackageFile Remove="@(_MsixEntryManagedPayload)" />
+      <UploadWapProjPackageFile Remove="@(_MsixEntryManagedPayload)" />
+      <_FileToCopy Remove="@(_MsixEntryManagedPayload)" />
+      <_UploadFileToCopy Remove="@(_MsixEntryManagedPayload)" />
+
+      <WapProjPackageFile Include="%(_MsixPayloadFile.Identity)">
+        <TargetPath>$(EntryPayloadPrefix)%(RecursiveDir)%(Filename)%(Extension)</TargetPath>
+      </WapProjPackageFile>
+      <UploadWapProjPackageFile Include="%(_MsixPayloadFile.Identity)">
+        <TargetPath>$(EntryPayloadPrefix)%(RecursiveDir)%(Filename)%(Extension)</TargetPath>
+      </UploadWapProjPackageFile>
+      <_FileToCopy Include="%(_MsixPayloadFile.Identity)">
+        <TargetPath>$(EntryPayloadPrefix)%(RecursiveDir)%(Filename)%(Extension)</TargetPath>
+        <CopyToTargetPath>$([System.IO.Path]::Combine($(PayloadLayoutRoot), '$(EntryPayloadPrefix)', '%(RecursiveDir)', '%(Filename)%(Extension)'))</CopyToTargetPath>
+      </_FileToCopy>
+      <_UploadFileToCopy Include="%(_MsixPayloadFile.Identity)">
+        <TargetPath>$(EntryPayloadPrefix)%(RecursiveDir)%(Filename)%(Extension)</TargetPath>
+        <CopyToTargetPath>$([System.IO.Path]::Combine($(PayloadLayoutRoot), '$(EntryPayloadPrefix)', '%(RecursiveDir)', '%(Filename)%(Extension)'))</CopyToTargetPath>
+      </_UploadFileToCopy>
+    </ItemGroup>
+    <Message Condition="'@(_MsixPayloadFile)' == ''" Importance="high"
+             Text="MSIX: payload not found at $(PayloadDir); packaging managed build output instead. Run package.ps1 or package-msix.ps1 first, or drop -p:SkipMsixPayloadStage=true." />
+  </Target>
+</Project>

@@ -1,9 +1,15 @@
-[CmdletBinding()]
+﻿[CmdletBinding()]
 param(
     [ValidateSet('Debug', 'Release')]
     [string]$Configuration = 'Release',
     [string]$OutputRoot = '',
     [string]$FfmpegDirectory = '',
+    # MSIX 打包需要固定、可重复使用的负载目录；默认行为（时间戳目录 + ZIP）不变。
+    [string]$OutputName = '',
+    [switch]$NoZip,
+    [switch]$ReuseOutputDirectory,
+    # MSIX 的 VS 本地部署允许先用通用 FFmpeg 出包调试；正式发布必须严格校验。
+    [switch]$AllowGenericFfmpeg,
     [switch]$NoRestore
 )
 
@@ -59,19 +65,46 @@ $FfmpegDirectory = (Resolve-Path -LiteralPath $FfmpegDirectory).Path
 foreach ($name in @('ffmpeg.exe', 'ffprobe.exe')) { Assert-File (Join-Path $FfmpegDirectory $name) }
 $filters = & (Join-Path $FfmpegDirectory 'ffmpeg.exe') -hide_banner -filters 2>&1 | Out-String
 if ($LASTEXITCODE -ne 0 -or $filters -notmatch '\bfruc_vulkan\b') {
-    throw '打包的 FFmpeg 必须包含 fruc_vulkan，请使用支持 NVIDIA Vulkan 光流的 master shared 构建。'
+    if ($AllowGenericFfmpeg) {
+        Write-Warning 'FFmpeg 未包含 fruc_vulkan：此包仅供本地部署调试，补帧功能不可用。正式发布请使用支持 NVIDIA Vulkan 光流的 master shared 构建。'
+    } else {
+        throw '打包的 FFmpeg 必须包含 fruc_vulkan，请使用支持 NVIDIA Vulkan 光流的 master shared 构建。'
+    }
 }
 
 if ([string]::IsNullOrWhiteSpace($OutputRoot)) { $OutputRoot = Join-Path $repoRoot 'dist' }
 $OutputRoot = [IO.Path]::GetFullPath($OutputRoot)
-$packageName = 'Dlss5VideoEnc-win-x64-' + (Get-Date -Format 'yyyyMMdd-HHmmss-fff')
+if ([string]::IsNullOrWhiteSpace($OutputName)) {
+    $packageName = 'Dlss5VideoEnc-win-x64-' + (Get-Date -Format 'yyyyMMdd-HHmmss-fff')
+} elseif ($OutputName -match '[\\/]') {
+    throw '-OutputName 只能是目录名，不能包含路径分隔符。'
+} else {
+    $packageName = $OutputName
+}
 $packageDirectory = Join-Path $OutputRoot $packageName
 $archivePath = Join-Path $OutputRoot ($packageName + '.zip')
-# Every run gets a new directory. Existing releases and source files are never removed.
-if ((Test-Path -LiteralPath $packageDirectory) -or (Test-Path -LiteralPath $archivePath)) {
-    throw "输出已存在，请重试：$packageDirectory"
+if ($ReuseOutputDirectory) {
+    # 复用目录会清空内容，限定在 artifacts\msix 专用产物目录，避免误删 dist 发布物。
+    # 用纯字符串操作去掉尾部分隔符，避免 Windows PowerShell 5.1 对
+    # String.TrimEnd(params char[]) 的 string -> char 重载解析差异。
+    $normalizedOutputRoot = $OutputRoot -replace '[\\/]+$', ''
+    if (-not $normalizedOutputRoot.EndsWith('artifacts\msix', [StringComparison]::OrdinalIgnoreCase)) {
+        throw '-ReuseOutputDirectory 仅允许 -OutputRoot 指向 artifacts\msix。'
+    }
+    if (Test-Path -LiteralPath $packageDirectory -PathType Container) {
+        # 直接删除整个目录再重建：Get-ChildItem | Remove-Item 的管道绑定在部分
+        # PowerShell 版本上会因 FileInfo/DirectoryInfo 无 Path 属性而失败。
+        Remove-Item -LiteralPath $packageDirectory -Recurse -Force
+    }
+    New-Item -ItemType Directory -Path $packageDirectory -Force | Out-Null
+    if (Test-Path -LiteralPath $archivePath -PathType Leaf) { Remove-Item -LiteralPath $archivePath -Force }
+} else {
+    # Every run gets a new directory. Existing releases and source files are never removed.
+    if ((Test-Path -LiteralPath $packageDirectory) -or (Test-Path -LiteralPath $archivePath)) {
+        throw "输出已存在，请重试：$packageDirectory"
+    }
+    New-Item -ItemType Directory -Path $packageDirectory -Force | Out-Null
 }
-New-Item -ItemType Directory -Path $packageDirectory -Force | Out-Null
 
 Write-Host '[package] 构建并发布 Windows x64 应用（自带 .NET 运行时）…'
 $publishArgs = @(
@@ -94,7 +127,9 @@ foreach ($name in $rifeNames) { Copy-Item -LiteralPath (Join-Path $runtimeSource
 Copy-Item -LiteralPath (Join-Path $repoRoot 'docs\licenses\RIFE-MIT-LICENSE.txt') -Destination $licenseDestination
 # Mirror every installed NR variant; no version/GPU-series list is compiled into the package.
 foreach ($dll in $nrVariants) {
-    $relative = [IO.Path]::GetRelativePath($runtimeSource, $dll.FullName)
+    # Windows PowerShell 5.1 的 .NET Framework 没有 Path.GetRelativePath；
+    # 用字符串截取 + 去掉前导分隔符，避免在 5.1 下做 string -> char[] 的重载解析。
+    $relative = $dll.FullName.Substring($runtimeSource.Length) -replace '^[\\/]+', ''
     $destination = Join-Path $runtimeDestination $relative
     New-Item -ItemType Directory -Path (Split-Path -Parent $destination) -Force | Out-Null
     Copy-Item -LiteralPath $dll.FullName -Destination $destination -Force
@@ -168,8 +203,11 @@ $manifest = @(Get-ChildItem -LiteralPath $packageDirectory -Recurse -File | Sort
 })
 [IO.File]::WriteAllLines((Join-Path $packageDirectory 'SHA256SUMS.txt'), $manifest, [Text.UTF8Encoding]::new($false))
 
-Write-Host '[package] 压缩发布目录…'
-Add-Type -AssemblyName System.IO.Compression.FileSystem
-[IO.Compression.ZipFile]::CreateFromDirectory($packageDirectory, $archivePath, [IO.Compression.CompressionLevel]::Optimal, $false)
+if (-not $NoZip) {
+    Write-Host '[package] 压缩发布目录…'
+    Add-Type -AssemblyName System.IO.Compression.FileSystem
+    [IO.Compression.ZipFile]::CreateFromDirectory($packageDirectory, $archivePath, [IO.Compression.CompressionLevel]::Optimal, $false)
+    Write-Host "[package] ZIP：$archivePath"
+}
 Write-Host "[package] 发布目录：$packageDirectory"
-Write-Host "[package] ZIP：$archivePath"
+Write-Host "[package] PAYLOAD=$packageDirectory"

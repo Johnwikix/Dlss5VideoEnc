@@ -1,0 +1,39 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  非 Visual Studio 的 MSBuild（dotnet CLI）没有 DesktopBridge targets。
+
+  Dlss5VideoEnc.sln 里 WAP 工程必须带 Build.0，VS 部署才会先构建它并生成
+  bin\<platform>\<config>\Dlss5VideoEnc.Msix.build.appxrecipe；但同一份 sln
+  也会被 `dotnet build` 使用。这里提供最小空目标，让命令行构建跳过打包而不
+  报 MSB4019 / MSB4057，同时输出提示，避免误以为已经产出 MSIX。
+
+  真正的出包入口：
+    - Visual Studio：右键 WAP 工程 → 部署 / 发布 → 创建应用程序包
+    - 命令行：tools\package-msix.ps1（PowerShell 7 + MakeAppx）
+-->
+<Project ToolsVersion="15.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <!-- 命令行构建下本工程不参与 NuGet 还原（VS 走真实 DesktopBridge targets，
+       这里有 BuildTools 的 PackageReference，仍会正常还原）。 -->
+  <PropertyGroup>
+    <RestoreProjectStyle>None</RestoreProjectStyle>
+  </PropertyGroup>
+  <Target Name="Restore" />
+  <Target Name="Build">
+    <Message Importance="high"
+             Text="MSIX: 当前 MSBuild 未找到 DesktopBridge targets，已跳过打包工程。请在 Visual Studio 中生成/部署，或使用 tools\package-msix.ps1 命令行出包。" />
+  </Target>
+  <Target Name="Rebuild" DependsOnTargets="Build" />
+  <Target Name="Clean" />
+  <Target Name="Publish" DependsOnTargets="Build" />
+  <Target Name="Deploy" DependsOnTargets="Build" />
+  <!-- solution metaproj 会查询这些目标来解析工程引用。 -->
+  <Target Name="GetTargetPath" />
+  <Target Name="GetCopyToOutputDirectoryItems" />
+  <Target Name="GetNativeManifest" />
+  <!-- NuGet 的 solution restore 会向每个工程索取还原图；返回空集合即可让
+       命令行构建不报 NU1503「跳过还原 / 缺少还原所需目标」。VS 构建走的是
+       真正的 DesktopBridge targets，不受这里影响。 -->
+  <Target Name="_GenerateRestoreGraphProjectEntry" Returns="@(_RestoreGraphEntry)" />
+  <Target Name="_GenerateRestoreGraph" Returns="@(_RestoreGraphEntry)" />
+  <Target Name="GenerateRestoreGraphFile" />
+</Project>

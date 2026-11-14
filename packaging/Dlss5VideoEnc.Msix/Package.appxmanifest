@@ -1,0 +1,56 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  WAP 工程的清单。负载由 InjectMsixPayload 注入到 <入口工程名>\ 子目录。
+  Executable/EntryPoint 使用 DesktopBridge 占位符：打包时按入口工程展开为
+  Dlss5Demo.App\Dlss5VideoEnc.exe；写字面路径会被清单生成步骤改写，导致
+  "清单引用了不属于负载的文件"。ProcessorArchitecture 由打包流程写入，
+  不在清单里固定。
+
+  tools/package-msix.ps1 复用本文件，把两个占位符替换为实际值并写入
+  AppxManifest.xml 后交给 MakeAppx。
+-->
+<Package
+  xmlns="http://schemas.microsoft.com/appx/manifest/foundation/windows10"
+  xmlns:uap="http://schemas.microsoft.com/appx/manifest/uap/windows10"
+  xmlns:rescap="http://schemas.microsoft.com/appx/manifest/foundation/windows10/restrictedcapabilities"
+  IgnorableNamespaces="uap rescap">
+
+  <Identity Name="Dlss5VideoEnc.Local"
+            Publisher="CN=CF259542-70C0-4852-9523-066A80212473"
+            Version="0.1.0.0" />
+
+  <Properties>
+    <DisplayName>Dlss5VideoEnc</DisplayName>
+    <PublisherDisplayName>Dlss5VideoEnc</PublisherDisplayName>
+    <Logo>Assets\StoreLogo.png</Logo>
+    <Description>Avalonia 视频转码工作台：DLSS NR、RTX Video 超分与 GPU 补帧</Description>
+  </Properties>
+
+  <Dependencies>
+    <TargetDeviceFamily Name="Windows.Desktop" MinVersion="10.0.17763.0" MaxVersionTested="10.0.26100.0" />
+  </Dependencies>
+
+  <Resources>
+    <Resource Language="x-generate" />
+  </Resources>
+
+  <Applications>
+    <Application Id="Dlss5VideoEnc" Executable="$targetnametoken$.exe" EntryPoint="$targetentrypoint$">
+      <uap:VisualElements
+        DisplayName="Dlss5VideoEnc"
+        Description="DLSS NR、RTX Video 超分与 GPU 补帧视频转码工作台"
+        BackgroundColor="#0B0D10"
+        Square150x150Logo="Assets\Square150x150Logo.png"
+        Square44x44Logo="Assets\Square44x44Logo.png">
+        <uap:DefaultTile
+          Wide310x150Logo="Assets\Wide310x150Logo.png"
+          Square71x71Logo="Assets\Square71x71Logo.png"
+          Square310x310Logo="Assets\Square310x310Logo.png" />
+      </uap:VisualElements>
+    </Application>
+  </Applications>
+
+  <Capabilities>
+    <rescap:Capability Name="runFullTrust" />
+  </Capabilities>
+</Package>
