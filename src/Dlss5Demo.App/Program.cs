@@ -1,5 +1,6 @@
 using Avalonia;
 using Avalonia.Controls.ApplicationLifetimes;
+using Dlss5Demo.App.Views;
 using Dlss5Demo.Core;
 using Serilog;
 

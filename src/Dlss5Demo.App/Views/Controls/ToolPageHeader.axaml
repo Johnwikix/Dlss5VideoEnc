@@ -1,0 +1,14 @@
+<UserControl xmlns="https://github.com/avaloniaui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             x:Class="Dlss5Demo.App.Views.Controls.ToolPageHeader"
+             x:Name="HeaderRoot">
+    <Grid ColumnDefinitions="*,Auto" Margin="0,0,0,8">
+        <StackPanel VerticalAlignment="Center">
+            <TextBlock Classes="PageTitle" Text="{Binding Title, ElementName=HeaderRoot}" />
+            <TextBlock Classes="PageSubtitle" Text="{Binding Subtitle, ElementName=HeaderRoot}" />
+        </StackPanel>
+        <ContentPresenter Grid.Column="1"
+                          Content="{Binding ActionContent, ElementName=HeaderRoot}"
+                          VerticalAlignment="Center" />
+    </Grid>
+</UserControl>

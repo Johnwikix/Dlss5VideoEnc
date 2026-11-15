@@ -12,19 +12,27 @@ using System.Diagnostics;
 using System.Globalization;
 using System.Runtime.InteropServices;
 
-namespace Dlss5Demo.App;
+namespace Dlss5Demo.App.Views;
 
-public partial class MainWindow : Window
+/// <summary>
+/// 工作台页：队列、参数、双路预览与转码执行。沿用改造前的控件语义与事件处理，
+/// 只把窗口级职责（关闭保存、设置加载）上移到 <see cref="MainWindow"/> 与 <see cref="AppSession"/>。
+/// </summary>
+public partial class WorkbenchView : UserControl
 {
     private CancellationTokenSource? _cancellationTokenSource;
     private string? _lastOutputPath;
     private TranscodePreviewBuffer? _previewBuffer;
     private VideoInfo? _activeVideo;
+
     /// <summary>内层管线任务：清理（NGX shutdown、ffmpeg 回收）完成即结束，不依赖 UI 线程。</summary>
     private Task? _pipelineTask;
+
     /// <summary>任务代数：旧任务的收尾 UI 写入不得覆盖新任务的状态。</summary>
     private int _runGeneration;
-    private readonly AppSettings _settings;
+
+    private AppSession? _session;
+    private bool _attached;
     private readonly LatestProgress _latestProgress = new();
     private readonly Stopwatch _previewRate = new();
     private int _renderedPreviewFrames;
@@ -32,16 +40,18 @@ public partial class MainWindow : Window
     private readonly PreviewSurface _sourceSurface;
     private readonly PreviewSurface _outputSurface;
     private readonly DispatcherTimer _previewRenderTimer;
+
     /// <summary>批量队列：顺序逐项转码，设置对整批共用。</summary>
     private readonly ObservableCollection<QueueItem> _queue = [];
     private QueueItem? _runningItem;
+
     /// <summary>程序化写详情卡（OutputBox 等）期间抑制其 TextChanged 回写队列项。</summary>
     private bool _updatingDetail;
 
     /// <summary>当前管线任务；窗口关闭后用于等待 native 清理完成再退进程。</summary>
     public Task PipelineTask => _pipelineTask ?? Task.CompletedTask;
 
-    public MainWindow()
+    public WorkbenchView()
     {
         InitializeComponent();
         DragDrop.SetAllowDrop(this, true);
@@ -53,10 +63,7 @@ public partial class MainWindow : Window
         _previewRenderTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(16) };
         _previewRenderTimer.Tick += RenderPreviewFrames;
         _previewRenderTimer.Start();
-        Closed += MainWindow_Closed;
-        SizeChanged += (_, _) => LogBox.Height = Height < 800 ? 70 : 110;
-        _settings = AppSettingsStore.Load();
-        RefreshNrRuntimes(_settings.NrRuntimeId);
+        SizeChanged += (_, _) => LogBox.Height = Bounds.Height < 800 ? 70 : 110;
         NrRuntimeBox.SelectionChanged += (_, _) => UpdateProcessingOrderHint();
         MotionGuidanceBox.PropertyChanged += (_, change) =>
         {
@@ -85,7 +92,17 @@ public partial class MainWindow : Window
         {
             if (args.Property.Name == nameof(Slider.Value)) QualityValue.Text = ((int)QualitySlider.Value).ToString(CultureInfo.InvariantCulture);
         };
+    }
+
+    /// <summary>由外壳在 XAML 构造完成后注入共享会话：应用保存的设置并建立 NR 版本列表。</summary>
+    internal void Attach(AppSession session)
+    {
+        if (_attached) throw new InvalidOperationException("工作台页只能初始化一次。");
+        _attached = true;
+        _session = session;
         ApplySettings();
+        if (session.StartupWarning is { Length: > 0 } warning)
+            Log("设置页指定的 NR 目录不可用，已回退到内置 runtime：" + warning);
         // 环境变量优先于持久化设置（自动化覆盖手工配置）：直接入队一个文件。
         var inputOverride = Environment.GetEnvironmentVariable("DLSS5_INPUT");
         if (!string.IsNullOrWhiteSpace(inputOverride)) AddFiles([inputOverride]);
@@ -98,11 +115,17 @@ public partial class MainWindow : Window
         Log("FFmpeg: 进程内共享库（avformat/avcodec/avfilter），无外部 ffmpeg/ffprobe 子进程");
     }
 
-    private void MainWindow_Closed(object? sender, EventArgs e)
+    /// <summary>窗口关闭时停止预览、落盘设置并释放位图；幂等。</summary>
+    internal void Shutdown()
     {
+        if (_closed) return;
         _closed = true;
         _previewRenderTimer.Stop();
-        AppSettingsStore.Save(CaptureSettings());
+        if (_session is { } session)
+        {
+            CaptureInto(session.Settings);
+            session.Save();
+        }
         _cancellationTokenSource?.Cancel();
         _previewBuffer?.Dispose();
         _sourceSurface.Dispose();
@@ -110,103 +133,105 @@ public partial class MainWindow : Window
     }
 
     /// <summary>把控件状态写回设置模型（保存于开始转码与窗口关闭时）。</summary>
-    private AppSettings CaptureSettings() => new()
+    private void CaptureInto(AppSettings target)
     {
-        NrPresetSettingsVersion = AppSettings.CurrentNrPresetSettingsVersion,
-        EnableNr = EnableNrBox.IsChecked == true,
-        NrRuntimeId = (NrRuntimeBox.SelectedItem as NrRuntimeInfo)?.Id ?? "",
-        DlssNrPreset = NrPresetBox.SelectedIndex,
-        DlssStyle = StyleBox.SelectedIndex,
-        DlssIntensity = IntensitySlider.Value,
-        DlssLocalTone = LocalToneSlider.Value,
-        DlssLocalStructure = LocalStructSlider.Value,
-        DlssSkinStructure = SkinSlider.Value,
-        DlssUseAutoMask = AutoMaskBox.IsChecked == true,
-        DlssMotionGuidance = MotionGuidanceBox.IsChecked == true,
-        DlssFineMotion = FineMotionBox.IsChecked == true,
-        DlssContinuousHistory = ContinuousHistoryBox.IsChecked == true,
-        SuperResolutionIndex = SuperResolutionBox.SelectedIndex,
-        NrBeforeSuperResolution = NrBeforeSuperResolutionBox.IsChecked == true,
-        EnableInterpolation = EnableInterpolationBox.IsChecked == true,
-        InterpolationMultiplierIndex = InterpolationMultiplierBox.SelectedIndex,
-        InterpolationBackendIndex = InterpolationBackendBox.SelectedIndex,
-        ContainerIndex = ContainerBox.SelectedIndex,
-        CodecIndex = CodecBox.SelectedIndex,
-        HardwareIndex = HardwareBox.SelectedIndex,
-        DecodeModeIndex = DecodeModeBox.SelectedIndex,
-        EncoderPresetIndex = EncoderPresetBox.SelectedIndex,
-        AudioIndex = AudioBox.SelectedIndex,
-        Quality = (int)QualitySlider.Value,
-        HdrIndex = HdrBox.SelectedIndex,
-        FpsIndex = FpsBox.SelectedIndex,
-        RateControlIndex = RateControlBox.SelectedIndex,
-        VideoBitrateKbps = Int(VideoBitrateBox.Text),
-        TwoPass = TwoPassBox.IsChecked == true,
-        AudioBitrateKbps = Int(AudioBitrateBox.Text),
-        AudioGainDb = Double(AudioGainBox.Text),
-        ScaleIndex = ScaleBox.SelectedIndex,
-        DenoiseIndex = DenoiseBox.SelectedIndex,
-        DeinterlaceIndex = DeinterlaceBox.SelectedIndex,
-        CropEnabled = CropBox.IsChecked == true,
-        CropTop = Int(CropTopBox.Text),
-        CropBottom = Int(CropBottomBox.Text),
-        CropLeft = Int(CropLeftBox.Text),
-        CropRight = Int(CropRightBox.Text),
-        GifWidth = Int(GifWidthBox.Text),
-        GifFps = Int(GifFpsBox.Text),
-        GifMaxColors = Int(GifColorsBox.Text),
-        GifDitherIndex = GifDitherBox.SelectedIndex,
-        FramesLimit = FramesLimitBox.IsChecked == true,
-    };
+        target.NrPresetSettingsVersion = AppSettings.CurrentNrPresetSettingsVersion;
+        target.EnableNr = EnableNrBox.IsChecked == true;
+        target.NrRuntimeId = (NrRuntimeBox.SelectedItem as NrRuntimeInfo)?.Id ?? "";
+        target.DlssNrPreset = NrPresetBox.SelectedIndex;
+        target.DlssStyle = StyleBox.SelectedIndex;
+        target.DlssIntensity = IntensitySlider.Value;
+        target.DlssLocalTone = LocalToneSlider.Value;
+        target.DlssLocalStructure = LocalStructSlider.Value;
+        target.DlssSkinStructure = SkinSlider.Value;
+        target.DlssUseAutoMask = AutoMaskBox.IsChecked == true;
+        target.DlssMotionGuidance = MotionGuidanceBox.IsChecked == true;
+        target.DlssFineMotion = FineMotionBox.IsChecked == true;
+        target.DlssContinuousHistory = ContinuousHistoryBox.IsChecked == true;
+        target.SuperResolutionIndex = SuperResolutionBox.SelectedIndex;
+        target.NrBeforeSuperResolution = NrBeforeSuperResolutionBox.IsChecked == true;
+        target.EnableInterpolation = EnableInterpolationBox.IsChecked == true;
+        target.InterpolationMultiplierIndex = InterpolationMultiplierBox.SelectedIndex;
+        target.InterpolationBackendIndex = InterpolationBackendBox.SelectedIndex;
+        target.ContainerIndex = ContainerBox.SelectedIndex;
+        target.CodecIndex = CodecBox.SelectedIndex;
+        target.HardwareIndex = HardwareBox.SelectedIndex;
+        target.DecodeModeIndex = DecodeModeBox.SelectedIndex;
+        target.EncoderPresetIndex = EncoderPresetBox.SelectedIndex;
+        target.AudioIndex = AudioBox.SelectedIndex;
+        target.Quality = (int)QualitySlider.Value;
+        target.HdrIndex = HdrBox.SelectedIndex;
+        target.FpsIndex = FpsBox.SelectedIndex;
+        target.RateControlIndex = RateControlBox.SelectedIndex;
+        target.VideoBitrateKbps = Int(VideoBitrateBox.Text);
+        target.TwoPass = TwoPassBox.IsChecked == true;
+        target.AudioBitrateKbps = Int(AudioBitrateBox.Text);
+        target.AudioGainDb = Double(AudioGainBox.Text);
+        target.ScaleIndex = ScaleBox.SelectedIndex;
+        target.DenoiseIndex = DenoiseBox.SelectedIndex;
+        target.DeinterlaceIndex = DeinterlaceBox.SelectedIndex;
+        target.CropEnabled = CropBox.IsChecked == true;
+        target.CropTop = Int(CropTopBox.Text);
+        target.CropBottom = Int(CropBottomBox.Text);
+        target.CropLeft = Int(CropLeftBox.Text);
+        target.CropRight = Int(CropRightBox.Text);
+        target.GifWidth = Int(GifWidthBox.Text);
+        target.GifFps = Int(GifFpsBox.Text);
+        target.GifMaxColors = Int(GifColorsBox.Text);
+        target.GifDitherIndex = GifDitherBox.SelectedIndex;
+        target.FramesLimit = FramesLimitBox.IsChecked == true;
+    }
 
     /// <summary>恢复控件状态；索引夹到合法范围、Slider 由控件自身夹取，坏配置不致崩溃。</summary>
     private void ApplySettings()
     {
-        EnableNrBox.IsChecked = _settings.EnableNr;
-        Select(NrPresetBox, _settings.DlssNrPreset);
-        Select(StyleBox, _settings.DlssStyle);
-        IntensitySlider.Value = _settings.DlssIntensity;
-        LocalToneSlider.Value = _settings.DlssLocalTone;
-        LocalStructSlider.Value = _settings.DlssLocalStructure;
-        SkinSlider.Value = _settings.DlssSkinStructure;
-        AutoMaskBox.IsChecked = _settings.DlssUseAutoMask;
-        MotionGuidanceBox.IsChecked = _settings.DlssMotionGuidance;
-        FineMotionBox.IsChecked = _settings.DlssFineMotion;
+        var settings = _session!.Settings;
+        EnableNrBox.IsChecked = settings.EnableNr;
+        Select(NrPresetBox, settings.DlssNrPreset);
+        Select(StyleBox, settings.DlssStyle);
+        IntensitySlider.Value = settings.DlssIntensity;
+        LocalToneSlider.Value = settings.DlssLocalTone;
+        LocalStructSlider.Value = settings.DlssLocalStructure;
+        SkinSlider.Value = settings.DlssSkinStructure;
+        AutoMaskBox.IsChecked = settings.DlssUseAutoMask;
+        MotionGuidanceBox.IsChecked = settings.DlssMotionGuidance;
+        FineMotionBox.IsChecked = settings.DlssFineMotion;
         FineMotionBox.IsEnabled = MotionGuidanceBox.IsChecked == true;
-        ContinuousHistoryBox.IsChecked = _settings.DlssContinuousHistory;
-        Select(SuperResolutionBox, _settings.SuperResolutionIndex);
-        NrBeforeSuperResolutionBox.IsChecked = _settings.NrBeforeSuperResolution;
-        EnableInterpolationBox.IsChecked = _settings.EnableInterpolation;
-        Select(InterpolationMultiplierBox, _settings.InterpolationMultiplierIndex);
-        Select(InterpolationBackendBox, _settings.InterpolationBackendIndex);
+        ContinuousHistoryBox.IsChecked = settings.DlssContinuousHistory;
+        Select(SuperResolutionBox, settings.SuperResolutionIndex);
+        NrBeforeSuperResolutionBox.IsChecked = settings.NrBeforeSuperResolution;
+        EnableInterpolationBox.IsChecked = settings.EnableInterpolation;
+        Select(InterpolationMultiplierBox, settings.InterpolationMultiplierIndex);
+        Select(InterpolationBackendBox, settings.InterpolationBackendIndex);
+        Select(ContainerBox, settings.ContainerIndex);
+        Select(CodecBox, settings.CodecIndex);
+        Select(HardwareBox, settings.HardwareIndex);
+        Select(DecodeModeBox, settings.DecodeModeIndex);
+        Select(EncoderPresetBox, settings.EncoderPresetIndex);
+        Select(AudioBox, settings.AudioIndex);
+        QualitySlider.Value = settings.Quality;
+        Select(HdrBox, settings.HdrIndex);
+        Select(FpsBox, settings.FpsIndex);
+        Select(RateControlBox, settings.RateControlIndex);
+        VideoBitrateBox.Text = settings.VideoBitrateKbps.ToString(CultureInfo.InvariantCulture);
+        TwoPassBox.IsChecked = settings.TwoPass;
+        AudioBitrateBox.Text = settings.AudioBitrateKbps.ToString(CultureInfo.InvariantCulture);
+        AudioGainBox.Text = settings.AudioGainDb.ToString(CultureInfo.InvariantCulture);
+        Select(ScaleBox, settings.ScaleIndex);
+        Select(DenoiseBox, settings.DenoiseIndex);
+        Select(DeinterlaceBox, settings.DeinterlaceIndex);
+        CropBox.IsChecked = settings.CropEnabled;
+        CropTopBox.Text = settings.CropTop > 0 ? settings.CropTop.ToString(CultureInfo.InvariantCulture) : "";
+        CropBottomBox.Text = settings.CropBottom > 0 ? settings.CropBottom.ToString(CultureInfo.InvariantCulture) : "";
+        CropLeftBox.Text = settings.CropLeft > 0 ? settings.CropLeft.ToString(CultureInfo.InvariantCulture) : "";
+        CropRightBox.Text = settings.CropRight > 0 ? settings.CropRight.ToString(CultureInfo.InvariantCulture) : "";
+        GifWidthBox.Text = settings.GifWidth.ToString(CultureInfo.InvariantCulture);
+        GifFpsBox.Text = settings.GifFps.ToString(CultureInfo.InvariantCulture);
+        GifColorsBox.Text = settings.GifMaxColors.ToString(CultureInfo.InvariantCulture);
+        Select(GifDitherBox, settings.GifDitherIndex);
+        FramesLimitBox.IsChecked = settings.FramesLimit;
+        RefreshNrRuntimes(settings.NrRuntimeId);
         UpdateProcessingOrderHint();
-        Select(ContainerBox, _settings.ContainerIndex);
-        Select(CodecBox, _settings.CodecIndex);
-        Select(HardwareBox, _settings.HardwareIndex);
-        Select(DecodeModeBox, _settings.DecodeModeIndex);
-        Select(EncoderPresetBox, _settings.EncoderPresetIndex);
-        Select(AudioBox, _settings.AudioIndex);
-        QualitySlider.Value = _settings.Quality;
-        Select(HdrBox, _settings.HdrIndex);
-        Select(FpsBox, _settings.FpsIndex);
-        Select(RateControlBox, _settings.RateControlIndex);
-        VideoBitrateBox.Text = _settings.VideoBitrateKbps.ToString(CultureInfo.InvariantCulture);
-        TwoPassBox.IsChecked = _settings.TwoPass;
-        AudioBitrateBox.Text = _settings.AudioBitrateKbps.ToString(CultureInfo.InvariantCulture);
-        AudioGainBox.Text = _settings.AudioGainDb.ToString(CultureInfo.InvariantCulture);
-        Select(ScaleBox, _settings.ScaleIndex);
-        Select(DenoiseBox, _settings.DenoiseIndex);
-        Select(DeinterlaceBox, _settings.DeinterlaceIndex);
-        CropBox.IsChecked = _settings.CropEnabled;
-        CropTopBox.Text = _settings.CropTop > 0 ? _settings.CropTop.ToString(CultureInfo.InvariantCulture) : "";
-        CropBottomBox.Text = _settings.CropBottom > 0 ? _settings.CropBottom.ToString(CultureInfo.InvariantCulture) : "";
-        CropLeftBox.Text = _settings.CropLeft > 0 ? _settings.CropLeft.ToString(CultureInfo.InvariantCulture) : "";
-        CropRightBox.Text = _settings.CropRight > 0 ? _settings.CropRight.ToString(CultureInfo.InvariantCulture) : "";
-        GifWidthBox.Text = _settings.GifWidth.ToString(CultureInfo.InvariantCulture);
-        GifFpsBox.Text = _settings.GifFps.ToString(CultureInfo.InvariantCulture);
-        GifColorsBox.Text = _settings.GifMaxColors.ToString(CultureInfo.InvariantCulture);
-        Select(GifDitherBox, _settings.GifDitherIndex);
-        FramesLimitBox.IsChecked = _settings.FramesLimit;
     }
 
     private static void Select(ComboBox box, int index)
@@ -215,14 +240,23 @@ public partial class MainWindow : Window
     private void RefreshNrRuntimes_Click(object? sender, RoutedEventArgs e)
         => RefreshNrRuntimes((NrRuntimeBox.SelectedItem as NrRuntimeInfo)?.Id);
 
+    /// <summary>设置页切换目录后由外壳调用：优先选中迁移重映射后的版本 ID。</summary>
+    internal void OnNrRuntimeDirectoryChanged(string? preferredRuntimeId)
+    {
+        var current = (NrRuntimeBox.SelectedItem as NrRuntimeInfo)?.Id;
+        RefreshNrRuntimes(preferredRuntimeId ?? current ?? _session?.Settings.NrRuntimeId);
+        Log($"NR 运行库目录已切换：{NrRuntimeLocations.EffectiveDirectory}");
+    }
+
     private void RefreshNrRuntimes(string? selectedId)
     {
-        var entries = new List<NrRuntimeInfo> { new("", DemoPaths.RuntimeDllPath, "自动 · 环境变量 / mods / 根目录激活版 / 按显卡代际匹配") };
+        selectedId ??= string.Empty;
+        var entries = new List<NrRuntimeInfo> { new("", DemoPaths.RuntimeDllPath, "自动 · 激活版优先，其次按显卡代际匹配") };
         entries.AddRange(NrRuntimeCatalog.Discover());
         var selected = entries.Find(item => string.Equals(item.Id, selectedId ?? "", StringComparison.OrdinalIgnoreCase));
         if (selected == null)
         {
-            selected = new NrRuntimeInfo(selectedId!, "", "已缺失 · " + selectedId);
+            selected = new NrRuntimeInfo(selectedId, "", "已缺失 · " + selectedId);
             entries.Add(selected);
         }
         NrRuntimeBox.ItemsSource = entries;
@@ -459,7 +493,8 @@ public partial class MainWindow : Window
 
     private async void Browse_Click(object? sender, RoutedEventArgs e)
     {
-        var files = await StorageProvider.OpenFilePickerAsync(new FilePickerOpenOptions
+        if (TopLevel.GetTopLevel(this) is not { } top) return;
+        var files = await top.StorageProvider.OpenFilePickerAsync(new FilePickerOpenOptions
         {
             Title = "选择输入视频或图片（可多选）",
             AllowMultiple = true,
@@ -528,7 +563,8 @@ public partial class MainWindow : Window
         var selectedItem = QueueList.SelectedItem as QueueItem;
         var suggestedExtension = selectedItem is { } candidate && candidate.IsImage ? ".png"
             : ContainerExtension(CollectVideoOptions().Container);
-        var file = await StorageProvider.SaveFilePickerAsync(new FilePickerSaveOptions
+        if (TopLevel.GetTopLevel(this) is not { } top) return;
+        var file = await top.StorageProvider.SaveFilePickerAsync(new FilePickerSaveOptions
         {
             Title = "选择输出文件",
             ShowOverwritePrompt = false,
@@ -607,10 +643,11 @@ public partial class MainWindow : Window
         NrBeforeSuperResolutionBox.IsEnabled = enabled && nrEnabled;
         var runtime = NrRuntimeBox.SelectedItem as NrRuntimeInfo;
         bool runtimeExists = File.Exists(runtime?.DllPath ?? DemoPaths.RuntimeDllPath);
-        RuntimeBadge.Text = !nrEnabled ? "DLSS NR · 已关闭"
-            : runtimeExists ? "DLSS Runtime · ready" : "DLSS Runtime · missing";
+        RuntimeBadge.Text = !nrEnabled ? "NR · 已关闭"
+            : runtimeExists ? "NR 运行库 · 就绪" : "NR 运行库 · 缺失";
+        RuntimeBadge.Tone = !nrEnabled ? "off" : runtimeExists ? "ready" : "missing";
         NrRuntimeHint.Text = runtimeExists
-            ? "「自动」优先用根目录激活版；未放置时按本机 RTX 代际（20-50 系）匹配 runtime\\nr\\ 下的版本。完整转码建议把适配版本放到 runtime 根目录。"
+            ? "「自动」优先用用户目录/根目录激活版；未放置时按本机 RTX 代际（20-50 系）匹配 nr\\ 下的版本。完整转码建议把适配版本放到激活位。"
             : "所选 NR DLL 不存在。请放回文件后刷新，或选择其他版本。";
         ProcessingOrderHint.Text = !nrEnabled ? enabled ? "仅 RTX Video 超分 → 编码。NR、光流和历史累积已跳过。"
                 : "NR 与超分均已关闭：直接转码，可使用下方输出滤镜。"
@@ -694,7 +731,12 @@ public partial class MainWindow : Window
             PreviewFramesPerSecond = 60,
         };
         // 转码定参即落盘：之后即使闪退，配置也不丢（窗口关闭时还会再存一次）。
-        AppSettingsStore.Save(CaptureSettings());
+        if (_session is { } session)
+        {
+            CaptureInto(session.Settings);
+            session.Save();
+            session.IsProcessing = true;
+        }
         var orderLabel = !options.EnableNr ? options.SuperResolutionScale <= 1 ? "直接转码" : $"RTX Video {options.SuperResolutionScale}×"
             : options.SuperResolutionScale <= 1 ? "DLSS NR"
             : options.NrBeforeSuperResolution ? $"DLSS NR → RTX Video {options.SuperResolutionScale}×"
@@ -713,6 +755,7 @@ public partial class MainWindow : Window
         catch { /* 队列异常已在 RunQueueAsync 内按项消化 */ }
         finally
         {
+            if (_session is { } current) current.IsProcessing = false;
             if (generation == _runGeneration) { StartButton.IsEnabled = true; CancelButton.IsEnabled = false; }
         }
     }
@@ -819,26 +862,13 @@ public partial class MainWindow : Window
 
     private void Cancel_Click(object? sender, RoutedEventArgs e) { _cancellationTokenSource?.Cancel(); StatusText.Text = "正在取消…"; }
 
-    private async void Compare_Click(object? sender, RoutedEventArgs e)
+    private void Compare_Click(object? sender, RoutedEventArgs e)
     {
         if (_lastOutputPath is { } output && File.Exists(output))
         {
             LivePreviewText.Text = "输出已载入 · 预览保持与转码最后一帧同步";
             Log("输出已载入；双路画面保持在最近一次转码帧。");
         }
-    }
-
-    private void Play_Click(object? sender, RoutedEventArgs e)
-    {
-        LivePreviewText.Text = "请先开始转码；SOURCE 将按处理帧同步显示";
-    }
-
-    private void Pause_Click(object? sender, RoutedEventArgs e) { LivePreviewText.Text = "双路预览跟随转码进度"; }
-
-    private void Replay_Click(object? sender, RoutedEventArgs e)
-    {
-        ResetPreview();
-        LivePreviewText.Text = "已清空预览，开始转码后将同步刷新";
     }
 
     private void ClearLog_Click(object? sender, RoutedEventArgs e) => LogBox.Text = "";

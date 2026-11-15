@@ -1,0 +1,16 @@
+<UserControl xmlns="https://github.com/avaloniaui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             x:Class="Dlss5Demo.App.Views.Controls.StatusPill"
+             x:Name="PillRoot">
+    <Border CornerRadius="12" Padding="10,3"
+            Background="{DynamicResource SubtleFillColorSecondaryBrush}"
+            BorderBrush="{DynamicResource CardStrokeColorDefaultBrush}"
+            BorderThickness="1">
+        <StackPanel Orientation="Horizontal" Spacing="6" VerticalAlignment="Center">
+            <Ellipse x:Name="Dot" Width="8" Height="8" VerticalAlignment="Center" />
+            <TextBlock x:Name="Label" FontSize="12" VerticalAlignment="Center"
+                       Foreground="{DynamicResource TextFillColorPrimaryBrush}"
+                       Text="{Binding Text, ElementName=PillRoot}" />
+        </StackPanel>
+    </Border>
+</UserControl>

@@ -12,15 +12,22 @@ public sealed record NrRuntimeInfo(string Id, string DllPath, string DisplayName
 public static class NrRuntimeCatalog
 {
     public static IReadOnlyList<NrRuntimeInfo> Discover() => Discover(DemoPaths.RuntimeDir,
-        DemoPaths.EnumerateOverrideDirectories(), DemoPaths.RuntimeDllPath);
+        DemoPaths.EnumerateOverrideDirectories(), DemoPaths.RuntimeDllPath, NrRuntimeLocations.UserDirectory);
 
+    /// <summary>
+    /// 扫描内置 runtime 目录、设置页指定的用户目录与 mods 覆盖目录。用户目录的条目以
+    /// <c>custom/</c> 前缀区分，因此同一布局搬到别处后旧 ID 会变化，迁移流程负责重映射。
+    /// </summary>
     internal static IReadOnlyList<NrRuntimeInfo> Discover(string runtimeDirectory,
-        IEnumerable<string> overrideDirectories, string? automaticPath = null)
+        IEnumerable<string> overrideDirectories, string? automaticPath = null, string? userDirectory = null)
     {
         var results = new List<NrRuntimeInfo>();
         var paths = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         var ids = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         Scan(runtimeDirectory, "runtime/");
+        if (!string.IsNullOrWhiteSpace(userDirectory) &&
+            !NrRuntimeLocations.IsSameDirectory(userDirectory, runtimeDirectory))
+            Scan(userDirectory, "custom/");
         foreach (string directory in overrideDirectories) Scan(directory, "mods/");
         if (!string.IsNullOrWhiteSpace(automaticPath) && File.Exists(automaticPath))
             Add(automaticPath, "external/" + Path.GetFullPath(automaticPath));
@@ -61,7 +68,13 @@ public static class NrRuntimeCatalog
             catch (UnauthorizedAccessException) { }
             string label = id.EndsWith("/nvngx_dlssnr.dll", StringComparison.OrdinalIgnoreCase)
                 ? id[..^"/nvngx_dlssnr.dll".Length] : id;
-            if (label == "runtime") label = "runtime（当前默认）";
+            label = label switch
+            {
+                "runtime" => "runtime（内置激活版）",
+                "custom" => "用户目录（激活版）",
+                _ when label.StartsWith("custom/", StringComparison.OrdinalIgnoreCase) => "用户目录/" + label["custom/".Length..],
+                _ => label,
+            };
             results.Add(new NrRuntimeInfo(id, fullPath,
                 string.IsNullOrWhiteSpace(version) ? label : $"{version} · {label}"));
         }

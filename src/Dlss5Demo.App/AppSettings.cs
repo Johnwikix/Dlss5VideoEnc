@@ -2,13 +2,20 @@ using System.Text.Json.Serialization;
 
 namespace Dlss5Demo.App;
 
-/// <summary>需跨会话保留的界面设置（与 MainWindow 控件一一对应；ComboBox 存选中索引）。</summary>
+/// <summary>需跨会话保留的界面设置（与工作台控件一一对应；ComboBox 存选中索引）。</summary>
 public sealed class AppSettings
 {
     internal const int CurrentNrPresetSettingsVersion = 1;
+
+    /// <summary>外观：0 跟随系统 / 1 浅色 / 2 深色。默认深色，与历史版本一致。</summary>
+    public int ThemeIndex { get; set; } = 2;
+
+    /// <summary>设置页指定的 NR 运行库目录；空 = 使用随程序发布的 runtime 目录。</summary>
+    public string NrRuntimeDirectory { get; set; } = "";
+
     // DLSS NR
     public bool EnableNr { get; set; } = true;
-    /// <summary>Catalog path ID; empty retains the automatic environment/mods/default policy.</summary>
+    /// <summary>Catalog path ID；空 = 「自动」策略（环境变量 → mods → 设置页目录 → 内置 runtime）。</summary>
     public string NrRuntimeId { get; set; } = "";
     public int DlssNrPreset { get; set; } = 1;
     /// <summary>Distinguishes the old automatic default from future explicit Auto selections.</summary>

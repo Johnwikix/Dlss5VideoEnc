@@ -139,36 +139,57 @@ public static class DemoPaths
                 return candidate;
         }
 
+        // 设置页指定的目录代表用户的显式选择，优先于内置 runtime 布局；
+        // 未设置时行为与历史版本完全一致。
+        if (NrRuntimeLocations.UserDirectory is { } userDirectory and { Length: > 0 } &&
+            FindInLayout(userDirectory) is { } userChoice)
+        {
+            PipelineLog.Info($"NR 使用设置页指定的运行库目录：{userChoice}");
+            return userChoice;
+        }
+
+        var rootDefault = Path.Combine(RuntimeDir, "nvngx_dlssnr.dll");
+        return FindInLayout(RuntimeDir) ?? rootDefault;
+    }
+
+    /// <summary>
+    /// 在给定根目录下按已验证的优先级找 NR DLL：DLSS5_GPU_SERIES 指定目录 →
+    /// 根目录激活位 → 按本机 RTX 代际匹配 nr\ 变体（版本低者优先）→ nr\ 全场最低版本。
+    /// 根目录激活位优先于代际匹配；驱动层 teardown 死锁已由宿主修复，nr\ 深层路径
+    /// 同样可用于完整转码（见 <see cref="RuntimeDllPath"/> 注释）。
+    /// </summary>
+    private static string? FindInLayout(string root)
+    {
         var profile = RuntimeProfile;
         if (profile != null)
         {
-            // nr\ 下按系列命名的版本目录（当前布局），以及 runtime 根的同名目录（旧布局兼容）。
-            foreach (var directory in new[] { Path.Combine(RuntimeDir, "nr"), RuntimeDir })
+            // nr\ 下按系列命名的版本目录（当前布局），以及根目录的同名目录（旧布局兼容）。
+            foreach (var directory in new[] { Path.Combine(root, "nr"), root })
             {
                 var profileCandidate = Path.Combine(directory, profile, "nvngx_dlssnr.dll");
                 if (File.Exists(profileCandidate))
                     return Path.GetFullPath(profileCandidate);
             }
-            var suffixedCandidate = Path.Combine(RuntimeDir, $"nvngx_dlssnr_{profile}.dll");
+            var suffixedCandidate = Path.Combine(root, $"nvngx_dlssnr_{profile}.dll");
             if (File.Exists(suffixedCandidate))
                 return Path.GetFullPath(suffixedCandidate);
         }
 
-        // 根目录是激活位：放本机显卡适配的版本，优先于代际匹配。驱动层 teardown
-        // 死锁已由宿主修复，nr\ 深层路径同样可用于完整转码（见类注释）。
-        var rootDefault = Path.Combine(RuntimeDir, "nvngx_dlssnr.dll");
-        if (File.Exists(rootDefault))
-            return Path.GetFullPath(rootDefault);
+        var rootActivation = Path.Combine(root, "nvngx_dlssnr.dll");
+        if (File.Exists(rootActivation))
+            return Path.GetFullPath(rootActivation);
 
-        // 根目录未放置时的兜底：按本机 RTX 代际在 nr\ 下挑选能跑的变体（版本
-        // 低者优先），再退回 nr\ 全场最低版本；都没有则交由加载方报缺文件。
+        // 根目录未放置时的兜底：按本机 RTX 代际挑选能跑的变体（版本低者优先），
+        // 再退回全场最低版本；都没有则交由加载方报缺文件。
+        // 没有 nr\ 子目录就不必探测显卡代际——那会加载一次原生宿主，空目录时纯属浪费。
+        if (!Directory.Exists(Path.Combine(root, "nr"))) return null;
         if (NrGpuAutoSelect.DetectSeries() is { } series &&
-            NrGpuAutoSelect.SelectForSeries(series, RuntimeDir) is { } matched)
+            NrGpuAutoSelect.SelectForSeries(series, root) is { } matched)
         {
             PipelineLog.Info($"NR 自动匹配 RTX {series}：{Path.GetFullPath(matched)}");
             return Path.GetFullPath(matched);
         }
-        return NrGpuAutoSelect.SelectLowestVariant(RuntimeDir) ?? rootDefault;
+        return NrGpuAutoSelect.SelectLowestVariant(root) is { } lowest ? Path.GetFullPath(lowest) : null;
     }
 
     internal static IEnumerable<string> EnumerateOverrideDirectories()

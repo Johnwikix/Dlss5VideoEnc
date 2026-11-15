@@ -17,6 +17,9 @@ if (detectOnly >= 0)
 var tests = new (string Name, Action Run)[]
 {
     ("NR versions are discovered recursively and keep stable IDs on refresh", NrRuntimeCatalogTests.Discovery),
+    ("NR settings directory adds custom entries without duplicating runtime", NrMigrationTests.UserDirectoryDiscovery),
+    ("NR runtime migration moves, deduplicates and renames on conflict", NrMigrationTests.MigrationMovesAndDeduplicates),
+    ("NR runtime migration rejects the same source and target", NrMigrationTests.SameDirectoryIsRejected),
     ("NR model presets parse aliases and reject invalid choices", NrPresetTests.Options),
     ("NR defaults migrate once to A and preserve later Auto/B selections", NrPresetTests.SettingsDefaults),
     ("GPU series detection maps consumer device IDs and RTX folder tokens", NrGpuAutoSelectTests.SeriesMapping),

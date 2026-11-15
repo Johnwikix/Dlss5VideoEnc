@@ -1,0 +1,588 @@
+<UserControl xmlns="https://github.com/avaloniaui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:core="using:Dlss5Demo.Core"
+             xmlns:controls="using:Dlss5Demo.App.Views.Controls"
+             x:Class="Dlss5Demo.App.Views.WorkbenchView">
+
+    <Grid Margin="{StaticResource PageMargin}" RowDefinitions="Auto,Auto,*,Auto" RowSpacing="12">
+
+        <!-- ============ 页头 ============ -->
+        <Grid Grid.Row="0" ColumnDefinitions="*,Auto">
+            <controls:ToolPageHeader Title="工作台"
+                                     Subtitle="DLSS NR / RTX Video 视频与图片增强 · 实时双路预览 · HDR 保真输出" />
+            <controls:StatusPill Grid.Column="1" x:Name="RuntimeBadge"
+                                 Text="NR 运行库 · 就绪" Tone="ready"
+                                 VerticalAlignment="Center" Margin="0,0,0,8" />
+        </Grid>
+
+        <!-- ============ 队列 ============ -->
+        <Border Grid.Row="1" Classes="ToolCard" Padding="12,10">
+            <Grid RowDefinitions="Auto,Auto" RowSpacing="8">
+                <Grid Grid.Row="0" ColumnDefinitions="Auto,Auto,*,Auto,Auto" ColumnSpacing="8">
+                    <Button x:Name="AddButton" Classes="Primary" Content="添加视频/图片" Click="Browse_Click"
+                            Padding="16,6" />
+                    <Button Grid.Column="1" x:Name="ClearFinishedButton" Content="清空已完成"
+                            Click="ClearFinished_Click" IsEnabled="False"
+                            ToolTip.Tip="移除队列中已完成、失败与跳过的项" />
+                    <TextBlock Grid.Column="2" x:Name="QueueSummaryText" Text="队列 0 项" Classes="Caption"
+                               VerticalAlignment="Center" TextAlignment="Right" />
+                    <Button Grid.Column="3" x:Name="OpenVideoFolderButton" Click="OpenVideoFolder_Click"
+                            IsEnabled="False" ToolTip.Tip="在资源管理器中定位选中的源文件"
+                            AutomationProperties.Name="打开源文件目录">
+                        <StackPanel Orientation="Horizontal" Spacing="6">
+                            <Path Width="16" Height="16" Stretch="Uniform" StrokeThickness="1.6"
+                                  Stroke="{Binding $parent[Button].Foreground}"
+                                  Data="M 3,6 L 9,6 L 11,8 L 21,8 L 21,19 L 3,19 Z M 3,11 L 21,11" />
+                            <TextBlock Text="打开目录" VerticalAlignment="Center" />
+                        </StackPanel>
+                    </Button>
+                    <Button Grid.Column="4" x:Name="CompareButton" Content="载入输出" Click="Compare_Click"
+                            IsEnabled="False" Padding="16,6" />
+                </Grid>
+                <Border Grid.Row="1" MinHeight="96" MaxHeight="176" Padding="4"
+                        Background="{DynamicResource ControlFillColorDefaultBrush}"
+                        BorderBrush="{DynamicResource ControlStrokeColorDefaultBrush}"
+                        BorderThickness="1" CornerRadius="{StaticResource SubtleCornerRadius}">
+                    <Grid>
+                        <ListBox x:Name="QueueList" Classes="Flat" SelectionChanged="QueueList_SelectionChanged"
+                                 ScrollViewer.HorizontalScrollBarVisibility="Disabled">
+                            <ListBox.ItemTemplate>
+                                <DataTemplate>
+                                    <Grid ColumnDefinitions="Auto,*,Auto,Auto" ColumnSpacing="10" Margin="8,5">
+                                        <Ellipse Width="10" Height="10" Fill="{Binding StatusBrush}"
+                                                 VerticalAlignment="Center" />
+                                        <TextBlock Grid.Column="1" Text="{Binding FileName}"
+                                                   ToolTip.Tip="{Binding InputPath}"
+                                                   Foreground="{DynamicResource TextFillColorPrimaryBrush}"
+                                                   FontSize="13" TextTrimming="CharacterEllipsis"
+                                                   VerticalAlignment="Center" />
+                                        <TextBlock Grid.Column="2" Text="{Binding StatusText}"
+                                                   Foreground="{Binding StatusBrush}" FontSize="12"
+                                                   VerticalAlignment="Center" />
+                                        <Button Grid.Column="3" Content="✕" Click="RemoveItem_Click"
+                                                FontSize="12" Padding="6,0" MinWidth="28" MinHeight="24"
+                                                VerticalAlignment="Center" ToolTip.Tip="从队列移除"
+                                                AutomationProperties.Name="移除队列项" />
+                                    </Grid>
+                                </DataTemplate>
+                            </ListBox.ItemTemplate>
+                        </ListBox>
+                        <TextBlock x:Name="QueueEmptyHint"
+                                   Text="拖入视频或图片文件，或点击「添加视频/图片」建立队列 · 支持多选与批量拖放"
+                                   Foreground="{DynamicResource TextFillColorTertiaryBrush}" FontSize="13"
+                                   IsHitTestVisible="False"
+                                   HorizontalAlignment="Center" VerticalAlignment="Center" />
+                    </Grid>
+                </Border>
+            </Grid>
+        </Border>
+
+        <!-- ============ 主体：左参数 / 右预览 ============ -->
+        <Grid Grid.Row="2" ColumnDefinitions="424,12,*">
+
+            <!-- 参数列 -->
+            <ScrollViewer Grid.Column="0" VerticalScrollBarVisibility="Auto"
+                          HorizontalScrollBarVisibility="Disabled" Padding="0,0,8,0">
+                <StackPanel Spacing="{StaticResource CardSpacing}">
+
+                    <Border Classes="ToolCard">
+                        <StackPanel Classes="ToolCardContent">
+                            <TextBlock Classes="SectionHeader" Text="队列项详情" />
+                            <TextBlock x:Name="InfoText" Text="从队列中选择一项查看详情。" Classes="Caption" />
+                            <TextBlock x:Name="HdrSourceText" Text="" TextWrapping="Wrap" FontSize="12"
+                                       Foreground="{DynamicResource SystemFillColorCautionBrush}" />
+                            <StackPanel Classes="FormRow">
+                                <TextBlock Classes="FieldLabel" Text="输出文件" />
+                                <Grid ColumnDefinitions="*,Auto,Auto" ColumnSpacing="8">
+                                    <TextBox x:Name="OutputBox" PlaceholderText="输出文件路径"
+                                             TextChanged="OnOutputTextChanged" />
+                                    <Button Grid.Column="1" Content="另存为" Click="PickOutput_Click" />
+                                    <Button Grid.Column="2" x:Name="OpenOutputFolderButton" Width="32" Height="32"
+                                            Padding="6" Click="OpenOutputFolder_Click" IsEnabled="False"
+                                            ToolTip.Tip="在资源管理器中打开输出目录"
+                                            AutomationProperties.Name="打开输出目录">
+                                        <Path Width="16" Height="16" Stretch="Uniform" StrokeThickness="1.6"
+                                              Stroke="{Binding $parent[Button].Foreground}"
+                                              Data="M 3,6 L 9,6 L 11,8 L 21,8 L 21,19 L 3,19 Z M 3,11 L 21,11" />
+                                    </Button>
+                                </Grid>
+                            </StackPanel>
+                        </StackPanel>
+                    </Border>
+
+                    <Border Classes="ToolCard">
+                        <StackPanel Classes="ToolCardContent">
+                            <TextBlock Classes="SectionHeader" Text="DLSS NR" />
+                            <CheckBox x:Name="EnableNrBox" Content="启用 DLSS NR" IsChecked="True"
+                                      AutomationProperties.AutomationId="EnableNr"
+                                      ToolTip.Tip="关闭后跳过 NR 及其运动矢量和历史累积，仍可使用 RTX Video 超分与独立补帧。" />
+
+                            <StackPanel x:Name="NrSettings" Spacing="10">
+                                <StackPanel>
+                                    <TextBlock Classes="FieldLabel" Text="NR 版本" />
+                                    <Grid ColumnDefinitions="*,Auto" ColumnSpacing="8">
+                                        <ComboBox x:Name="NrRuntimeBox" HorizontalAlignment="Stretch" MinWidth="0"
+                                                  AutomationProperties.AutomationId="NrRuntime"
+                                                  AutomationProperties.Name="NR 版本">
+                                            <ComboBox.ItemTemplate>
+                                                <DataTemplate x:DataType="core:NrRuntimeInfo">
+                                                    <TextBlock Text="{CompiledBinding DisplayName}" MaxWidth="270"
+                                                               TextWrapping="Wrap"
+                                                               ToolTip.Tip="{CompiledBinding DllPath}" />
+                                                </DataTemplate>
+                                            </ComboBox.ItemTemplate>
+                                        </ComboBox>
+                                        <Button Grid.Column="1" Content="刷新" Click="RefreshNrRuntimes_Click"
+                                                AutomationProperties.AutomationId="RefreshNrRuntimes"
+                                                AutomationProperties.Name="刷新 NR 版本列表" />
+                                    </Grid>
+                                    <TextBlock x:Name="NrRuntimeHint" Classes="Caption" Margin="0,4,0,0"
+                                               Text="运行库从 runtime 与设置页指定的目录递归发现，放入 DLL 后点「刷新」即可选择。" />
+                                </StackPanel>
+
+                                <StackPanel>
+                                    <TextBlock Classes="FieldLabel" Text="NR 模型预设（Preset）" />
+                                    <ComboBox x:Name="NrPresetBox" SelectedIndex="1" HorizontalAlignment="Stretch"
+                                              AutomationProperties.AutomationId="NrPreset"
+                                              AutomationProperties.Name="NR 模型预设">
+                                        <ComboBoxItem Content="自动 · 使用运行库默认模型" />
+                                        <ComboBoxItem Content="A · 旧模型（310.8 效果）" />
+                                        <ComboBoxItem Content="B · 轻量模型（310.9.16）" />
+                                    </ComboBox>
+                                    <TextBlock Classes="Caption" Margin="0,4,0,0"
+                                               Text="默认 A，保留旧模型效果。310.9.16 的自动档使用 B；310.8 仅有旧模型。下次开始队列时生效。" />
+                                </StackPanel>
+
+                                <StackPanel>
+                                    <TextBlock Classes="FieldLabel" Text="风格" />
+                                    <ComboBox x:Name="StyleBox" SelectedIndex="0">
+                                        <ComboBoxItem Content="Default · 默认" />
+                                        <ComboBoxItem Content="Natural · 自然" />
+                                        <ComboBoxItem Content="Cinema · 电影" />
+                                    </ComboBox>
+                                </StackPanel>
+
+                                <StackPanel Spacing="2">
+                                    <CheckBox x:Name="MotionGuidanceBox" Content="光流运动矢量" IsChecked="True"
+                                              ToolTip.Tip="估计当前帧到上一帧的运动，提供给 NR；关闭后不计算光流。" />
+                                    <TextBlock Classes="Caption" Margin="28,0,0,0"
+                                               Text="对齐运动中的画面；启用后处理耗时增加（仅视频）。" />
+                                    <CheckBox x:Name="FineMotionBox" Content="精细光流匹配（更慢）" Margin="0,4,0,0"
+                                              ToolTip.Tip="细化运动边缘的匹配；显卡不支持时自动回退到标准匹配。" />
+                                    <CheckBox x:Name="ContinuousHistoryBox" Content="NR 连续历史" IsChecked="True"
+                                              ToolTip.Tip="保留 NR 连续帧历史并累积可信修正量；关闭后每帧重置 NR，停止修正量累积。" />
+                                    <TextBlock Classes="Caption" Margin="28,0,0,0"
+                                               Text="利用前帧减轻闪烁；切镜时自动重置。" />
+                                </StackPanel>
+
+                                <Separator Margin="0,2" />
+
+                                <StackPanel>
+                                    <Grid ColumnDefinitions="*,Auto">
+                                        <TextBlock Classes="FieldLabel" Text="强度" />
+                                        <TextBlock x:Name="IntensityValue" Grid.Column="1" Text="1.0×"
+                                                   FontWeight="SemiBold"
+                                                   Foreground="{DynamicResource TextFillColorPrimaryBrush}" />
+                                    </Grid>
+                                    <Slider x:Name="IntensitySlider" Minimum="0"
+                                            Maximum="{x:Static core:DlssNrOptions.MaximumStrength}" Value="1"
+                                            TickFrequency="0.1" IsSnapToTickEnabled="True" />
+                                </StackPanel>
+                                <StackPanel>
+                                    <Grid ColumnDefinitions="*,Auto">
+                                        <TextBlock Classes="FieldLabel" Text="局部色调" />
+                                        <TextBlock x:Name="LocalToneValue" Grid.Column="1" Text="1.0×"
+                                                   FontWeight="SemiBold"
+                                                   Foreground="{DynamicResource TextFillColorPrimaryBrush}" />
+                                    </Grid>
+                                    <Slider x:Name="LocalToneSlider" Minimum="0"
+                                            Maximum="{x:Static core:DlssNrOptions.MaximumStrength}" Value="1"
+                                            TickFrequency="0.1" IsSnapToTickEnabled="True" />
+                                </StackPanel>
+                                <StackPanel>
+                                    <Grid ColumnDefinitions="*,Auto">
+                                        <TextBlock Classes="FieldLabel" Text="局部结构" />
+                                        <TextBlock x:Name="LocalStructValue" Grid.Column="1" Text="1.0×"
+                                                   FontWeight="SemiBold"
+                                                   Foreground="{DynamicResource TextFillColorPrimaryBrush}" />
+                                    </Grid>
+                                    <Slider x:Name="LocalStructSlider" Minimum="0"
+                                            Maximum="{x:Static core:DlssNrOptions.MaximumStrength}" Value="1"
+                                            TickFrequency="0.1" IsSnapToTickEnabled="True" />
+                                </StackPanel>
+                                <StackPanel>
+                                    <Grid ColumnDefinitions="*,Auto">
+                                        <TextBlock Classes="FieldLabel" Text="皮肤结构" />
+                                        <TextBlock x:Name="SkinValue" Grid.Column="1" Text="0.5×"
+                                                   FontWeight="SemiBold"
+                                                   Foreground="{DynamicResource TextFillColorPrimaryBrush}" />
+                                    </Grid>
+                                    <Slider x:Name="SkinSlider" Minimum="0"
+                                            Maximum="{x:Static core:DlssNrOptions.MaximumStrength}" Value="0.5"
+                                            TickFrequency="0.1" IsSnapToTickEnabled="True" />
+                                </StackPanel>
+                                <CheckBox x:Name="AutoMaskBox" Content="自动掩码（保护人脸与皮肤）" />
+                            </StackPanel>
+                        </StackPanel>
+                    </Border>
+
+                    <Border Classes="ToolCard">
+                        <StackPanel Classes="ToolCardContent">
+                            <TextBlock Classes="SectionHeader" Text="输出与编码" />
+                            <Grid ColumnDefinitions="*,*" ColumnSpacing="10">
+                                <StackPanel>
+                                    <TextBlock Classes="FieldLabel" Text="容器" />
+                                    <ComboBox x:Name="ContainerBox" SelectedIndex="0">
+                                        <ComboBoxItem Content="MP4" />
+                                        <ComboBoxItem Content="MKV" />
+                                        <ComboBoxItem Content="MOV" />
+                                        <ComboBoxItem Content="AVI" />
+                                        <ComboBoxItem Content="GIF" />
+                                    </ComboBox>
+                                </StackPanel>
+                                <StackPanel Grid.Column="1">
+                                    <TextBlock Classes="FieldLabel" Text="视频编码" />
+                                    <ComboBox x:Name="CodecBox" SelectedIndex="1">
+                                        <ComboBoxItem Content="H.264 / AVC" />
+                                        <ComboBoxItem Content="H.265 / HEVC" />
+                                        <ComboBoxItem Content="AV1" />
+                                        <ComboBoxItem Content="VP9" />
+                                        <ComboBoxItem Content="MPEG-4" />
+                                    </ComboBox>
+                                </StackPanel>
+                            </Grid>
+                            <StackPanel Classes="FormRow">
+                                <TextBlock Classes="FieldLabel" Text="编码硬件" />
+                                <ComboBox x:Name="HardwareBox" SelectedIndex="1">
+                                    <ComboBoxItem Content="CPU 软件编码" />
+                                    <ComboBoxItem Content="NVIDIA NVENC" />
+                                    <ComboBoxItem Content="Intel QSV" />
+                                    <ComboBoxItem Content="AMD AMF" />
+                                </ComboBox>
+                            </StackPanel>
+                            <StackPanel Classes="FormRow">
+                                <TextBlock Classes="FieldLabel" Text="视频解码" />
+                                <ComboBox x:Name="DecodeModeBox" SelectedIndex="0"
+                                          AutomationProperties.AutomationId="DecodeMode">
+                                    <ComboBoxItem Content="自动 · 优先 NVIDIA NVDEC" />
+                                    <ComboBoxItem Content="强制 NVIDIA NVDEC" />
+                                    <ComboBoxItem Content="CPU 软件解码" />
+                                </ComboBox>
+                                <TextBlock Classes="Caption" Margin="0,4,0,0"
+                                           Text="自动模式在首帧初始化失败时改用软件解码；强制 NVDEC 则报告错误。" />
+                            </StackPanel>
+                            <Grid ColumnDefinitions="*,*" ColumnSpacing="10">
+                                <StackPanel>
+                                    <TextBlock Classes="FieldLabel" Text="编码预设" />
+                                    <ComboBox x:Name="EncoderPresetBox" SelectedIndex="2">
+                                        <ComboBoxItem Content="P1 · 最快" />
+                                        <ComboBoxItem Content="P3 · 快速" />
+                                        <ComboBoxItem Content="P5 · 平衡" />
+                                        <ComboBoxItem Content="P7 · 最高质量" />
+                                    </ComboBox>
+                                </StackPanel>
+                                <StackPanel Grid.Column="1">
+                                    <TextBlock Classes="FieldLabel" Text="帧率" />
+                                    <ComboBox x:Name="FpsBox" SelectedIndex="0">
+                                        <ComboBoxItem Content="跟随源视频" />
+                                        <ComboBoxItem Content="固定 24 fps" />
+                                        <ComboBoxItem Content="固定 30 fps" />
+                                        <ComboBoxItem Content="固定 60 fps" />
+                                    </ComboBox>
+                                </StackPanel>
+                            </Grid>
+                            <StackPanel Classes="FormRow">
+                                <TextBlock Classes="FieldLabel" Text="HDR 输出" />
+                                <ComboBox x:Name="HdrBox" SelectedIndex="0">
+                                    <ComboBoxItem Content="自动跟随源视频" />
+                                    <ComboBoxItem Content="强制 HDR10 / PQ" />
+                                    <ComboBoxItem Content="强制 SDR" />
+                                </ComboBox>
+                            </StackPanel>
+                            <Separator Margin="0,2" />
+                            <TextBlock Text="视频码率" FontWeight="SemiBold" FontSize="13" />
+                            <Grid ColumnDefinitions="*,110" ColumnSpacing="10">
+                                <StackPanel>
+                                    <TextBlock Classes="FieldLabel" Text="码率模式" />
+                                    <ComboBox x:Name="RateControlBox" SelectedIndex="0">
+                                        <ComboBoxItem Content="质量优先" />
+                                        <ComboBoxItem Content="固定码率" />
+                                    </ComboBox>
+                                </StackPanel>
+                                <StackPanel Grid.Column="1">
+                                    <TextBlock Classes="FieldLabel" Text="目标 · kbps" />
+                                    <TextBox x:Name="VideoBitrateBox" Text="8000" />
+                                </StackPanel>
+                            </Grid>
+                            <StackPanel Classes="FormRow">
+                                <Grid ColumnDefinitions="*,Auto">
+                                    <TextBlock Classes="FieldLabel" Text="质量 · CQ / CRF" />
+                                    <TextBlock x:Name="QualityValue" Grid.Column="1" Text="19" FontWeight="SemiBold"
+                                               Foreground="{DynamicResource TextFillColorPrimaryBrush}" />
+                                </Grid>
+                                <Slider x:Name="QualitySlider" Minimum="0" Maximum="51" Value="19"
+                                        TickFrequency="1" IsSnapToTickEnabled="True" />
+                                <CheckBox x:Name="TwoPassBox" Content="软件编码启用两遍" />
+                            </StackPanel>
+                            <Separator Margin="0,2" />
+                            <TextBlock Text="音频" FontWeight="SemiBold" FontSize="13" />
+                            <StackPanel Classes="FormRow">
+                                <TextBlock Classes="FieldLabel" Text="音频编码" />
+                                <ComboBox x:Name="AudioBox" SelectedIndex="0">
+                                    <ComboBoxItem Content="复制源音轨" />
+                                    <ComboBoxItem Content="AAC" />
+                                    <ComboBoxItem Content="MP3" />
+                                    <ComboBoxItem Content="Opus" />
+                                    <ComboBoxItem Content="Vorbis" />
+                                    <ComboBoxItem Content="FLAC" />
+                                    <ComboBoxItem Content="AC-3" />
+                                    <ComboBoxItem Content="无音频" />
+                                </ComboBox>
+                            </StackPanel>
+                            <Grid ColumnDefinitions="*,*" ColumnSpacing="10">
+                                <StackPanel>
+                                    <TextBlock Classes="FieldLabel" Text="音频码率 · kbps" />
+                                    <TextBox x:Name="AudioBitrateBox" Text="192" />
+                                </StackPanel>
+                                <StackPanel Grid.Column="1">
+                                    <TextBlock Classes="FieldLabel" Text="音频增益 · dB" />
+                                    <TextBox x:Name="AudioGainBox" Text="0" />
+                                </StackPanel>
+                            </Grid>
+                        </StackPanel>
+                    </Border>
+
+                    <Border Classes="ToolCard">
+                        <StackPanel Classes="ToolCardContent">
+                            <TextBlock Classes="SectionHeader" Text="增强与滤镜" />
+                            <StackPanel>
+                                <TextBlock Classes="FieldLabel" Text="RTX Video 超分" />
+                                <ComboBox x:Name="SuperResolutionBox" SelectedIndex="0">
+                                    <ComboBoxItem Tag="1" Content="关闭（原始分辨率）" />
+                                    <ComboBoxItem Tag="2" Content="2×（RTX Video）" />
+                                    <ComboBoxItem Tag="4" Content="4×（RTX Video）" />
+                                </ComboBox>
+                            </StackPanel>
+                            <CheckBox x:Name="NrBeforeSuperResolutionBox" Content="NR 前置（速度优先）" IsChecked="True"
+                                      ToolTip.Tip="勾选：先 NR，再超分。取消勾选：先超分，再 NR，可对照后置 NR 的视觉效果。" />
+                            <TextBlock x:Name="ProcessingOrderHint" Classes="Caption" Text="超分已关闭：仅处理 DLSS NR。" />
+                            <StackPanel Spacing="6">
+                                <CheckBox x:Name="EnableInterpolationBox" Content="启用补帧"
+                                          AutomationProperties.AutomationId="EnableInterpolation" />
+                                <ComboBox x:Name="InterpolationBackendBox" SelectedIndex="0" IsEnabled="False"
+                                          AutomationProperties.AutomationId="InterpolationBackend">
+                                    <ComboBoxItem Content="NVIDIA Vulkan 光流" />
+                                    <ComboBoxItem Content="RIFE 4.25 Lite（GPU）" />
+                                    <ComboBoxItem Content="RIFE 4.25（GPU）" />
+                                </ComboBox>
+                                <ComboBox x:Name="InterpolationMultiplierBox" SelectedIndex="0" IsEnabled="False"
+                                          AutomationProperties.AutomationId="InterpolationMultiplier">
+                                    <ComboBoxItem Content="2× 帧率" />
+                                    <ComboBoxItem Content="4× 帧率" />
+                                    <ComboBoxItem Content="6× 帧率" />
+                                </ComboBox>
+                                <TextBlock Classes="Caption"
+                                           Text="独立于 NR 与超分。Vulkan 支持 16 位 HDR；RIFE 当前仅支持 SDR 输入和输出，HDR 请使用 Vulkan。预览显示源帧。" />
+                            </StackPanel>
+                            <Expander x:Name="FiltersExpander" Header="缩放、降噪与裁剪" HorizontalAlignment="Stretch">
+                                <StackPanel Spacing="10" Margin="0,10,0,0">
+                                    <StackPanel>
+                                        <TextBlock Classes="FieldLabel" Text="输出尺寸" />
+                                        <ComboBox x:Name="ScaleBox" SelectedIndex="0">
+                                            <ComboBoxItem Content="保持原尺寸" />
+                                            <ComboBoxItem Content="适应 1920×1080" />
+                                            <ComboBoxItem Content="适应 2560×1440" />
+                                            <ComboBoxItem Content="适应 3840×2160" />
+                                        </ComboBox>
+                                    </StackPanel>
+                                    <Grid ColumnDefinitions="*,*" ColumnSpacing="10">
+                                        <StackPanel>
+                                            <TextBlock Classes="FieldLabel" Text="降噪" />
+                                            <ComboBox x:Name="DenoiseBox" SelectedIndex="0">
+                                                <ComboBoxItem Content="不降噪" />
+                                                <ComboBoxItem Content="轻度降噪" />
+                                                <ComboBoxItem Content="中度降噪" />
+                                                <ComboBoxItem Content="强度降噪" />
+                                            </ComboBox>
+                                        </StackPanel>
+                                        <StackPanel Grid.Column="1">
+                                            <TextBlock Classes="FieldLabel" Text="去隔行" />
+                                            <ComboBox x:Name="DeinterlaceBox" SelectedIndex="0">
+                                                <ComboBoxItem Content="不去隔行" />
+                                                <ComboBoxItem Content="Yadif" />
+                                                <ComboBoxItem Content="Bwdif" />
+                                            </ComboBox>
+                                        </StackPanel>
+                                    </Grid>
+                                    <CheckBox x:Name="CropBox" Content="启用裁剪（像素）" />
+                                    <Grid ColumnDefinitions="*,*,*,*" ColumnSpacing="8">
+                                        <StackPanel>
+                                            <TextBlock Classes="FieldLabel" Text="上" />
+                                            <TextBox x:Name="CropTopBox" />
+                                        </StackPanel>
+                                        <StackPanel Grid.Column="1">
+                                            <TextBlock Classes="FieldLabel" Text="下" />
+                                            <TextBox x:Name="CropBottomBox" />
+                                        </StackPanel>
+                                        <StackPanel Grid.Column="2">
+                                            <TextBlock Classes="FieldLabel" Text="左" />
+                                            <TextBox x:Name="CropLeftBox" />
+                                        </StackPanel>
+                                        <StackPanel Grid.Column="3">
+                                            <TextBlock Classes="FieldLabel" Text="右" />
+                                            <TextBox x:Name="CropRightBox" />
+                                        </StackPanel>
+                                    </Grid>
+                                </StackPanel>
+                            </Expander>
+                            <Expander x:Name="GifExpander" Header="GIF 参数" HorizontalAlignment="Stretch">
+                                <StackPanel Spacing="10" Margin="0,10,0,0">
+                                    <TextBlock Classes="Caption" Text="选择 GIF 容器时生效。" />
+                                    <Grid ColumnDefinitions="*,*,*" ColumnSpacing="8">
+                                        <StackPanel>
+                                            <TextBlock Classes="FieldLabel" Text="宽度 · px" />
+                                            <TextBox x:Name="GifWidthBox" Text="480" />
+                                        </StackPanel>
+                                        <StackPanel Grid.Column="1">
+                                            <TextBlock Classes="FieldLabel" Text="帧率 · fps" />
+                                            <TextBox x:Name="GifFpsBox" Text="15" />
+                                        </StackPanel>
+                                        <StackPanel Grid.Column="2">
+                                            <TextBlock Classes="FieldLabel" Text="颜色数" />
+                                            <TextBox x:Name="GifColorsBox" Text="256" />
+                                        </StackPanel>
+                                    </Grid>
+                                    <StackPanel>
+                                        <TextBlock Classes="FieldLabel" Text="抖动算法" />
+                                        <ComboBox x:Name="GifDitherBox" SelectedIndex="1">
+                                            <ComboBoxItem Content="无抖动" Tag="none" />
+                                            <ComboBoxItem Content="Bayer" Tag="bayer" />
+                                            <ComboBoxItem Content="Floyd-Steinberg" Tag="floyd_steinberg" />
+                                            <ComboBoxItem Content="Sierra2_4a" Tag="sierra2_4a" />
+                                        </ComboBox>
+                                    </StackPanel>
+                                </StackPanel>
+                            </Expander>
+                        </StackPanel>
+                    </Border>
+                </StackPanel>
+            </ScrollViewer>
+
+            <!-- 预览列 -->
+            <Grid Grid.Column="2" RowDefinitions="*,Auto,Auto" RowSpacing="12">
+                <Border Grid.Row="0" Classes="ToolCard" Padding="12" ClipToBounds="True">
+                    <Grid RowDefinitions="Auto,*,Auto,Auto" RowSpacing="8">
+                        <Grid Grid.Row="0" ColumnDefinitions="*,Auto">
+                            <StackPanel Spacing="2">
+                                <TextBlock Text="实时预览" FontWeight="SemiBold"
+                                           Foreground="{DynamicResource TextFillColorPrimaryBrush}" />
+                                <TextBlock Classes="Caption"
+                                           Text="双路实时帧 · 源帧与处理结果（视频/图片通用）" />
+                            </StackPanel>
+                            <TextBlock x:Name="LivePreviewText" Grid.Column="1" Text="等待输入" Classes="Caption"
+                                       VerticalAlignment="Center" />
+                        </Grid>
+                        <Grid Grid.Row="1" ColumnDefinitions="*,*" ColumnSpacing="10" MinHeight="120">
+                            <Border Classes="PreviewFrame">
+                                <Grid>
+                                    <Viewbox Stretch="Uniform" HorizontalAlignment="Center"
+                                             VerticalAlignment="Center">
+                                        <Grid Width="640" Height="360"
+                                              Background="{DynamicResource ControlFillColorDefaultBrush}">
+                                            <Image x:Name="OriginalImage" Stretch="Uniform" />
+                                            <TextBlock x:Name="SourcePlaceholder" Text="等待输入帧"
+                                                       Foreground="{DynamicResource TextFillColorTertiaryBrush}"
+                                                       FontSize="16"
+                                                       HorizontalAlignment="Center" VerticalAlignment="Center" />
+                                            <TextBlock Text="SOURCE" FontSize="11"
+                                                       Foreground="{DynamicResource TextFillColorTertiaryBrush}"
+                                                       HorizontalAlignment="Left" VerticalAlignment="Bottom"
+                                                       Margin="10,0,0,8" />
+                                        </Grid>
+                                    </Viewbox>
+                                </Grid>
+                            </Border>
+                            <Border Grid.Column="1" Classes="PreviewFrame">
+                                <Grid>
+                                    <Viewbox Stretch="Uniform" HorizontalAlignment="Center"
+                                             VerticalAlignment="Center">
+                                        <Grid Width="640" Height="360"
+                                              Background="{DynamicResource ControlFillColorDefaultBrush}">
+                                            <Image x:Name="ProcessedImage" Stretch="Uniform" />
+                                            <TextBlock x:Name="OutputPlaceholder" Text="等待处理结果"
+                                                       Foreground="{DynamicResource TextFillColorTertiaryBrush}"
+                                                       FontSize="16"
+                                                       HorizontalAlignment="Center" VerticalAlignment="Center" />
+                                            <TextBlock Text="OUTPUT" FontSize="11"
+                                                       Foreground="{DynamicResource TextFillColorTertiaryBrush}"
+                                                       HorizontalAlignment="Left" VerticalAlignment="Bottom"
+                                                       Margin="10,0,0,8" />
+                                        </Grid>
+                                    </Viewbox>
+                                </Grid>
+                            </Border>
+                        </Grid>
+                        <Grid Grid.Row="2" ColumnDefinitions="*,Auto" ColumnSpacing="12">
+                            <StackPanel Spacing="2">
+                                <TextBlock Text="同步预览 · SOURCE ↔ OUTPUT" FontSize="13"
+                                           Foreground="{DynamicResource TextFillColorPrimaryBrush}" />
+                                <TextBlock x:Name="PreviewFrameText" Text="等待处理" Classes="Caption" />
+                            </StackPanel>
+                            <TextBlock Grid.Column="1" x:Name="PreviewTimeText" Text="00:00:00 / 00:00:00"
+                                       Classes="Caption" VerticalAlignment="Center" />
+                        </Grid>
+                        <Grid Grid.Row="3" ColumnDefinitions="*,Auto" ColumnSpacing="12">
+                            <ProgressBar x:Name="PreviewProgress" Minimum="0" Maximum="100" Value="0"
+                                         Height="4" VerticalAlignment="Center" />
+                            <TextBlock x:Name="PreviewFpsText" Grid.Column="1" Text="预览 — fps" Classes="Caption"
+                                       VerticalAlignment="Center" />
+                        </Grid>
+                    </Grid>
+                </Border>
+
+                <Border Grid.Row="1" Classes="ToolCardTight">
+                    <Grid ColumnDefinitions="*,Auto,Auto,Auto" ColumnSpacing="16">
+                        <TextBlock x:Name="PipelineStatus" Text="管线就绪 · 预览播放器待命"
+                                   Foreground="{DynamicResource TextFillColorPrimaryBrush}"
+                                   TextWrapping="Wrap" />
+                        <TextBlock x:Name="FramesText" Grid.Column="1" Text="0 帧" Classes="Caption" />
+                        <TextBlock x:Name="SpeedText" Grid.Column="2" Text="— fps" Classes="Caption" />
+                        <TextBlock x:Name="OutputText" Grid.Column="3" Text="—" FontWeight="SemiBold"
+                                   Foreground="{DynamicResource TextFillColorPrimaryBrush}" />
+                    </Grid>
+                </Border>
+
+                <Border Grid.Row="2" Classes="ToolCardTight">
+                    <Grid RowDefinitions="Auto,*" RowSpacing="4">
+                        <Grid ColumnDefinitions="*,Auto">
+                            <TextBlock Text="运行日志" Classes="Caption" VerticalAlignment="Center" />
+                            <Button Grid.Column="1" Classes="Quiet" Content="清空" Click="ClearLog_Click" />
+                        </Grid>
+                        <TextBox Grid.Row="1" x:Name="LogBox" Classes="TerminalBoxReadOnly" Height="110"
+                                 Background="Transparent" BorderThickness="0" />
+                    </Grid>
+                </Border>
+            </Grid>
+        </Grid>
+
+        <!-- ============ 执行栏 ============ -->
+        <Border Grid.Row="3" Classes="ToolCard" Padding="16,12">
+            <Grid RowDefinitions="Auto,Auto,Auto" RowSpacing="8">
+                <Grid Grid.Row="0" ColumnDefinitions="Auto,Auto,*" ColumnSpacing="8">
+                    <Button x:Name="StartButton" Classes="Primary" Content="开始处理" Click="Start_Click"
+                            Padding="20,7" />
+                    <Button Grid.Column="1" x:Name="CancelButton" Content="取消" Click="Cancel_Click"
+                            IsEnabled="False" Padding="20,7" />
+                    <CheckBox Grid.Column="2" x:Name="FramesLimitBox" Content="仅处理前 60 帧（冒烟测试）"
+                              HorizontalAlignment="Right" VerticalAlignment="Center" />
+                </Grid>
+                <Grid Grid.Row="1" ColumnDefinitions="*,Auto" ColumnSpacing="12">
+                    <ProgressBar x:Name="Progress" Height="6" Minimum="0" Maximum="100" VerticalAlignment="Center" />
+                    <TextBlock Grid.Column="1" x:Name="QueueStatusText" Text="" Classes="Caption"
+                               VerticalAlignment="Center" />
+                </Grid>
+                <TextBlock Grid.Row="2" x:Name="StatusText" Text="就绪。" Classes="Caption" />
+            </Grid>
+        </Border>
+    </Grid>
+</UserControl>

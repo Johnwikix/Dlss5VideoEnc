@@ -102,11 +102,11 @@ SDR 源选择「强制 HDR10 / PQ」后使用 NVIDIA 驱动 RTX Video HDR 做真
 
 ### 🗃️ DLSS NR 运行库与模型预设
 
-界面的「NR 版本」从 `runtime\` 与 `mods\` 递归发现 `nvngx_dlssnr*.dll`，显示 DLL 的 PE 数值版本与目录标签，**没有版本白名单**；明确选择按相对路径作为 ID 保存，刷新、重启、移动整个发布目录都不会因排序变化选错。保存的 ID 不在扫描结果里时显示「已缺失 · <旧 ID>」并保持选中，不静默替换；带着它点开始会提示重新选择并拒绝启动任务。
+界面的「NR 版本」从 `runtime\`、设置页指定的运行库目录与 `mods\` 递归发现 `nvngx_dlssnr*.dll`（用户目录条目带 `custom/` 前缀），显示 DLL 的 PE 数值版本与目录标签，**没有版本白名单**；明确选择按相对路径作为 ID 保存，刷新、重启、移动整个发布目录都不会因排序变化选错。保存的 ID 不在扫描结果里时显示「已缺失 · <旧 ID>」并保持选中，不静默替换；带着它点开始会提示重新选择并拒绝启动任务。
 
 「NR 模型预设（Preset）」是同一个 DLL 内部的模型提示，不是另一个文件：值只有 `0 自动 / 1 A 旧模型 / 2 B 轻量模型`，经 `dlssnr_set_options`、`dlssnr_init`、`dlssnr_create_feature` 传给宿主。默认 **A**，旧配置的 auto 在升级时一次性迁移为 A；310.9.16 的 auto 选择 B，A 保留 310.8 的模型效果，310.8 只有旧模型，选 B 也不会新增模型。改动 preset 会触发 NR 会话重建，因此「下次开始队列时生效」，运行中无法热切换；CLI 与应用 `--autorun` 用 `--nr-preset auto|a|b`。
 
-「自动」解析链（命中即停）：`DLSS5_NR_RUNTIME_DLL` → `mods` 覆盖 → `DLSS5_GPU_SERIES` 指定目录 → **根目录激活版 `runtime\nvngx_dlssnr.dll`** → 按显卡代际匹配 `nr\` 变体（仅当根目录未放置）→ `nr\` 全场最低版本。代际匹配按显存最大的 NVIDIA 适配器识别 RTX 20/30/40/50（依 PCI 设备号段），只挑目录名声明支持该代际的变体，**版本低者优先**，版本未知排最后；关闭 NR 时不解析或加载所选 DLL。需要并存多个版本时可用 `runtime\30`、`runtime\40`、`runtime\50` 布局并设置 `DLSS5_GPU_SERIES`。
+「自动」解析链（命中即停）：`DLSS5_NR_RUNTIME_DLL` → `mods` 覆盖 → **设置页指定的运行库目录**（激活版 → 代际匹配 → 最低版本）→ `DLSS5_GPU_SERIES` 指定目录 → **根目录激活版 `runtime\nvngx_dlssnr.dll`** → 按显卡代际匹配 `nr\` 变体（仅当根目录未放置）→ `nr\` 全场最低版本。未指定自定义目录时行为与历史版本一致。代际匹配按显存最大的 NVIDIA 适配器识别 RTX 20/30/40/50（依 PCI 设备号段），只挑目录名声明支持该代际的变体，**版本低者优先**，版本未知排最后；关闭 NR 时不解析或加载所选 DLL。需要并存多个版本时可用 `runtime\30`、`runtime\40`、`runtime\50` 布局并设置 `DLSS5_GPU_SERIES`。
 
 **全部版本均可完整转码**：曾存在的驱动层死锁（同一调用线程先 EvaluateFeature 再做 NGX teardown 时挂起）已在宿主 `dlssnr_host_v2.dll` 修复——teardown 移到工作线程并带 3 秒看门狗；极少数看门狗放弃清理时，同进程后续 NR 会话会明确报错（重启应用即可），不影响已完成的输出，`nr\` 深层路径也不再受此限制。
 
@@ -140,6 +140,19 @@ dotnet run --project src/Dlss5Demo.Cli -c Release -- input.mp4 output-hdr.mp4 --
 其他对照开关：`--gpu-temporal 0`、`--motion-guidance 0`、`--continuous-history 0`、`--temporal 0`、`--fine-motion 1`、`--gpu-frames 0`、`--gpu-enhancement 0`、`--sr-gpu-encode 0`、`--nr-before-sr 0`、`--nr-queue 0`、`--preview 0`、`--frames 180`、`--image-format png|jpg`。把 Core 嵌入其他程序时，在入口先调用 `RtxVideoWorker.TryServe(args)`，返回 `true` 时结束正常启动流程；也可用 `TranscodeOptions.VsrWorkerExecutablePath` 指定具备该入口的工作程序。桌面程序、CLI 与测试程序已接入，无需额外安装工作程序。
 
 ### 🖥️ 界面与运行库管理
+
+界面按 Fluent（FluentAvalonia）重新组织：`FAAppWindow` + `FANavigationView` 外壳，左侧导航分为「工作台」与「设置」两页，两页常驻（队列、预览位图与在途管线在切页时保持不变）。设计令牌集中在 `Views/Themes/CommonStyles.axaml`（页边距、卡片内边距、圆角、字号、等宽字体），页面统一使用 `ToolCard`、`ToolPageHeader`、`StatusPill`；主题支持跟随系统 / 浅色 / 深色并在设置页即时切换、跨会话保存，所有颜色走 Fluent 主题资源，三套主题同步可用。
+
+设置页的「DLSS NR 运行库」卡片用于管理模型目录，用户在 MSIX 只读安装目录之外也能自行添加模型：
+
+| 操作 | 行为 |
+| :--- | :--- |
+| 打开 | 在资源管理器中打开当前运行库目录（不存在时先创建） |
+| 更改… | 选择新目录；可勾选「同时迁移现有运行库」，逐个复制并校验 SHA-256 后删除源文件，带进度与取消 |
+| 迁移内置运行库到此目录 | 把 `runtime\` 中的 `nvngx_dlssnr*.dll` 迁到当前自定义目录，适用于切换时未迁移的情况 |
+| 恢复默认 | 回到内置 `runtime\` 目录；不移动、不删除已有文件，之后可再指回原目录 |
+
+迁移按文件粒度处理：内容相同的文件只保留一份；同名但内容不同的文件不会被覆盖，而是另存为 `nvngx_dlssnr (2).dll` 之类的副本；只读目录下复制成功但源文件删不掉时保留源文件并在结果里说明。迁移会改变版本 ID 前缀（`runtime/` ↔ `custom/`），已保存的选择自动重映射；新目录中的 DLL 随即出现在工作台的「NR 版本」列表里。
 
 窗口和 EXE 图标已统一为适合小尺寸的双色扁平图标，矢量源与生成工具见 `src/Dlss5Demo.App/Assets/dlss5-video-enc.svg` 与 `tools\generate-icon.py`（MSIX 资产由 `tools\generate-msix-assets.py` 生成，需要 Pillow）。选片旁的「打开目录」在资源管理器中定位源视频，输出路径旁的目录按钮定位输出文件，尚未生成时打开输出目录。
 
@@ -273,7 +286,7 @@ VS 内打包：打开 `Dlss5VideoEnc.sln`，活动配置选 `Release|x64`（或 
     'packaging\Dlss5VideoEnc.Msix\obj\x64\Release\Dlss5VideoEnc.Msix.wapproj.FileListAbsolute.txt'
   ```
 
-  精简运行库后，MSIX 应用私有 `settings.json` 保存的 `NrRuntimeId` 也可能指向已不存在的子目录，界面显示「已缺失 · …」，在「NR 版本」下拉重新选择「自动」或 `runtime`（当前默认）即可
+  精简运行库后，MSIX 应用私有 `settings.json` 保存的 `NrRuntimeId` 也可能指向已不存在的子目录，界面显示「已缺失 · …」，在「NR 版本」下拉重新选择「自动」或 `runtime（内置激活版）` 即可
 - **`0x800700C1` 签名失败**：VS 报「未能对 … 签名」且输出含 `Done Adding Additional Store` 时，`SignedCode::Sign returned error: 0x800700C1`（`ERROR_BAD_EXE_FORMAT`）不是证书问题，而是 AppxSip 发现包内某个 PE 的 Authenticode 证书目录损坏，常见于裁剪过的第三方 DLL。用 `APPXSIP_LOG=1` 再跑 `signtool sign /fd SHA256 /sha1 <指纹> <包>.msix`，输出中 `File has malformed certificate: ...` 即问题文件。本项目命中的是 310.8.2.0 社区 SF-v2 DLL（精简后位于 `runtime\nvngx_dlssnr.dll`）：Security Directory 指向文件末尾之外。`tools\package.ps1` 现在会在舞台完成后自动修复，用 `-SkipStage` 复用旧负载时需重新跑一次 `package.ps1`
 - **PowerShell 舞台「已退出，代码为 1」**：WinPS 5.1 会把无 BOM 的 UTF-8 脚本按 GBK 解码，产生语法错误且一行都不执行。若 `artifacts\msix\payload` 没有变化，先检查 `tools\package.ps1` 与 `tools\package-msix.ps1` 是否为 UTF-8 with BOM
 - **包体异常翻倍 / `%3B` 乱码路径**：早期从 `WapProjPackageFile` 推导入口前缀时把多个 item transform 结果用 `;` 连接后传给 `GetDirectoryName`，导致每个文件被打包两份（536 条目 / 1.95 GB）。现在只取第一个 `.exe` 项并对含分号前缀直接报错；若仍出现，清理 WAP 工程 `bin\`、`obj\`、`AppPackages\` 后重新生成

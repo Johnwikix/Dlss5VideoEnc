@@ -1,0 +1,53 @@
+<win:FAAppWindow xmlns="https://github.com/avaloniaui"
+                 xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+                 xmlns:views="using:Dlss5Demo.App.Views"
+                 xmlns:ui="using:FluentAvalonia.UI.Controls"
+                 xmlns:win="using:FluentAvalonia.UI.Windowing"
+                 x:Class="Dlss5Demo.App.Views.MainWindow"
+                 Icon="/Assets/dlss5-video-enc.png"
+                 Title="DLSS5 Video Enc"
+                 Width="1440" Height="920" MinWidth="1120" MinHeight="720"
+                 WindowStartupLocation="CenterScreen">
+
+    <Grid RowDefinitions="48,*">
+        <!-- 自定义标题栏：FAAppWindow 把系统按钮叠在右侧，这里只放图标与标题。 -->
+        <Grid x:Name="AppTitleBar" Grid.Row="0" Height="48" ColumnDefinitions="Auto,*,Auto"
+              Background="Transparent" PointerPressed="AppTitleBar_PointerPressed">
+            <Image Grid.Column="0" Source="/Assets/dlss5-video-enc.png" Width="20" Height="20"
+                   Margin="16,0,8,0" VerticalAlignment="Center" />
+            <TextBlock Grid.Column="1" Text="DLSS5 Video Enc" VerticalAlignment="Center" FontSize="13"
+                       Foreground="{DynamicResource TextFillColorSecondaryBrush}" />
+            <ContentControl Grid.Column="2" Width="150" />
+        </Grid>
+
+        <ui:FANavigationView Grid.Row="1" x:Name="Nav"
+                             PaneDisplayMode="Left"
+                             OpenPaneLength="200"
+                             CompactPaneLength="48"
+                             IsBackButtonVisible="False"
+                             IsSettingsVisible="False"
+                             AlwaysShowHeader="False"
+                             SelectionChanged="Nav_SelectionChanged">
+            <ui:FANavigationView.MenuItems>
+                <ui:FANavigationViewItem x:Name="WorkbenchNavItem" Content="工作台" Tag="workbench">
+                    <ui:FANavigationViewItem.IconSource>
+                        <ui:FASymbolIconSource Symbol="Video" />
+                    </ui:FANavigationViewItem.IconSource>
+                </ui:FANavigationViewItem>
+            </ui:FANavigationView.MenuItems>
+            <ui:FANavigationView.FooterMenuItems>
+                <ui:FANavigationViewItem x:Name="SettingsNavItem" Content="设置" Tag="settings">
+                    <ui:FANavigationViewItem.IconSource>
+                        <ui:FASymbolIconSource Symbol="Setting" />
+                    </ui:FANavigationViewItem.IconSource>
+                </ui:FANavigationViewItem>
+            </ui:FANavigationView.FooterMenuItems>
+
+            <!-- 两个页面都常驻：工作台持有队列、预览位图与正在运行的管线，切页不能重建。 -->
+            <Grid>
+                <views:WorkbenchView x:Name="WorkbenchPage" />
+                <views:SettingsView x:Name="SettingsPage" IsVisible="False" />
+            </Grid>
+        </ui:FANavigationView>
+    </Grid>
+</win:FAAppWindow>

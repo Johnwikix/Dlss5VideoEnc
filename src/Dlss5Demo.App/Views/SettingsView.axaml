@@ -1,0 +1,97 @@
+<UserControl xmlns="https://github.com/avaloniaui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:controls="using:Dlss5Demo.App.Views.Controls"
+             x:Class="Dlss5Demo.App.Views.SettingsView">
+
+    <ScrollViewer VerticalScrollBarVisibility="Auto">
+        <StackPanel Classes="PageRoot">
+            <controls:ToolPageHeader Title="设置"
+                                     Subtitle="外观、DLSS NR 运行库目录与应用信息" />
+
+            <!-- ============ 外观 ============ -->
+            <TextBlock Classes="GroupHeader" Text="外观" />
+            <Border Classes="ToolCard">
+                <StackPanel Classes="ToolCardContent">
+                    <StackPanel Spacing="2">
+                        <TextBlock Text="主题" FontWeight="SemiBold" />
+                        <TextBlock Classes="Caption" Text="「跟随系统」随 Windows 的浅色/深色设置切换；所有页面共用同一主题。" />
+                    </StackPanel>
+                    <StackPanel Orientation="Horizontal" Spacing="20" Margin="0,4,0,0">
+                        <RadioButton x:Name="ThemeSystemRadio" GroupName="AppTheme" Tag="0"
+                                     Content="跟随系统" IsCheckedChanged="ThemeRadio_Checked" />
+                        <RadioButton x:Name="ThemeLightRadio" GroupName="AppTheme" Tag="1"
+                                     Content="浅色" IsCheckedChanged="ThemeRadio_Checked" />
+                        <RadioButton x:Name="ThemeDarkRadio" GroupName="AppTheme" Tag="2"
+                                     Content="深色" IsCheckedChanged="ThemeRadio_Checked" />
+                    </StackPanel>
+                </StackPanel>
+            </Border>
+
+            <!-- ============ DLSS NR 运行库目录 ============ -->
+            <TextBlock Classes="GroupHeader" Text="DLSS NR 运行库" />
+            <Border Classes="ToolCard">
+                <StackPanel Classes="ToolCardContent" Spacing="10">
+                    <Grid ColumnDefinitions="*,Auto">
+                        <StackPanel Spacing="2" Margin="0,0,12,0">
+                            <TextBlock Text="运行库模型目录" FontWeight="SemiBold" />
+                            <TextBlock Classes="Caption"
+                                       Text="存放 nvngx_dlssnr*.dll 的目录，可含多层子目录。放入后在工作台点「刷新」即可选择；MSIX 安装目录只读，建议指向独立目录。" />
+                        </StackPanel>
+                        <controls:StatusPill Grid.Column="1" x:Name="NrDirectoryPill" Text="内置 runtime"
+                                             Tone="off" VerticalAlignment="Top" />
+                    </Grid>
+
+                    <Grid ColumnDefinitions="*,Auto,Auto,Auto" ColumnSpacing="8">
+                        <TextBox x:Name="NrDirectoryBox" IsReadOnly="True" TextWrapping="Wrap"
+                                 AutomationProperties.Name="NR 运行库目录"
+                                 AutomationProperties.AutomationId="SettingsNrDirectory" />
+                        <Button Grid.Column="1" x:Name="OpenNrDirectoryButton" Content="打开"
+                                Click="OpenNrDirectory_Click"
+                                AutomationProperties.AutomationId="SettingsOpenNrDirectory" />
+                        <Button Grid.Column="2" x:Name="ChangeNrDirectoryButton" Classes="Primary" Content="更改…"
+                                Click="ChangeNrDirectory_Click"
+                                AutomationProperties.AutomationId="SettingsChangeNrDirectory" />
+                        <Button Grid.Column="3" x:Name="ResetNrDirectoryButton" Content="恢复默认"
+                                Click="ResetNrDirectory_Click"
+                                AutomationProperties.AutomationId="SettingsResetNrDirectory" />
+                    </Grid>
+
+                    <WrapPanel>
+                        <Button x:Name="MigrateNrButton" Content="迁移内置运行库到此目录" Margin="0,0,8,4"
+                                Click="MigrateNr_Click"
+                                ToolTip.Tip="把 runtime 目录中的 nvngx_dlssnr*.dll 复制到当前目录，校验后删除源文件"
+                                AutomationProperties.AutomationId="SettingsMigrateNr" />
+                        <Button x:Name="RefreshNrListButton" Content="刷新列表" Margin="0,0,8,4"
+                                Click="RefreshNrList_Click"
+                                ToolTip.Tip="重新扫描目录，并把结果同步到工作台的 NR 版本列表"
+                                AutomationProperties.AutomationId="SettingsRefreshNrList" />
+                        <Button x:Name="CancelMigrationButton" Content="取消迁移" IsVisible="False"
+                                Margin="0,0,8,4" Click="CancelNrMigration_Click" />
+                    </WrapPanel>
+
+                    <TextBlock x:Name="NrSummaryText" Classes="Caption" />
+                    <ProgressBar x:Name="MigrationProgress" Height="4" Minimum="0" Maximum="1"
+                                 IsVisible="False" />
+                    <TextBlock x:Name="NrStatusText" Classes="Caption" IsVisible="False" />
+                    <TextBlock x:Name="NrErrorText" TextWrapping="Wrap" IsVisible="False" FontSize="12"
+                               Foreground="{DynamicResource SystemFillColorCriticalBrush}" />
+                </StackPanel>
+            </Border>
+
+            <!-- ============ 关于 ============ -->
+            <TextBlock Classes="GroupHeader" Text="关于" />
+            <Border Classes="ToolCard">
+                <StackPanel Classes="ToolCardContent">
+                    <TextBlock x:Name="AboutVersionText" FontWeight="SemiBold" />
+                    <TextBlock x:Name="AboutPathText" Classes="Caption" />
+                    <WrapPanel>
+                        <Button x:Name="OpenLogsButton" Content="打开日志目录" Click="OpenLogs_Click"
+                                Margin="0,0,8,4" />
+                        <Button x:Name="OpenRuntimeButton" Content="打开内置运行库目录" Click="OpenRuntimeDir_Click"
+                                Margin="0,0,0,4" />
+                    </WrapPanel>
+                </StackPanel>
+            </Border>
+        </StackPanel>
+    </ScrollViewer>
+</UserControl>
