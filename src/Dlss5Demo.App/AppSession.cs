@@ -1,5 +1,7 @@
 using Avalonia;
+using Avalonia.Platform;
 using Avalonia.Styling;
+using Avalonia.Threading;
 using Dlss5Demo.Core;
 
 namespace Dlss5Demo.App;
@@ -14,6 +16,13 @@ internal sealed class AppSession
     {
         Settings = settings;
         ApplyTheme();
+        // PreferSystemTheme 关闭后由这里接管「跟随系统」：Windows 主题变化时重算一次，
+        // 显式浅色/深色不受影响。
+        if (Application.Current?.PlatformSettings is { } platform)
+            platform.ColorValuesChanged += (_, _) =>
+            {
+                if (Settings.ThemeIndex == 0) Dispatcher.UIThread.Post(ApplyTheme);
+            };
         if (!string.IsNullOrWhiteSpace(Settings.NrRuntimeDirectory) &&
             !NrRuntimeLocations.TrySetUserDirectory(Settings.NrRuntimeDirectory, out string error))
         {
@@ -50,8 +59,27 @@ internal sealed class AppSession
         {
             1 => ThemeVariant.Light,
             2 => ThemeVariant.Dark,
-            _ => ThemeVariant.Default,
+            _ => SystemThemeVariant(app),
         };
+    }
+
+    /// <summary>当前系统主题；平台不提供时回退 Default（仍由 Avalonia 解析）。</summary>
+    private static ThemeVariant SystemThemeVariant(Application app)
+    {
+        try
+        {
+            // PlatformColorValues.ThemeVariant 是 PlatformThemeVariant?，需要映射到 ThemeVariant。
+            return app.PlatformSettings?.GetColorValues().ThemeVariant switch
+            {
+                PlatformThemeVariant.Light => ThemeVariant.Light,
+                PlatformThemeVariant.Dark => ThemeVariant.Dark,
+                _ => ThemeVariant.Default,
+            };
+        }
+        catch (Exception error) when (error is NotSupportedException or InvalidOperationException)
+        {
+            return ThemeVariant.Default;
+        }
     }
 
     /// <summary>

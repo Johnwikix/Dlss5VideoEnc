@@ -7,6 +7,8 @@
 - 设置页新增「DLSS NR 运行库目录」卡片（Core 新增 `NrRuntimeLocations` / `NrRuntimeMigration`）：可打开、更改（含迁移确认、字节级进度与取消）、迁移内置运行库、恢复默认。迁移逐个复制并比对 SHA-256 后才删除源文件；内容相同只保留一份，同名不同内容改名保留两份，只读目录下保留源文件并在结果中说明；取消时删除未完成副本。切换目录先校验可写并落盘再迁移，避免「文件搬走但设置仍指旧目录」的半成品状态。
 - 版本发现与「自动」解析纳入用户目录：`NrRuntimeCatalog.Discover` 增加 `custom/` 前缀条目（与 `runtime/` 同布局，等值去重），`DemoPaths` 自动链插入「设置页目录 → 内置 runtime」，未配置时行为不变。迁移会改变 `runtime/` ↔ `custom/` 前缀，设置页负责把保存的 `NrRuntimeId` 重映射到新 ID，并通知工作台重拉版本列表。
 - 回归：新增 3 项纯文件系统检查（用户目录发现与去重、迁移移动/去重/冲突改名、同目录拒绝），`dotnet run --project tests/Dlss5Demo.Tests -c Debug` 共 31 项通过；`dotnet build Dlss5VideoEnc.sln` 0 错误（仅 WAP 的预期 NU1503）。真实启动实测：写入 `NrRuntimeDirectory` 后日志出现 `NR 使用设置页指定的运行库目录：…`，工作台版本列表出现「用户目录（激活版）」；设置页显示自定义目录、已发现数量与大小。
+- 修复主题单选错位：`IsCheckedChanged` 在旧选项被取消勾选时同样触发，原实现未判断 `IsChecked`，导致旧选项把主题改回上一个选择（选「浅色」仍是「跟随系统」、选「深色」仍是「浅色」）。现在只处理 `IsChecked == true` 的选项，并用真实单选组时序实测：light→1/Light、dark→2/Dark、system→0/系统变体。同时把「跟随系统」收归 `AppSession`（`FluentAvaloniaTheme.PreferSystemTheme="False"` + `PlatformSettings.ColorValuesChanged`），避免系统主题变化反过来覆盖用户显式选择的浅色/深色。三档实测：跟随系统=深色（当前系统）、浅色=浅色、深色=深色。
+- NR 版本下拉改为固定单行 + 尾部省略（`NoWrap` + `CharacterEllipsis`，完整路径仍由 ToolTip 提供），长版本名不再把下拉框撑成两三行高。
 - 文档：README 的「DLSS NR 运行库与模型预设」「界面与运行库管理」两节补充设置页目录、自动解析顺序与迁移规则。
 
 ## 2026-11-14

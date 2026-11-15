@@ -125,9 +125,12 @@
                                                   AutomationProperties.AutomationId="NrRuntime"
                                                   AutomationProperties.Name="NR 版本">
                                             <ComboBox.ItemTemplate>
+                                                <!-- 固定单行：版本与路径都很长，折行会把下拉框撑成两三行高。 -->
                                                 <DataTemplate x:DataType="core:NrRuntimeInfo">
-                                                    <TextBlock Text="{CompiledBinding DisplayName}" MaxWidth="270"
-                                                               TextWrapping="Wrap"
+                                                    <TextBlock Text="{CompiledBinding DisplayName}"
+                                                               TextWrapping="NoWrap"
+                                                               TextTrimming="CharacterEllipsis"
+                                                               HorizontalAlignment="Stretch"
                                                                ToolTip.Tip="{CompiledBinding DllPath}" />
                                                 </DataTemplate>
                                             </ComboBox.ItemTemplate>

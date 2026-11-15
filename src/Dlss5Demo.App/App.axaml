@@ -5,7 +5,8 @@
              RequestedThemeVariant="Default">
 
     <Application.Styles>
-        <sty:FluentAvaloniaTheme />
+        <!-- 跟随系统/浅色/深色由 AppSession 统一应用，主题自身不再按系统覆盖显式选择。 -->
+        <sty:FluentAvaloniaTheme PreferSystemTheme="False" />
         <!-- 设计令牌与共享卡片/按钮样式，页面统一引用，避免各页自建间距与颜色。 -->
         <StyleInclude Source="avares://Dlss5VideoEnc/Views/Themes/CommonStyles.axaml" />
     </Application.Styles>

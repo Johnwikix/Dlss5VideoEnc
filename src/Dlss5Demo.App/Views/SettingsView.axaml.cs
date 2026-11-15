@@ -52,16 +52,22 @@ public partial class SettingsView : UserControl
 
         if (session.StartupWarning is { Length: > 0 } warning)
             ShowError($"设置页指定的目录不可用，已回退到内置 runtime：{warning}");
+
     }
 
     // ============ 外观 ============
 
     private void ThemeRadio_Checked(object? sender, RoutedEventArgs e)
     {
+        // IsCheckedChanged 在「旧选项被取消勾选」时同样会触发，且分组互斥的取消事件
+        // 晚于新选项的选中事件。只处理被选中的那一项，否则旧项的取消事件会把主题
+        // 改回上一个选择（表现为「选浅色仍是跟随系统」、深色也一样错位）。
         if (_loading || _session is null) return;
-        if ((sender as RadioButton)?.Tag is not { } tag ||
-            !int.TryParse(tag.ToString(), out int index)) return;
-        _session.Settings.ThemeIndex = Math.Clamp(index, 0, 2);
+        if (sender is not RadioButton { IsChecked: true } radio) return;
+        if (radio.Tag is not { } tag || !int.TryParse(tag.ToString(), out int index)) return;
+        index = Math.Clamp(index, 0, 2);
+        if (_session.Settings.ThemeIndex == index) return;
+        _session.Settings.ThemeIndex = index;
         _session.ApplyTheme();
         _session.Save();
     }
